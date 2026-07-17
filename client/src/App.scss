@@ -286,259 +286,439 @@ $gray: #223b53;
   //   }
   // }
 
-  // 📁 LoginUI.module.scss
-
-  // 🎨 Variables
+  // ── Login page ─────────────────────────────────────────────────
 
   #login {
-    $primary: #00c6ff;
-    $primary-dark: #0072ff;
-    $text-light: #eee;
-    $bg-glass: rgba(255, 255, 255, 0.1);
-    $input-bg: rgba(255, 255, 255, 0.07);
-    $placeholder-color: rgba(255, 255, 255, 0.6);
+    --lp-bg:         #07090f;
+    --lp-card-bg:    rgba(255, 255, 255, 0.05);
+    --lp-border:     rgba(255, 255, 255, 0.09);
+    --lp-text:       #e2e8f0;
+    --lp-text-sub:   rgba(148, 163, 184, 0.85);
+    --lp-text-muted: rgba(100, 116, 139, 0.7);
+    --lp-accent:     #4f6ef7;
+    --lp-accent-2:   #7c3aed;
+    --lp-input-bg:   rgba(255, 255, 255, 0.04);
+    --lp-input-bd:   rgba(255, 255, 255, 0.05);
+    --lp-r:          10px;
+    --lp-t:          0.18s ease;
 
+    position: relative;
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #2a2060 0%, #09041f 60%, #0a1628 100%);
-    position: relative;
+    // Rich layered background: base + radial vignettes for depth
+    background:
+      radial-gradient(ellipse 80% 60% at 70% -10%,  rgba(79, 110, 247, 0.18) 0%, transparent 55%),
+      radial-gradient(ellipse 70% 55% at -10% 110%, rgba(124, 58, 237, 0.2)  0%, transparent 55%),
+      radial-gradient(ellipse 50% 40% at 50% 50%,   rgba(15,  20,  50, 0.6)  0%, transparent 80%),
+      #06080f;
     overflow: hidden;
+    padding: 1.5rem;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
 
-    .backdrop {
-      display: none;
+    // Subtle noise texture layer
+    &::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+      background-size: 160px 160px;
+      opacity: 0.025;
+      pointer-events: none;
+      z-index: 0;
     }
 
-    .wave {
+    // ── Aurora orbs — drifting color clouds ──────────────────────
+    .lp-orb {
       position: absolute;
       border-radius: 50%;
-      filter: blur(48px);
-      z-index: 0;
+      filter: blur(90px);
       pointer-events: none;
       will-change: transform;
-      transform: translateZ(0);
+      z-index: 0;
     }
 
-    .wave-1 {
-      width: 420px;
-      height: 420px;
-      background: radial-gradient(circle, rgba(0, 114, 255, 0.2) 0%, transparent 65%);
-      top: -160px;
+    .lp-orb--1 {
+      width: 600px;
+      height: 600px;
+      top: -200px;
+      right: -120px;
+      background: radial-gradient(circle, rgba(79, 110, 247, 0.28) 0%, transparent 65%);
+      animation: lp-drift-1 22s ease-in-out infinite;
+    }
+
+    .lp-orb--2 {
+      width: 520px;
+      height: 520px;
+      bottom: -160px;
       left: -120px;
-      animation: waveFloat1 24s ease-in-out infinite;
+      background: radial-gradient(circle, rgba(124, 58, 237, 0.26) 0%, transparent 65%);
+      animation: lp-drift-2 28s ease-in-out infinite;
     }
 
-    .wave-2 {
-      width: 380px;
-      height: 380px;
-      background: radial-gradient(circle, rgba(80, 20, 140, 0.3) 0%, transparent 65%);
-      bottom: -120px;
-      right: -100px;
-      animation: waveFloat2 30s ease-in-out infinite;
+    .lp-orb--3 {
+      width: 360px;
+      height: 360px;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.1) 0%, transparent 65%);
+      animation: lp-drift-3 18s ease-in-out infinite;
     }
 
-    .wave-3,
-    .wave-4 {
-      display: none;
-    }
-
-    .loginCard {
+    // ── Card ────────────────────────────────────────────────────
+    .lp-card {
       position: relative;
       z-index: 1;
-      background: linear-gradient(
-        135deg,
-        rgba(255, 255, 255, 0.14) 0%,
-        rgba(255, 255, 255, 0.06) 100%
-      );
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(255, 255, 255, 0.18);
-      border-radius: 24px;
-      padding: 2.5rem 2rem;
-      box-shadow:
-        0 0 0 1px rgba(255, 255, 255, 0.06) inset,
-        0 1px 0 rgba(255, 255, 255, 0.18) inset,
-        0 24px 64px rgba(0, 0, 0, 0.55),
-        0 6px 20px rgba(0, 0, 0, 0.3),
-        0 0 80px rgba(0, 114, 255, 0.07);
+      width: 100%;
       max-width: 400px;
-      width: 90%;
-      animation: fadeInUp 0.6s ease-in-out;
-      transition: transform 0.4s ease, box-shadow 0.4s ease;
+      background: var(--lp-card-bg);
+      border: 1px solid var(--lp-border);
+      border-radius: 20px;
+      padding: 0;
+      backdrop-filter: blur(24px) saturate(1.4);
+      -webkit-backdrop-filter: blur(24px) saturate(1.4);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 0 0 1px rgba(0, 0, 0, 0.4),
+        0 8px 32px rgba(0, 0, 0, 0.45),
+        0 32px 80px rgba(0, 0, 0, 0.3),
+        0 0 80px rgba(79, 110, 247, 0.06);
+      animation: lp-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+      overflow: hidden;
+    }
 
-      &:hover {
-        transform: translateY(-4px);
-        box-shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-          0 1px 0 rgba(255, 255, 255, 0.22) inset,
-          0 32px 80px rgba(0, 0, 0, 0.6),
-          0 8px 28px rgba(0, 0, 0, 0.35),
-          0 0 100px rgba(0, 114, 255, 0.1);
-      }
+    // Top gradient accent line
+    .lp-card__top-line {
+      height: 1px;
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(124, 58, 237, 0.6) 25%,
+        rgba(79, 110, 247, 0.9) 50%,
+        rgba(124, 58, 237, 0.6) 75%,
+        transparent 100%
+      );
+      margin-bottom: 2rem;
+    }
+
+    // ── Logo ────────────────────────────────────────────────────
+    .lp-logo {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 1rem;
+      padding: 0 2rem;
 
       img {
-        animation: popIn 0.6s ease-in-out;
+        width: 60px;
+        height: 60px;
+        object-fit: contain;
+        border-radius: 14px;
+        background: rgba(79, 110, 247, 0.12);
+        padding: 8px;
+        border: 1px solid rgba(79, 110, 247, 0.2);
+        box-shadow:
+          0 0 0 4px rgba(79, 110, 247, 0.06),
+          0 0 20px rgba(79, 110, 247, 0.15);
+      }
+    }
+
+    // ── Body ────────────────────────────────────────────────────
+    .lp-body {
+      padding: 0 2rem;
+    }
+
+    // ── Header ──────────────────────────────────────────────────
+    .lp-header {
+      text-align: center;
+      margin-bottom: 2rem;
+
+      &__title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--lp-text);
+        margin: 0 0 0.4rem;
+        letter-spacing: -0.025em;
       }
 
-      form {
+      &__sub {
+        font-size: 0.85rem;
+        color: var(--lp-text-sub);
+        margin: 0;
+        line-height: 1.5;
+      }
+    }
+
+    // ── Form ────────────────────────────────────────────────────
+    .lp-form {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    // ── Field ───────────────────────────────────────────────────
+    .lp-field {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+
+      &__label-row {
         display: flex;
-        flex-direction: column;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+
+      &__label {
+        font-size: 0.775rem;
+        font-weight: 600;
+        color: var(--lp-text);
+        letter-spacing: 0.01em;
+        opacity: 0.9;
+      }
+
+      &__wrap {
+        position: relative;
+        display: flex;
         align-items: center;
 
-        .form-floating {
-          position: relative;
-          background: transparent;
-          width: 100%;
-
-          input.form-control {
-            height: 3.5rem;
-            padding: 1.25rem 1rem 0.25rem;
-            background: $input-bg;
-            color: #fff;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 10px;
-            transition: all 0.3s ease;
-
-            &:focus + label,
-            &:not(:placeholder-shown) + label {
-              transform: translateY(-1.4rem) scale(0.85);
-              color: #372e6d;
-            }
-
-            &:disabled + label {
-              color: rgba(255, 255, 255, 0.3);
-            }
-          }
-
-          label {
-            color: rgba(255, 255, 255, 0.7);
-            transition: all 0.25s ease-in-out;
-            pointer-events: none;
-            transform-origin: left top;
-            background: transparent;
-          }
-        }
-
-        input.form-control {
-          background: $input-bg;
-          color: #fff;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          border-radius: 10px;
-          padding: 0.75rem 1rem;
-          transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
-
-          &::placeholder {
-            color: $placeholder-color;
-          }
-
-          &:hover {
-            background: rgba(255, 255, 255, 0.11);
-            border-color: rgba(255, 255, 255, 0.22);
-          }
-
-          &:focus {
-            outline: none;
-            background: rgba(255, 255, 255, 0.13);
-            border-color: rgba(0, 198, 255, 0.55);
-            box-shadow:
-              0 0 0 3px rgba(0, 198, 255, 0.12),
-              0 2px 12px rgba(0, 198, 255, 0.15),
-              inset 0 1px 0 rgba(255, 255, 255, 0.1);
-          }
-
-          &:disabled {
-            background: rgba(255, 255, 255, 0.04);
-            color: rgba(255, 255, 255, 0.35);
-            border-color: rgba(255, 255, 255, 0.08);
-            cursor: not-allowed;
-          }
-
-          &.is-invalid {
-            border-color: rgba(255, 80, 80, 0.6);
-            box-shadow: 0 0 0 3px rgba(255, 80, 80, 0.1);
-            background: rgba(255, 0, 0, 0.05);
-          }
-
-          &.is-valid {
-            border-color: rgba(50, 205, 50, 0.55);
-            box-shadow: 0 0 0 3px rgba(50, 205, 50, 0.1);
-            background: rgba(50, 205, 50, 0.04);
-          }
-        }
-
-        .text-danger {
-          font-size: 0.875rem;
-          margin-top: 0.25rem;
-          color: #ff4d4d;
-          animation: fadeInError 0.3s ease-in;
-        }
-
-        .text-success {
-          font-size: 0.875rem;
-          margin-top: 0.25rem;
-          color: #32cd32;
-          animation: fadeInSuccess 0.3s ease-in;
-        }
-      }
-
-      @keyframes fadeInError {
-        from {
-          opacity: 0;
-          transform: translateY(-5px);
-        }
-        to {
+        &:focus-within .lp-field__icon {
+          color: var(--lp-accent);
           opacity: 1;
-          transform: translateY(0);
         }
       }
 
-      @keyframes fadeInSuccess {
-        from {
-          opacity: 0;
-          transform: translateY(-5px);
+      &__icon {
+        position: absolute;
+        left: 0.875rem;
+        font-size: 0.8rem;
+        color: var(--lp-text-muted);
+        opacity: 0.7;
+        pointer-events: none;
+        transition: color var(--lp-t), opacity var(--lp-t);
+      }
+
+      &__input {
+        width: 100%;
+        height: 2.75rem;
+        padding: 0 0.875rem 0 2.5rem;
+        font-size: 0.875rem;
+        color: var(--lp-text);
+        background: var(--lp-input-bg);
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+        border-radius: var(--lp-r);
+        outline: none;
+        transition: border-color var(--lp-t), box-shadow var(--lp-t), background var(--lp-t);
+        -webkit-appearance: none;
+
+        &::placeholder { color: var(--lp-text-muted); }
+
+        &:hover:not(:focus) {
+          border-color: rgba(255, 255, 255, 0.18) !important;
+          background: rgba(255, 255, 255, 0.055);
         }
-        to {
-          opacity: 1;
-          transform: translateY(0);
+
+        &:focus {
+          background: rgba(255, 255, 255, 0.06);
+          border-color: rgba(79, 110, 247, 0.7) !important;
+          box-shadow:
+            0 0 0 3px rgba(79, 110, 247, 0.15),
+            inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        }
+
+        &--pr { padding-right: 2.75rem; }
+
+        &:-webkit-autofill {
+          -webkit-box-shadow: 0 0 0 50px #0d1117 inset;
+          -webkit-text-fill-color: var(--lp-text);
+          caret-color: var(--lp-text);
         }
       }
-    }
-  }
 
-  // 🌀 Animations
-  @keyframes fadeInUp {
-    0% {
-      opacity: 0;
-      transform: translateY(50px);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
+      &__eye {
+        position: absolute;
+        right: 0.75rem;
+        background: none;
+        border: none;
+        padding: 0.2rem;
+        cursor: pointer;
+        color: var(--lp-text-muted);
+        font-size: 0.8rem;
+        line-height: 1;
+        transition: color var(--lp-t);
 
-  @keyframes popIn {
-    0% {
-      transform: scale(0.6);
-      opacity: 0;
+        &:hover { color: var(--lp-text-sub); }
+      }
     }
-    100% {
-      transform: scale(1);
-      opacity: 1;
+
+    // ── Forgot link ─────────────────────────────────────────────
+    .lp-forgot {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: 0.74rem;
+      font-weight: 500;
+      color: var(--lp-accent);
+      cursor: pointer;
+      opacity: 0.85;
+      transition: opacity var(--lp-t);
+
+      &:hover { opacity: 1; }
     }
-  }
 
-  @keyframes waveFloat1 {
-    0%, 100% { transform: translateZ(0) translate(0, 0); }
-    40%      { transform: translateZ(0) translate(50px, 40px); }
-    70%      { transform: translateZ(0) translate(-25px, 70px); }
-  }
+    // ── Alerts ──────────────────────────────────────────────────
+    .lp-msg {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 0.6rem 0.8rem;
+      border-radius: 8px;
+      animation: lp-rise 0.2s ease both;
 
-  @keyframes waveFloat2 {
-    0%, 100% { transform: translateZ(0) translate(0, 0); }
-    35%      { transform: translateZ(0) translate(-45px, -55px); }
-    70%      { transform: translateZ(0) translate(30px, -20px); }
+      i { font-size: 0.8rem; flex-shrink: 0; }
+
+      &--error {
+        color: #f87171;
+        background: rgba(248, 113, 113, 0.1);
+        border: 1px solid rgba(248, 113, 113, 0.2);
+      }
+
+      &--ok {
+        color: #4ade80;
+        background: rgba(74, 222, 128, 0.1);
+        border: 1px solid rgba(74, 222, 128, 0.2);
+      }
+    }
+
+    // ── Primary button ──────────────────────────────────────────
+    .lp-btn {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      height: 2.75rem;
+      margin-top: 0.25rem;
+      border: none;
+      border-radius: var(--lp-r);
+      background: linear-gradient(135deg, var(--lp-accent) 0%, var(--lp-accent-2) 100%);
+      color: #fff;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.01em;
+      box-shadow:
+        0 4px 16px rgba(79, 110, 247, 0.3),
+        0 1px 4px rgba(0, 0, 0, 0.3);
+      transition: filter var(--lp-t), box-shadow var(--lp-t), transform 0.1s ease;
+
+      &:hover:not(:disabled) {
+        filter: brightness(1.1);
+        box-shadow:
+          0 6px 24px rgba(79, 110, 247, 0.4),
+          0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+
+      &:active:not(:disabled) {
+        transform: scale(0.985);
+        filter: brightness(0.97);
+      }
+
+      &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      i { font-size: 0.75rem; }
+    }
+
+    // ── Back / ghost button ─────────────────────────────────────
+    .lp-back-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      width: 100%;
+      height: 2.5rem;
+      background: transparent;
+      border: 1px solid var(--lp-border);
+      border-radius: var(--lp-r);
+      color: var(--lp-text-sub);
+      font-size: 0.825rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background var(--lp-t), border-color var(--lp-t), color var(--lp-t);
+
+      i { font-size: 0.7rem; }
+
+      &:hover {
+        background: rgba(255, 255, 255, 0.04);
+        border-color: rgba(255, 255, 255, 0.14);
+        color: var(--lp-text);
+      }
+    }
+
+    // ── Footer ──────────────────────────────────────────────────
+    .lp-footer {
+      // Reset global footer rule that sets position: absolute and left: 0
+      position: static;
+      bottom: auto;
+      left: auto;
+      height: auto;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      margin: 0;
+      padding: 1.5rem 2rem;
+      text-align: center;
+      font-size: 0.7rem;
+      color: var(--lp-text-muted);
+
+      a {
+        color: inherit;
+        text-decoration: none;
+        transition: color var(--lp-t);
+        &:hover { color: var(--lp-text-sub); }
+      }
+    }
+
+    // ── Animations ──────────────────────────────────────────────
+    @keyframes lp-rise {
+      from { opacity: 0; transform: translateY(16px) scale(0.99); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes lp-drift-1 {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33%      { transform: translate(-40px, 50px) scale(1.05); }
+      66%      { transform: translate(30px, -30px) scale(0.97); }
+    }
+
+    @keyframes lp-drift-2 {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      40%      { transform: translate(50px, -40px) scale(1.08); }
+      70%      { transform: translate(-20px, 30px) scale(0.95); }
+    }
+
+    @keyframes lp-drift-3 {
+      0%, 100% { transform: translate(-50%, -50%) scale(1); }
+      50%      { transform: translate(-50%, -50%) scale(1.15); }
+    }
+
+    // ── Mobile ──────────────────────────────────────────────────
+    @media (max-width: 480px) {
+      padding: 1rem;
+
+      .lp-card {
+        border-radius: 16px;
+        max-width: 100%;
+      }
+    }
   }
 
   .content-wrapper {
