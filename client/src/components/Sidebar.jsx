@@ -14,6 +14,9 @@ const Sidebar = () => {
 
   const [showInacModal, setShowInacModal] = useState(false);
   const [roleData, setRoleData] = useState(null);
+  const [isHovered, setIsHovered] = useState(false);
+  // True whenever the sidebar should render in its expanded visual state
+  const isExpanded = !isSidebarCollapsed || isHovered;
   const [collapsedItems, setCollapsedItems] = useState({
     dashboardCollapse: false,
     bitacorasCollapse: false,
@@ -93,9 +96,11 @@ const Sidebar = () => {
     <>
       <aside
         id="leftsidebar"
-        className={`${isSidebarCollapsed ? "collapsed" : ""} ${
+        className={`${isSidebarCollapsed && !isHovered ? "collapsed" : ""} ${
           isMobileSidebarOpen ? "mobile-open" : ""
-        }`}>
+        }`}
+        onMouseEnter={() => isSidebarCollapsed && setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}>
         {/* Floating Collapse Button (only when collapsed) */}
         {/* {isSidebarCollapsed && (
           <div className="floating-collapse-btn d-none d-md-block">
@@ -118,7 +123,7 @@ const Sidebar = () => {
             <div className="user-avatar">
               <img src="/logo1.png" alt="Logo" />
             </div>
-            {!isSidebarCollapsed && (
+            {isExpanded && (
               <div className="user-info">
                 <h6 className="user-name">
                   {user?.firstName} {user?.lastName}
@@ -127,9 +132,11 @@ const Sidebar = () => {
                 <span className="user-email">{user?.email}</span>
               </div>
             )}
-            <button className="user-profile__pin d-none d-md-flex" onClick={toggleSidebar} title={isSidebarCollapsed ? "Expandir" : "Colapsar"}>
-              <i className={`fa-solid ${isSidebarCollapsed ? "fa-thumbtack" : "fa-thumbtack"}`} style={{transform: isSidebarCollapsed ? "rotate(45deg)" : "none"}} />
-            </button>
+            {isHovered || !isSidebarCollapsed ? (
+              <button className="user-profile__pin d-none d-md-flex" onClick={toggleSidebar} title={isSidebarCollapsed ? "Expandir" : "Colapsar"}>
+                <i className="fa-solid fa-thumbtack" style={{transform: isSidebarCollapsed ? "rotate(45deg)" : "none"}} />
+              </button>
+            ) : null}
           </div>
 
           {/* Navigation Menu */}
@@ -145,9 +152,9 @@ const Sidebar = () => {
                     }>
                     <div className="nav-link-content">
                       <i className="fa fa-tachometer-alt"></i>
-                      {!isSidebarCollapsed && <span>Dashboard</span>}
+                      {isExpanded && <span>Dashboard</span>}
                     </div>
-                    {!isSidebarCollapsed && (
+                    {isExpanded && (
                       <i
                         className={`fa fa-chevron-${
                           collapsedItems.dashboardCollapse ? "up" : "down"
@@ -156,7 +163,7 @@ const Sidebar = () => {
                     )}
                   </div>
 
-                  {collapsedItems.dashboardCollapse && !isSidebarCollapsed && (
+                  {collapsedItems.dashboardCollapse && isExpanded && (
                     <ul className="submenu">
                       {showDashboardGeneral && (
                         <li onClick={() => navigate("/dashboard/general")}>
@@ -212,9 +219,9 @@ const Sidebar = () => {
                     }>
                     <div className="nav-link-content">
                       <i className="fa fa-chart-line"></i>
-                      {!isSidebarCollapsed && <span>Monitoreo</span>}
+                      {isExpanded && <span>Monitoreo</span>}
                     </div>
-                    {!isSidebarCollapsed && (
+                    {isExpanded && (
                       <i
                         className={`fa fa-chevron-${
                           collapsedItems.bitacorasCollapse ? "up" : "down"
@@ -223,7 +230,7 @@ const Sidebar = () => {
                     )}
                   </div>
 
-                  {collapsedItems.bitacorasCollapse && !isSidebarCollapsed && (
+                  {collapsedItems.bitacorasCollapse && isExpanded && (
                     <ul className="submenu">
                       {showBitacoras && (
                         <li onClick={() => navigate("/bitacoras")}>
@@ -264,9 +271,9 @@ const Sidebar = () => {
                     }>
                     <div className="nav-link-content">
                       <i className="fa fa-cog"></i>
-                      {!isSidebarCollapsed && <span>Configuración</span>}
+                      {isExpanded && <span>Configuración</span>}
                     </div>
-                    {!isSidebarCollapsed && (
+                    {isExpanded && (
                       <i
                         className={`fa fa-chevron-${
                           collapsedItems.settingsCollapse ? "up" : "down"
@@ -275,7 +282,7 @@ const Sidebar = () => {
                     )}
                   </div>
 
-                  {collapsedItems.settingsCollapse && !isSidebarCollapsed && (
+                  {collapsedItems.settingsCollapse && isExpanded && (
                     <ul className="submenu">
                       {/* Catálogos */}
                       {showCatalogos && <li className="submenu-item">
@@ -425,11 +432,11 @@ const Sidebar = () => {
           <div className="sidebar-footer">
             <div className="logout-btn" onClick={logout}>
               <i className="fa fa-sign-out-alt"></i>
-              {!isSidebarCollapsed && <span>Cerrar Sesión</span>}
+              {isExpanded && <span>Cerrar Sesión</span>}
             </div>
           </div>
 
-          {!isSidebarCollapsed && <Footer />}
+          {isExpanded && <Footer />}
         </div>
       </aside>
 
