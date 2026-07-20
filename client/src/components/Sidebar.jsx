@@ -115,15 +115,6 @@ const Sidebar = () => {
 
           {/* User Profile Section */}
           <div className="user-profile">
-            {/* Collapse/Expand Button (only when expanded) */}
-            {/* {!isSidebarCollapsed && (
-              <div className="sidebar-toggle d-none d-md-block" onClick={(e) => e.stopPropagation()}>
-                <button onClick={toggleSidebar} className="collapse-btn">
-                  <i className="fa fa-chevron-left"></i>
-                </button>
-              </div>
-            )} */}
-
             <div className="user-avatar">
               <img src="/logo1.png" alt="Logo" />
             </div>
@@ -136,6 +127,9 @@ const Sidebar = () => {
                 <span className="user-email">{user?.email}</span>
               </div>
             )}
+            <button className="user-profile__pin d-none d-md-flex" onClick={toggleSidebar} title={isSidebarCollapsed ? "Expandir" : "Colapsar"}>
+              <i className={`fa-solid ${isSidebarCollapsed ? "fa-thumbtack" : "fa-thumbtack"}`} style={{transform: isSidebarCollapsed ? "rotate(45deg)" : "none"}} />
+            </button>
           </div>
 
           {/* Navigation Menu */}
@@ -434,9 +428,9 @@ const Sidebar = () => {
               {!isSidebarCollapsed && <span>Cerrar Sesión</span>}
             </div>
           </div>
-        </div>
 
-        {!isSidebarCollapsed && <Footer />}
+          {!isSidebarCollapsed && <Footer />}
+        </div>
       </aside>
 
       <InactivityModal show={showInacModal} handleClose={closeInacModal} />
