@@ -219,7 +219,7 @@ const TiposMonitoreo = () => {
           >
             {roleData?.tipos_de_monitoreo?.create && (
               <button type="button" className="new-btn" onClick={() => setShowModal("create")}>
-                <i className="fas fa-plus"></i>
+                <i className="fas fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>

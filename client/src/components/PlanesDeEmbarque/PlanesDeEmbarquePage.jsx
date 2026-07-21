@@ -738,7 +738,7 @@ const PlanesDeEmbarquePage = () => {
               <i className="fas fa-file-import"></i>
             </button>
             <button className="new-btn" title="Nuevo plan" onClick={openCreate}>
-              <i className="fas fa-plus"></i>
+              <i className="fas fa-plus"></i>Crear
             </button>
           </PageHeader>
 

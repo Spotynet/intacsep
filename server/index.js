@@ -660,10 +660,9 @@ app.get("/bitacoras", async (req, res) => {
     }
     if (idFilter) query.bitacora_id = { $regex: idFilter, $options: "i" };
     if (creationDateFilter) {
-      const startDate = new Date(creationDateFilter);
-      const endDate = new Date(creationDateFilter);
-      endDate.setDate(endDate.getDate() + 1);
-      query.createdAt = { $gte: startDate, $lt: endDate };
+      const startDate = new Date(creationDateFilter + "T00:00:00");
+      const endDate = new Date(creationDateFilter + "T23:59:59.999");
+      query.createdAt = { $gte: startDate, $lte: endDate };
     }
 
     // Hide cerradas if role doesn't have permission

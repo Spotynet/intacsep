@@ -1,34 +1,33 @@
-import React from 'react';
-import { Box, TextField } from '@mui/material';
-
 /**
- * Modern DateTimeRangePicker using MUI components.
+ * DateTimeRangePicker — styled to match the pselect component system.
+ * Props: label, startValue, endValue, onStartChange, onEndChange
  */
 const DateTimeRangePicker = ({ label, startValue, endValue, onStartChange, onEndChange }) => {
   return (
-    <Box className="d-flex align-items-center gap-2">
-      <small className="text-muted fw-bold text-nowrap">{label}:</small>
-      <TextField
-        type="datetime-local"
-        size="small"
-        value={startValue}
-        onChange={(e) => onStartChange(e.target.value)}
-        sx={{ 
-          '& .MuiOutlinedInput-root': { borderRadius: '6px', backgroundColor: '#fff', fontSize: '0.8rem' },
-          '& .MuiOutlinedInput-input': { padding: '8px 10px' }
-        }}
-      />
-      <TextField
-        type="datetime-local"
-        size="small"
-        value={endValue}
-        onChange={(e) => onEndChange(e.target.value)}
-        sx={{ 
-          '& .MuiOutlinedInput-root': { borderRadius: '6px', backgroundColor: '#fff', fontSize: '0.8rem' },
-          '& .MuiOutlinedInput-input': { padding: '8px 10px' }
-        }}
-      />
-    </Box>
+    <div className="pdt-range">
+      {label && <span className="pselect__label">{label}</span>}
+      <div className="pdt-range__inputs">
+        <div className="pdt-field">
+          <span className="pdt-field__prefix">De</span>
+          <input
+            type="datetime-local"
+            className="pdt-field__input"
+            value={startValue}
+            onChange={(e) => onStartChange(e.target.value)}
+          />
+        </div>
+        <span className="pdt-range__sep">—</span>
+        <div className="pdt-field">
+          <span className="pdt-field__prefix">A</span>
+          <input
+            type="datetime-local"
+            className="pdt-field__input"
+            value={endValue}
+            onChange={(e) => onEndChange(e.target.value)}
+          />
+        </div>
+      </div>
+    </div>
   );
 };
 

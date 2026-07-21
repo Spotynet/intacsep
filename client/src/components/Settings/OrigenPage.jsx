@@ -309,7 +309,7 @@ const OrigenPage = () => {
           >
             {roleData?.origenes?.create && (
               <button type="button" className="new-btn" onClick={() => setModalType("create")}>
-                <i className="fas fa-plus"></i>
+                <i className="fas fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>

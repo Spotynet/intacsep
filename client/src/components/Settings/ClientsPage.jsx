@@ -227,7 +227,7 @@ const ClientsPage = () => {
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}>
             {roleData?.clientes?.create && (
               <button className="new-btn" onClick={() => setShowModal(true)}>
-                <i className="fa fa-plus"></i>
+                <i className="fa fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>

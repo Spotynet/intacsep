@@ -579,7 +579,7 @@ const PlacaTestPage = () => {
           >
             {roleData?.control_patios?.create && (
               <button className="new-btn" onClick={() => handleOpenModal()} title="Nuevo registro">
-                <i className="fa fa-plus"></i>
+                <i className="fa fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>

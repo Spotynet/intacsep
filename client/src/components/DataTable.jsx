@@ -1,5 +1,6 @@
 import {useEffect, useRef} from "react";
 import usePagination from "../hooks/usePagination";
+import {Select} from "./Select";
 
 /**
  * Builds the array of page numbers / ellipsis markers to render in the pager.
@@ -134,30 +135,56 @@ const DataTable = ({
   stickyHeader = true,
   highlightId = null,
   rowClassName = null,
+  loading = false,
+  // ── Server-side mode ────────────────────────────────────────
+  // Pass these to take over pagination externally (e.g. API-paginated data).
+  serverSide = false,
+  serverPage = 1,
+  serverTotalItems = 0,
+  serverTotalPages = 1,
+  serverItemsPerPage = 25,
+  onPageChange = null,
+  onItemsPerPageChange = null,
+  // ── Sort ────────────────────────────────────────────────────
+  // Column defs can include sortable:true + sortKey:"fieldName".
+  // DataTable calls onSortChange(field) when a sortable header is clicked.
+  sortField = null,
+  sortOrder = "asc",
+  onSortChange = null,
 }) => {
   const highlightRef = useRef(null);
 
   const getRowKey = (row) =>
     typeof rowKey === "function" ? rowKey(row) : row[rowKey];
 
-  const {
-    currentPage,
-    itemsPerPage,
-    totalItems,
-    totalPages,
-    startItem,
-    endItem,
-    paginatedData,
-    handlePageChange,
-    handleItemsPerPageChange,
-  } = usePagination(data, initialItemsPerPage);
+  // Client-side pagination (used when serverSide=false)
+  const client = usePagination(data, initialItemsPerPage);
+
+  // Resolved values — either server-controlled or client-computed
+  const currentPage       = serverSide ? serverPage       : client.currentPage;
+  const itemsPerPage      = serverSide ? serverItemsPerPage : client.itemsPerPage;
+  const totalItems        = serverSide ? serverTotalItems  : client.totalItems;
+  const totalPages        = serverSide ? serverTotalPages  : client.totalPages;
+  const startItem         = serverSide ? (serverPage - 1) * serverItemsPerPage + 1 : client.startItem;
+  const endItem           = serverSide ? Math.min(serverPage * serverItemsPerPage, serverTotalItems) : client.endItem;
+  const displayData       = serverSide ? data              : client.paginatedData;
+  const handlePageChange  = serverSide ? onPageChange      : client.handlePageChange;
+  const handleItemsChange = serverSide
+    ? (val) => onItemsPerPageChange?.(Number(val))
+    : (val) => client.handleItemsPerPageChange({target: {value: val}});
+
+  const handleSort = (col) => {
+    if (!col.sortable || !onSortChange) return;
+    const key = col.sortKey ?? col.key;
+    onSortChange(key);
+  };
 
   useEffect(() => {
-    if (!highlightId) return;
+    if (serverSide || !highlightId) return;
     const idx = data.findIndex((row) => getRowKey(row) === highlightId);
     if (idx === -1) return;
     const targetPage = Math.floor(idx / itemsPerPage) + 1;
-    if (targetPage !== currentPage) handlePageChange(targetPage);
+    if (targetPage !== currentPage) client.handlePageChange(targetPage);
   }, [highlightId]); // eslint-disable-line
 
   useEffect(() => {
@@ -176,39 +203,53 @@ const DataTable = ({
   };
 
   return (
-    <>
-      <div className="table-wrapper" style={{maxHeight, overflowY: "auto"}}>
-        <div className="table-responsive">
+    <div className="table-wrapper" style={maxHeight === "100%" ? undefined : {maxHeight, overflowY: "auto"}}>
+      <div className="table-responsive">
           <table className="table">
             <thead
               className="table-light"
               style={
-                stickyHeader
+                stickyHeader && maxHeight !== "100%"
                   ? {position: "sticky", top: 0, zIndex: 1, backgroundColor: "#f8f9fa"}
                   : undefined
               }>
               <tr>
-                {columns.map((col) => (
-                  <th
-                    key={col.key}
-                    className={col.headerClassName}
-                    style={col.width ? {width: col.width} : undefined}>
-                    {col.header}
-                  </th>
-                ))}
+                {columns.map((col) => {
+                  const isSorted = sortField === (col.sortKey ?? col.key);
+                  return (
+                    <th
+                      key={col.key}
+                      className={[col.headerClassName, col.sortable ? "dt-sortable" : ""].filter(Boolean).join(" ")}
+                      style={{...(col.width ? {width: col.width} : {}), ...(col.hidden ? {display:"none"} : {})}}
+                      onClick={() => handleSort(col)}>
+                      <div className="dt-th-inner">
+                        <span>{col.header}</span>
+                        {col.sortable && (
+                          <i className={`fa fa-sort${isSorted ? (sortOrder === "asc" ? "-up" : "-down") : ""} dt-sort-icon${isSorted ? " dt-sort-icon--active" : ""}`}></i>
+                        )}
+                      </div>
+                    </th>
+                  );
+                })}
                 {hasActions && <th className="text-end">Acciones</th>}
               </tr>
             </thead>
 
             <tbody>
-              {paginatedData.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan={colCount} className="text-center py-4">
+                    <p className="text-muted mb-0">Cargando...</p>
+                  </td>
+                </tr>
+              ) : displayData.length === 0 ? (
                 <tr>
                   <td colSpan={colCount} className="text-center py-4">
                     <p className="text-muted mb-0">{emptyMessage}</p>
                   </td>
                 </tr>
               ) : (
-                paginatedData.map((row, rowIndex) => {
+                displayData.map((row, rowIndex) => {
                   const key = getRowKey(row);
                   const isHighlighted = highlightId && key === highlightId;
                   const extraClass = typeof rowClassName === "function" ? rowClassName(row) : (rowClassName || "");
@@ -221,7 +262,7 @@ const DataTable = ({
                     {columns.map((col) => (
                       <td
                         key={col.key}
-                        className={col.className}
+                        className={[col.className, col.cellClassName].filter(Boolean).join(" ")}
                         data-label={typeof col.header === "string" ? col.header : col.key}>
                         {col.render
                           ? col.render(row, {rowIndex, currentPage, itemsPerPage})
@@ -257,27 +298,21 @@ const DataTable = ({
             </tbody>
           </table>
         </div>
-      </div>
 
       {totalItems > 0 && (
-        <div className="pagination-container">
+        <div className="pagination-container" style={{flexShrink: 0}}>
           <div className="pagination-content">
             <div className="pagination-info">
               <div className="items-per-page">
-                <label htmlFor="dt-items-per-page" className="form-label">
-                  Items por página:
-                </label>
-                <select
-                  id="dt-items-per-page"
-                  className="form-select form-select-sm modern-select"
-                  value={itemsPerPage}
-                  onChange={handleItemsPerPageChange}>
-                  {itemsPerPageOptions.map((n) => (
-                    <option key={n} value={n}>
-                      {n}
-                    </option>
-                  ))}
-                </select>
+                <label>Por página:</label>
+                <Select
+                  value={String(itemsPerPage)}
+                  onChange={handleItemsChange}
+                  options={itemsPerPageOptions.map((n) => ({value: String(n), label: String(n)}))}
+                  searchable={false}
+                  clearable={false}
+                  className="dt-page-size-select"
+                />
               </div>
             </div>
 
@@ -323,7 +358,7 @@ const DataTable = ({
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 };
 

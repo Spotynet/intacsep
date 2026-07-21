@@ -225,7 +225,7 @@ const IntegracionesPage = () => {
           >
             {roleData?.integraciones?.create && (
               <button className="new-btn" onClick={handleCreateNew}>
-                <i className="fas fa-plus"></i>
+                <i className="fas fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>

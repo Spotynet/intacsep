@@ -467,7 +467,7 @@ const RolePage = () => {
           >
             {roleData?.roles?.create && (
               <button className="new-btn" onClick={() => setShowModal(true)}>
-                <i className="fas fa-plus"></i>
+                <i className="fas fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>
