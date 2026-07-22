@@ -8,6 +8,8 @@ import FilterBar from "../FilterBar";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
+import CellBadge from "../CellBadge";
+import {Select} from "../Select";
 
 const fmt = (dt) =>
   dt ? new Date(dt).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"}) : "—";
@@ -113,6 +115,7 @@ const emptyForm = {
 
 const PlanesDeEmbarquePage = () => {
   const [planes, setPlanes]               = useState([]);
+  const [isLoading, setIsLoading]         = useState(true);
   const [clientes, setClientes]           = useState([]);
   const [destinos, setDestinos]           = useState([]);
   const [filteredDestinos, setFilteredDestinos] = useState([]);
@@ -121,7 +124,7 @@ const PlanesDeEmbarquePage = () => {
   const [isModalVisible, setModalVisible] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete]       = useState("");
-  const [filters, setFilters]             = useState({tipoViaje: "", cliente: "", transporte: ""});
+  const [filters, setFilters]             = useState({tipoViaje: "", cliente: "", destino: "", transporte: ""});
   const [formError, setFormError]         = useState("");
 
   // Import state
@@ -167,6 +170,8 @@ const PlanesDeEmbarquePage = () => {
         if (destinosRes.ok) setDestinos(await destinosRes.json());
       } catch (e) {
         console.error("Error fetching data:", e);
+      } finally {
+        setIsLoading(false);
       }
     };
     fetchAll();
@@ -184,10 +189,12 @@ const PlanesDeEmbarquePage = () => {
     () =>
       planes.filter((p) => {
         const clienteNombre = p.cliente?.razon_social ?? "";
+        const destinoNombre = p.destino?.nombre ?? "";
         return (
-          p.tipoViaje.toLowerCase().includes(filters.tipoViaje.toLowerCase()) &&
-          clienteNombre.toLowerCase().includes(filters.cliente.toLowerCase()) &&
-          p.transporte.toLowerCase().includes(filters.transporte.toLowerCase())
+          (!filters.tipoViaje  || p.tipoViaje.toLowerCase().includes(filters.tipoViaje.toLowerCase())) &&
+          (!filters.cliente    || clienteNombre === filters.cliente) &&
+          (!filters.destino    || destinoNombre === filters.destino) &&
+          (!filters.transporte || p.transporte.toLowerCase().includes(filters.transporte.toLowerCase()))
         );
       }),
     [planes, filters]
@@ -207,7 +214,8 @@ const PlanesDeEmbarquePage = () => {
     setFilters((prev) => ({...prev, [name]: value}));
   };
 
-  const clearFilters = () => setFilters({tipoViaje: "", cliente: "", transporte: ""});
+  const clearFilters = () => setFilters({tipoViaje: "", cliente: "", destino: "", transporte: ""});
+  const hasActiveFilters = !!(filters.tipoViaje || filters.cliente || filters.destino || filters.transporte);
 
   const openCreate = () => {
     setEditingId(null);
@@ -427,6 +435,7 @@ const PlanesDeEmbarquePage = () => {
       key: "index",
       header: "#",
       width: "55px",
+      headerClassName: "text-center",
       className: "text-center fw-bold",
       render: (_row, {rowIndex, currentPage, itemsPerPage}) =>
         (currentPage - 1) * itemsPerPage + rowIndex + 1,
@@ -464,34 +473,35 @@ const PlanesDeEmbarquePage = () => {
       header: "Bitácora",
       render: (row) =>
         row.linked_bitacora ? (
-          <button
-            type="button"
-            className="plan-bitacora-link"
-            onClick={() => navigate(`/bitacora/${row.linked_bitacora._id}`)}>
-            #{row.linked_bitacora.bitacora_id}
-          </button>
+          <CellBadge
+            label={`#${row.linked_bitacora.bitacora_id}`}
+            variant="blue"
+            onClick={() => navigate(`/bitacora/${row.linked_bitacora._id}`)}
+          />
         ) : (
           "—"
         ),
     },
+    {
+      key: "acciones",
+      header: "Acciones",
+      width: "8%",
+      headerClassName: "text-end",
+      className: "table-cell",
+      render: (row) => (
+        <div className="d-flex justify-content-end gap-2">
+          <button className="action-btn btn-primary" title="Editar" onClick={() => openEdit(row)}>
+            <i className="fas fa-edit"></i>
+          </button>
+          <button className="action-btn btn-danger" title="Eliminar" onClick={() => handleDelete(row._id)}>
+            <i className="fas fa-trash"></i>
+          </button>
+        </div>
+      ),
+    },
   ];
 
-  const actions = [
-    {
-      icon: "fas fa-edit",
-      className: "btn btn-primary",
-      title: "Editar",
-      show: true,
-      onClick: (row) => openEdit(row),
-    },
-    {
-      icon: "fas fa-trash",
-      className: "btn btn-danger",
-      title: "Eliminar",
-      show: true,
-      onClick: (row) => handleDelete(row._id),
-    },
-  ];
+  const actions = [];
 
   const planForm = (
     <>
@@ -696,58 +706,89 @@ const PlanesDeEmbarquePage = () => {
           <PageHeader
             title="Monitoreo — Planes de Embarque"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               <FilterBar onClear={clearFilters}>
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por tipo de viaje…"
-                  name="tipoViaje"
-                  value={filters.tipoViaje}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por cliente…"
-                  name="cliente"
-                  value={filters.cliente}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por transporte…"
-                  name="transporte"
-                  value={filters.transporte}
-                  onChange={handleFilterChange}
-                />
+                <div>
+                  <span className="pselect__label">Tipo de Viaje</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-route pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
+                      value={filters.tipoViaje}
+                      onChange={(e) => setFilters((p) => ({...p, tipoViaje: e.target.value}))}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    placeholder="Todos los clientes"
+                    value={filters.cliente || null}
+                    onChange={(v) => setFilters((p) => ({...p, cliente: v ?? ""}))}
+                    options={[...clientes]
+                      .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                      .map((c) => ({value: c.razon_social, label: c.razon_social}))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Destino"
+                    placeholder="Todos los destinos"
+                    value={filters.destino || null}
+                    onChange={(v) => setFilters((p) => ({...p, destino: v ?? ""}))}
+                    options={[...destinos]
+                      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+                      .map((d) => ({value: d.nombre, label: d.nombre}))}
+                  />
+                </div>
+                <div>
+                  <span className="pselect__label">Transporte</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-truck pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
+                      value={filters.transporte}
+                      onChange={(e) => setFilters((p) => ({...p, transporte: e.target.value}))}
+                    />
+                  </div>
+                </div>
               </FilterBar>
             }
+            filterActions={<>
+              <button
+                className="header-action-btn header-action-btn--green"
+                title="Descargar plantilla Excel"
+                onClick={downloadTemplate}>
+                <i className="fas fa-file-download"></i>
+                <span>Plantilla</span>
+              </button>
+              <button
+                className="header-action-btn header-action-btn--indigo"
+                title="Importar desde Excel"
+                onClick={() => fileInputRef.current?.click()}>
+                <i className="fas fa-file-import"></i>
+                <span>Importar</span>
+              </button>
+            </>}
           >
-            <button
-              className="header-action-btn"
-              title="Descargar plantilla Excel"
-              onClick={downloadTemplate}>
-              <i className="fas fa-file-download"></i>
-            </button>
-            <button
-              className="header-action-btn"
-              title="Importar desde Excel"
-              onClick={() => fileInputRef.current?.click()}>
-              <i className="fas fa-file-import"></i>
-            </button>
             <button className="new-btn" title="Nuevo plan" onClick={openCreate}>
               <i className="fas fa-plus"></i>Crear
             </button>
           </PageHeader>
 
-          <div className="settings-content mt-4">
+          <div className="bits-table-shell">
             <DataTable
               data={filteredPlanes}
               columns={columns}
-              actions={actions}
+              loading={isLoading}
               emptyMessage="No se encontraron planes de embarque."
+              maxHeight="100%"
             />
           </div>
         </div>

@@ -5,6 +5,7 @@ import { useAuth } from "../../context/AuthContext";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import { useSidebar } from "../../context/SidebarContext";
 import { useNavigate } from "react-router-dom";
 import IntegrationModal from "./IntegrationModal";
@@ -12,12 +13,15 @@ import { fetchIntegrations, createIntegration, updateIntegration, deleteIntegrat
 
 const IntegracionesPage = () => {
   const [integrations, setIntegrations] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [editingIntegration, setEditingIntegration] = useState(null);
   const [isModalVisible, setModalVisible] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete] = useState("");
   const { user, verifyToken, setUser } = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const { isSidebarCollapsed, setIsMobileSidebarOpen } = useSidebar();
   const navigate = useNavigate();
@@ -56,12 +60,15 @@ const IntegracionesPage = () => {
     loadIntegrations();
   }, []);
 
-  const loadIntegrations = async () => {
+  const loadIntegrations = async (showLoader = false) => {
+    if (showLoader) setIsLoading(true);
     try {
       const data = await fetchIntegrations();
       setIntegrations(data);
     } catch (e) {
       console.error("Error fetching integrations:", e);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -101,6 +108,7 @@ const IntegracionesPage = () => {
   };
 
   const clearFilters = () => setFilters({ name: "", provider: "" });
+  const hasActiveFilters = !!(filters.name || filters.provider);
 
   const handleSubmit = async (formData) => {
     try {
@@ -133,7 +141,7 @@ const IntegracionesPage = () => {
   const columns = [
     {
       key: "index",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (_row, { rowIndex, currentPage, itemsPerPage }) =>
@@ -173,14 +181,14 @@ const IntegracionesPage = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.integraciones?.update,
       onClick: (row) => handleEdit(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.integraciones?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -199,26 +207,27 @@ const IntegracionesPage = () => {
           <PageHeader
             title="Sistema - Integraciones GPS"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.integraciones?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por nombre..."
-                    name="name"
-                    value={filters.name}
-                    onChange={handleFilterChange}
-                  />
-                  <select
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    name="provider"
-                    value={filters.provider}
-                    onChange={handleFilterChange}
-                  >
-                    <option value="">Todos los proveedores</option>
-                    <option value="samsara">Samsara</option>
-                  </select>
+                  <div>
+                    <span className="pselect__label">Nombre</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="name" value={filters.name} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <Select
+                      label="Proveedor"
+                      placeholder="Todos los proveedores"
+                      value={filters.provider || null}
+                      onChange={(v) => handleFilterChange({target: {name: "provider", value: v ?? ""}})}
+                      options={[{value: "samsara", label: "Samsara"}]}
+                    />
+                  </div>
                 </FilterBar>
               )
             }
@@ -230,16 +239,16 @@ const IntegracionesPage = () => {
             )}
           </PageHeader>
 
-          {roleData?.integraciones?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredIntegrations}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron integraciones que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

@@ -1,469 +1,286 @@
-import React, {useState, useEffect} from "react";
+import {useState, useEffect, useMemo} from "react";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
 import ClientCard from "./ClientCard";
 import ModalTemplate from "../ModalTemplate";
+import FilterBar from "../FilterBar";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {convertToUpperCase} from "../../utils/utils";
 
+const emptyForm = {
+  alcaldia: "", calle: "", ciudad: "", clave_pais: "", codigo_postal: "",
+  colonia: "", num_ext: "", num_int: "", razon_social: "", RFC: "",
+  contacto: {nombres: "", apellidos: "", telefono: "", email: "", pais: ""},
+};
+
+const emptyContact = {nombres: "", apellidos: "", telefono: "", email: "", pais: ""};
+
+const Field = ({label, id, value, onChange, type = "text", required = false}) => (
+  <div>
+    <span className="pselect__label">{label}{required && <span className="text-danger ms-1">*</span>}</span>
+    <div className="pdt-field">
+      <input type={type} className="pdt-field__input" id={id} value={value} onChange={onChange} />
+    </div>
+  </div>
+);
+
 const ClientsPage = () => {
-  const [clients, setClients] = useState([]);
-  const [showModal, setShowModal] = useState(false);
-  const [isEditing, setIsEditing] = useState(false); // New state for edit mode
-  const [currentClient, setCurrentClient] = useState(null); // State for the client being edited
-  const [formData, setFormData] = useState({
-    alcaldia: "",
-    calle: "",
-    ciudad: "",
-    clave_pais: "",
-    codigo_postal: "",
-    colonia: "",
-    num_ext: "",
-    num_int: "",
-    razon_social: "",
-    RFC: "",
-    contacto: {
-      nombres: "",
-      apellidos: "",
-      telefono: "",
-      email: "",
-      pais: "",
-    },
-  });
+  const [clients, setClients]       = useState([]);
+  const [isLoading, setIsLoading]   = useState(true);
+  const [showModal, setShowModal]   = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isEditing, setIsEditing]   = useState(false);
+  const [currentClient, setCurrentClient] = useState(null);
+  const [formData, setFormData]     = useState(emptyForm);
+  const [search, setSearch]         = useState("");
 
   const baseUrl = import.meta.env.VITE_BASE_URL;
-
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
 
   useEffect(() => {
-    const init = async () => {
-      try {
-        const data = await verifyToken(); // Ensure user is verified
-        setUser(data);
-      } catch (e) {
-        console.log("Error verifying token or fetching user:", e);
-        navigate("/login");
-      }
-    };
-    init();
+    verifyToken().then(setUser).catch(() => {});
   }, []);
 
   useEffect(() => {
-    const fetchRolePermissions = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/roles/${user.role}`, {
-          method: "GET",
-          credentials: "include",
-        });
-        const data = await response.json();
-        setRoleData(data);
-      } catch (e) {
-        console.log("Error fetching role permissions:", e);
-      }
-    };
-
-    fetchRolePermissions();
+    if (!user?.role) return;
+    fetch(`${baseUrl}/roles/${user.role}`, {credentials: "include"})
+      .then((r) => r.json())
+      .then(setRoleData)
+      .catch(() => {});
   }, [user]);
 
-  // Fetch clients from the server
-  const fetchClients = async () => {
-    try {
-      const response = await fetch(`${baseUrl}/clients`, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setClients(data);
-      } else {
-        console.error("Failed to fetch clients:", response.statusText);
-      }
-    } catch (e) {
-      console.error("Error fetching clients:", e);
-    }
-  };
-
   useEffect(() => {
-    fetchClients(); // Fetch clients on component mount
+    fetch(`${baseUrl}/clients`, {credentials: "include"})
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => { setClients(data); setIsLoading(false); })
+      .catch(() => setIsLoading(false));
   }, []);
 
-  // Handle client deletion
-  const handleDelete = async (id) => {
-    fetchClients();
-    try {
-      const response = await fetch(`${baseUrl}/clients/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (response.ok) {
-        // Fetch updated client list after deletion
-        await fetchClients();
-      } else {
-        console.error("Failed to delete client:", response.statusText);
-      }
-    } catch (e) {
-      console.error("Error deleting client:", e);
-    }
-  };
+  const filteredClients = useMemo(() => {
+    const q = search.toLowerCase();
+    if (!q) return clients;
+    return clients.filter((c) =>
+      (c.razon_social || "").toLowerCase().includes(q) ||
+      (c.RFC || "").toLowerCase().includes(q) ||
+      (c.ciudad || "").toLowerCase().includes(q) ||
+      (c.contacto?.nombres || "").toLowerCase().includes(q) ||
+      (c.contacto?.apellidos || "").toLowerCase().includes(q) ||
+      (c.contacto?.email || "").toLowerCase().includes(q)
+    );
+  }, [clients, search]);
 
-  // Toggle modal visibility
-  const handleModalToggle = async () => {
-    setShowModal(!showModal);
-    if (showModal) {
-      // Reset the form when closing the modal
-      fetchClients();
-      setFormData({
-        alcaldia: "",
-        calle: "",
-        ciudad: "",
-        clave_pais: "",
-        codigo_postal: "",
-        colonia: "",
-        num_ext: "",
-        num_int: "",
-        razon_social: "",
-        RFC: "",
-        contacto: {
-          nombres: "",
-          apellidos: "",
-          telefono: "",
-          email: "",
-          pais: "",
-        },
-      });
-
-      setIsEditing(false);
-      setCurrentClient(null);
-      // Fetch updated client list after closing the modal
-    }
-  };
-
-  // Prepare form data for editing
-  const handleEdit = (client) => {
-    setCurrentClient(client);
-    setIsEditing(true);
-    setFormData({
-      ...client,
-      contacto: client.contacto || {
-        nombres: "",
-        apellidos: "",
-        telefono: "",
-        email: "",
-        pais: "",
-      },
-    });
+  const openCreate = () => {
+    setIsEditing(false);
+    setCurrentClient(null);
+    setFormData(emptyForm);
     setShowModal(true);
   };
 
-  // Handle form input changes
+  const openEdit = (client) => {
+    setIsEditing(true);
+    setCurrentClient(client);
+    setFormData({...client, contacto: {...emptyContact, ...client.contacto}});
+    setShowModal(true);
+  };
+
+  const openDelete = (client) => {
+    setCurrentClient(client);
+    setShowDeleteModal(true);
+  };
+
+  const closeModal = () => {
+    setShowModal(false);
+    setCurrentClient(null);
+  };
+
   const handleChange = (e) => {
     const {id, value} = e.target;
-    if (id.startsWith("contacto_")) {
-      setFormData((prevData) => ({
-        ...prevData,
-        contacto: {
-          ...prevData.contacto,
-          [id.replace("contacto_", "")]: value,
-        },
-      }));
+    if (id.startsWith("c_")) {
+      setFormData((p) => ({...p, contacto: {...p.contacto, [id.slice(2)]: value}}));
     } else {
-      setFormData((prevData) => ({
-        ...prevData,
-        [id]: value,
-      }));
+      setFormData((p) => ({...p, [id]: value}));
     }
   };
 
-  // Handle form submission
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const excludeFields = ["_id", "createdAt", "updatedAt", "contacto.email", "contacto.telefono"];
+    const payload = convertToUpperCase(formData, excludeFields);
+    const method = isEditing ? "PUT" : "POST";
+    const url = isEditing ? `${baseUrl}/clients/${currentClient._id}` : `${baseUrl}/clients`;
     try {
-      const method = isEditing ? "PUT" : "POST"; // Determine method based on edit mode
-      const url = isEditing ? `${baseUrl}/clients/${currentClient._id}` : `${baseUrl}/clients`;
-
-      // Convert text fields to uppercase before sending
-      // Exclude certain fields that should remain as-is (emails, phones, etc.)
-      const excludeFields = ['_id', 'createdAt', 'updatedAt', 'contacto.email', 'contacto.telefono'];
-      const uppercaseFormData = convertToUpperCase(formData, excludeFields);
-
-      const response = await fetch(url, {
-        method: method,
+      const res = await fetch(url, {
+        method, credentials: "include",
         headers: {"Content-Type": "application/json"},
-        credentials: "include",
-        body: JSON.stringify(uppercaseFormData),
+        body: JSON.stringify(payload),
       });
-
-      if (response.ok) {
-        const result = await response.json();
-        if (isEditing) {
-          setClients((prevClients) =>
-            prevClients.map((client) => (client._id === result._id ? result : client))
-          );
-        } else {
-          setClients((prevClients) => [...prevClients, result]);
-        }
-        handleModalToggle(); // Close the modal and refresh the list
-      } else {
-        const errorData = await response.json();
-        console.error("Failed to save client:", errorData.message);
-      }
+      if (!res.ok) return;
+      const result = await res.json();
+      setClients((prev) =>
+        isEditing ? prev.map((c) => (c._id === result._id ? result : c)) : [...prev, result]
+      );
+      closeModal();
     } catch (e) {
-      console.error("Error saving client:", e);
+      console.error(e);
     }
   };
 
+  const handleConfirmDelete = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${baseUrl}/clients/${currentClient._id}`, {method: "DELETE", credentials: "include"});
+      if (res.ok) {
+        setClients((prev) => prev.filter((c) => c._id !== currentClient._id));
+        setShowDeleteModal(false);
+        setCurrentClient(null);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const hasActiveFilters = !!search;
+
+  const clientFields = [
+    {id: "razon_social", label: "Razón Social", required: true},
+    {id: "RFC", label: "RFC"},
+    {id: "calle", label: "Calle"},
+    {id: "num_ext", label: "Núm. Ext."},
+    {id: "num_int", label: "Núm. Int."},
+    {id: "colonia", label: "Colonia"},
+    {id: "alcaldia", label: "Alcaldía"},
+    {id: "ciudad", label: "Ciudad"},
+    {id: "codigo_postal", label: "Código Postal"},
+    {id: "clave_pais", label: "Clave País"},
+  ];
+
+  const contactFields = [
+    {id: "c_nombres", label: "Nombres", required: true},
+    {id: "c_apellidos", label: "Apellidos", required: true},
+    {id: "c_email", label: "Email", type: "email", required: true},
+    {id: "c_telefono", label: "Teléfono"},
+    {id: "c_pais", label: "País"},
+  ];
+
+  const getFieldValue = (id) =>
+    id.startsWith("c_") ? (formData.contacto[id.slice(2)] || "") : (formData[id] || "");
+
   return (
-    <section id="clientsPage">
-      <div className="w-100 d-flex mt-0">
-        <div className="sidebar-wrapper">
-          <Sidebar />
-        </div>
+    <section id="clientsPage" className="settings-page">
+      <div className="w-100 d-flex h-100 mt-0">
+        <div className="sidebar-wrapper"><Sidebar /></div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
           <PageHeader
             title="Catálogos - Clientes"
-            onToggleSidebar={() => setIsMobileSidebarOpen(true)}>
+            count={filteredClients.length}
+            onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={() => setSearch("")}
+            filters={
+              <FilterBar>
+                <div>
+                  <span className="pselect__label">Buscar</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-search pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Razón social, RFC, ciudad, contacto…"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </FilterBar>
+            }
+          >
             {roleData?.clientes?.create && (
-              <button className="new-btn" onClick={() => setShowModal(true)}>
+              <button className="new-btn" onClick={openCreate}>
                 <i className="fa fa-plus"></i>Crear
               </button>
             )}
           </PageHeader>
 
-          {roleData?.clientes?.read && (
-            <div className="mx-3 my-4">
-              <div className="col">
-                {clients.map((client) => (
-                  <div className="col mb-4" key={client._id}>
-                    <ClientCard
-                      client={client}
-                      onDelete={() => handleDelete(client._id)}
-                      onEdit={() => handleEdit(client)}
-                    />
+          <div className="cc-shell">
+            {isLoading ? (
+              <div className="cl-list">
+                {Array.from({length: 6}).map((_, i) => (
+                  <div key={i} className="cl-card cl-card--skeleton">
+                    <div className="cl-card__header">
+                      <div className="cl-card__header-left">
+                        <div className="cc-skeleton cc-skeleton--line" style={{width: 36, height: 20, flexShrink: 0}}></div>
+                        <div style={{display: "flex", flexDirection: "column", gap: 6}}>
+                          <div className="cc-skeleton cc-skeleton--line" style={{width: `${140 + (i * 23) % 80}px`}}></div>
+                          <div className="cc-skeleton cc-skeleton--line" style={{width: 72, height: 10}}></div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-
-          {showModal && (
-            <ModalTemplate
-              show
-              title={isEditing ? "Editar Cliente" : "Crear Nuevo Cliente"}
-              onClose={handleModalToggle}
-              onSubmit={handleSubmit}>
-              <div style={{maxHeight: "60vh", overflowY: "auto", paddingRight: "6px"}}>
-                {/* Regular client fields */}
-                <div className="mb-3">
-                  <label htmlFor="razon_social" className="form-label">
-                    Razón Social
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="razon_social"
-                    value={formData.razon_social}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="RFC" className="form-label">
-                    RFC
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="RFC"
-                    value={formData.RFC}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="calle" className="form-label">
-                    Calle
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="calle"
-                    value={formData.calle}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="num_ext" className="form-label">
-                    Número Ext.
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="num_ext"
-                    value={formData.num_ext}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="num_int" className="form-label">
-                    Número Int.
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="num_int"
-                    value={formData.num_int}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="colonia" className="form-label">
-                    Colonia
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="colonia"
-                    value={formData.colonia}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="alcaldia" className="form-label">
-                    Alcaldía
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="alcaldia"
-                    value={formData.alcaldia}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="ciudad" className="form-label">
-                    Ciudad
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="ciudad"
-                    value={formData.ciudad}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="codigo_postal" className="form-label">
-                    Código Postal
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="codigo_postal"
-                    value={formData.codigo_postal}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="clave_pais" className="form-label">
-                    Clave País
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="clave_pais"
-                    value={formData.clave_pais}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                <hr />
-                <p className="fw-semibold">Contacto:</p>
-                <hr />
-
-                <div className="mb-3">
-                  <label htmlFor="contacto_nombres" className="form-label">
-                    Nombres
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="contacto_nombres"
-                    value={formData.contacto.nombres}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="contacto_apellidos" className="form-label">
-                    Apellidos
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="contacto_apellidos"
-                    value={formData.contacto.apellidos}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="contacto_email" className="form-label">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    className="form-control"
-                    id="contacto_email"
-                    value={formData.contacto.email}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="contacto_telefono" className="form-label">
-                    Teléfono
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="contacto_telefono"
-                    value={formData.contacto.telefono}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
-
-                <div className="mb-3">
-                  <label htmlFor="contacto_pais" className="form-label">
-                    País
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    id="contacto_pais"
-                    value={formData.contacto.pais}
-                    onChange={handleChange}
-                    required
-                  />
-                </div>
+            ) : filteredClients.length === 0 ? (
+              <div className="cc-empty">
+                <i className="fa fa-building cc-empty__icon"></i>
+                <p className="cc-empty__text">{search ? "Sin resultados para tu búsqueda." : "No hay clientes registrados."}</p>
               </div>
-            </ModalTemplate>
-          )}
+            ) : (
+              <div className="cl-list">
+                {filteredClients.map((client) => (
+                  <ClientCard
+                    key={client._id}
+                    client={client}
+                    roleData={roleData}
+                    onEdit={openEdit}
+                    onDelete={openDelete}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Create / Edit modal */}
+      {showModal && (
+        <ModalTemplate
+          show
+          title={isEditing ? "Editar Cliente" : "Nuevo Cliente"}
+          onClose={closeModal}
+          onSubmit={handleSubmit}>
+          <div className="cc-modal-body">
+            <p className="cc-modal-section-label">Datos del cliente</p>
+            <div className="cc-modal-grid">
+              {clientFields.map(({id, label, required}) => (
+                <Field key={id} id={id} label={label} required={required} value={getFieldValue(id)} onChange={handleChange} />
+              ))}
+            </div>
+            <p className="cc-modal-section-label" style={{marginTop: 20}}>Contacto</p>
+            <div className="cc-modal-grid">
+              {contactFields.map(({id, label, type, required}) => (
+                <Field key={id} id={id} label={label} type={type} required={required} value={getFieldValue(id)} onChange={handleChange} />
+              ))}
+            </div>
+          </div>
+        </ModalTemplate>
+      )}
+
+      {/* Delete modal */}
+      {showDeleteModal && currentClient && (
+        <ModalTemplate
+          show
+          title="Eliminar Cliente"
+          onClose={() => { setShowDeleteModal(false); setCurrentClient(null); }}
+          onSubmit={handleConfirmDelete}
+          submitText="Eliminar"
+          submitClass="btn btn-danger">
+          <p>¿Confirmas que deseas eliminar a <strong>{currentClient.razon_social}</strong>? Esta acción no se puede deshacer.</p>
+        </ModalTemplate>
+      )}
     </section>
   );
 };

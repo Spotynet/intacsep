@@ -5,11 +5,13 @@ import {useAuth} from "../../context/AuthContext";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
 
 const UsersPage = () => {
   const [users, setUsers] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [roles, setRoles] = useState([]);
   const [editingUserId, setEditingUserId] = useState(null);
   const [formData, setFormData] = useState({
@@ -26,7 +28,9 @@ const UsersPage = () => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete] = useState("");
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
@@ -78,6 +82,8 @@ const UsersPage = () => {
         }
       } catch (e) {
         console.error("Error fetching users:", e);
+      } finally {
+        setIsLoading(false);
       }
     };
 
@@ -149,6 +155,7 @@ const UsersPage = () => {
   };
 
   const clearFilters = () => setFilters({email: "", firstName: "", lastName: "", role: ""});
+  const hasActiveFilters = !!(filters.email || filters.firstName || filters.lastName || filters.role);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -211,7 +218,7 @@ const UsersPage = () => {
   const columns = [
     {
       key: "index",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (_row, {rowIndex, currentPage, itemsPerPage}) =>
@@ -236,14 +243,14 @@ const UsersPage = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.usuarios?.update,
       onClick: (row) => handleEdit(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.usuarios?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -260,42 +267,40 @@ const UsersPage = () => {
           <PageHeader
             title="Sistema - Usuarios"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               <FilterBar onClear={clearFilters}>
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por email..."
-                  name="email"
-                  value={filters.email}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por nombre..."
-                  name="firstName"
-                  value={filters.firstName}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por apellido..."
-                  name="lastName"
-                  value={filters.lastName}
-                  onChange={handleFilterChange}
-                />
-                <select
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  name="role"
-                  value={filters.role}
-                  onChange={handleFilterChange}>
-                  <option value="">Todos los roles</option>
-                  {roles.map((role) => (
-                    <option key={role._id} value={role.name}>{role.name}</option>
-                  ))}
-                </select>
+                <div>
+                  <span className="pselect__label">Email</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-envelope pdt-field__icon"></i>
+                    <input type="text" className="pdt-field__input" placeholder="Buscar..." name="email" value={filters.email} onChange={handleFilterChange} />
+                  </div>
+                </div>
+                <div>
+                  <span className="pselect__label">Nombre</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-user pdt-field__icon"></i>
+                    <input type="text" className="pdt-field__input" placeholder="Buscar..." name="firstName" value={filters.firstName} onChange={handleFilterChange} />
+                  </div>
+                </div>
+                <div>
+                  <span className="pselect__label">Apellido</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-user pdt-field__icon"></i>
+                    <input type="text" className="pdt-field__input" placeholder="Buscar..." name="lastName" value={filters.lastName} onChange={handleFilterChange} />
+                  </div>
+                </div>
+                <div>
+                  <Select
+                    label="Rol"
+                    placeholder="Todos los roles"
+                    value={filters.role || null}
+                    onChange={(v) => handleFilterChange({target: {name: "role", value: v ?? ""}})}
+                    options={roles.map((r) => ({value: r.name, label: r.name}))}
+                  />
+                </div>
               </FilterBar>
             }
           >
@@ -306,17 +311,17 @@ const UsersPage = () => {
             )}
           </PageHeader>
 
-          {roleData?.usuarios?.read && (
-            <div className="settings-content mt-4">
+                      <div className="bits-table-shell">
               {/* Tabla */}
                 <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                   data={filteredUsers}
                   columns={columns}
                   actions={actions}
                   emptyMessage="No se encontraron usuarios que coincidan con los filtros."
                 />
               </div>
-          )}
         </div>
       </div>
 

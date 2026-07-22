@@ -4,12 +4,14 @@ import PageHeader from "../PageHeader";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
 
 const EventsPage = () => {
   const [events, setEvents] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [formData, setFormData] = useState({evento: "", categoria: "", calificacion: ""});
   const [editEvent, setEditEvent] = useState(null);
   const baseUrl = import.meta.env.VITE_BASE_URL;
@@ -21,7 +23,9 @@ const EventsPage = () => {
   const [filters, setFilters] = useState({evento: "", categoria: "", calificacion: ""});
 
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
 
@@ -69,6 +73,8 @@ const EventsPage = () => {
         }
       } catch (e) {
         console.error("Error fetching events:", e);
+      } finally {
+        setIsLoading(false);
       }
     };
     fetchEvents();
@@ -98,6 +104,7 @@ const EventsPage = () => {
   };
 
   const clearFilters = () => setFilters({evento: "", categoria: "", calificacion: ""});
+  const hasActiveFilters = !!(filters.evento || filters.categoria || filters.calificacion);
 
   const handleCreate = async (e) => {
     e.preventDefault();
@@ -176,7 +183,7 @@ const EventsPage = () => {
   const columns = [
     {
       key: "numericId",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (row) => (row.numericId ? row.numericId.toString().padStart(4, "0") : "N/A"),
@@ -189,14 +196,14 @@ const EventsPage = () => {
   const actions = [
     {
       icon: "fa fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.eventos?.update,
       onClick: (row) => handleEditClick(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.eventos?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -234,33 +241,32 @@ const EventsPage = () => {
           <PageHeader
             title="Catálogos - Eventos"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.eventos?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por evento..."
-                    name="evento"
-                    value={filters.evento}
-                    onChange={handleFilterChange}
-                  />
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por categoría..."
-                    name="categoria"
-                    value={filters.categoria}
-                    onChange={handleFilterChange}
-                  />
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por calificación..."
-                    name="calificacion"
-                    value={filters.calificacion}
-                    onChange={handleFilterChange}
-                  />
+                  <div>
+                    <span className="pselect__label">Evento</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="evento" value={filters.evento} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <span className="pselect__label">Categoría</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-tag pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="categoria" value={filters.categoria} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <span className="pselect__label">Calificación</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-star pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="calificacion" value={filters.calificacion} onChange={handleFilterChange} />
+                    </div>
+                  </div>
                 </FilterBar>
               )
             }
@@ -272,16 +278,16 @@ const EventsPage = () => {
             )}
           </PageHeader>
 
-          {roleData?.eventos?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredEvents}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron eventos que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

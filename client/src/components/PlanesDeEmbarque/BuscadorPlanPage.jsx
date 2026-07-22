@@ -3,6 +3,7 @@ import {useNavigate} from "react-router-dom";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
 import ModalTemplate from "../ModalTemplate";
+import CellBadge from "../CellBadge";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 
@@ -135,7 +136,7 @@ const BuscadorPlanPage = () => {
 
   return (
     <section id="buscadorPlanPage" className="settings-page">
-      <div className="w-100 d-flex">
+      <div className="w-100 d-flex h-100 mt-0">
         <div className="sidebar-wrapper">
           <Sidebar />
         </div>
@@ -149,12 +150,13 @@ const BuscadorPlanPage = () => {
 
             {/* ── Search box ── */}
             <form className="buscador-search-box" onSubmit={handleSearch}>
+              <p className="buscador-search-label">Carrier Move</p>
               <div className="buscador-search-inner">
                 <i className="fa fa-search buscador-search-icon"></i>
                 <input
                   type="text"
                   className="buscador-search-input"
-                  placeholder="Ingresa el Carrier Move…"
+                  placeholder="Ej. CM-20240512-001"
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value);
@@ -172,16 +174,24 @@ const BuscadorPlanPage = () => {
                   disabled={isSearching || !query.trim()}>
                   {isSearching
                     ? <span className="spinner-border spinner-border-sm" />
-                    : "Buscar"}
+                    : <><i className="fa fa-search me-1"></i>Buscar</>}
                 </button>
               </div>
             </form>
 
+            {/* ── Idle hint ── */}
+            {!searched && !searchError && !started && (
+              <div className="buscador-idle">
+                <i className="fa-solid fa-barcode buscador-idle-icon"></i>
+                <p className="buscador-idle-text">Ingresa un Carrier Move para buscar el plan de embarque</p>
+              </div>
+            )}
+
             {/* ── Search error ── */}
             {searchError && (
-              <div className="alert alert-danger d-flex align-items-center gap-2 mt-4">
-                <i className="fas fa-exclamation-circle"></i>
-                <span>{searchError}</span>
+              <div className="buscador-error-state">
+                <i className="fa-solid fa-triangle-exclamation buscador-error-icon"></i>
+                <p className="buscador-error-text">{searchError}</p>
               </div>
             )}
 
@@ -196,14 +206,14 @@ const BuscadorPlanPage = () => {
                   Bitácora <strong>#{started.bitacora_num_id}</strong> creada.
                 </p>
                 <button
-                  className="btn btn-outline-secondary"
+                  className="buscador-new-search-btn"
                   onClick={() => {
                     setQuery("");
                     setPlan(null);
                     setSearched(false);
                     setStarted(null);
                   }}>
-                  Nueva búsqueda
+                  <i className="fa fa-search me-1"></i>Nueva búsqueda
                 </button>
               </div>
             )}
@@ -213,15 +223,13 @@ const BuscadorPlanPage = () => {
               plan ? (
                 <div
                   className={`buscador-result-card ${isPlanUsed ? "buscador-result-card--used" : ""}`}
-                  onClick={() => {
-                    if (!isPlanUsed) openModal();
-                  }}>
+                  onClick={() => { if (!isPlanUsed) openModal(); }}>
                   <div className="buscador-result-header">
                     <span className="buscador-carrier-badge">
                       <i className="fa-solid fa-barcode me-2"></i>
                       {plan.carrierMove}
                     </span>
-                    <span className="badge bg-primary">{plan.tipoViaje}</span>
+                    <CellBadge label={plan.tipoViaje} variant="blue" />
                   </div>
 
                   <div className="buscador-result-body">
@@ -259,12 +267,10 @@ const BuscadorPlanPage = () => {
 
                   <div className="buscador-result-footer">
                     {isPlanUsed ? (
-                      <div className="buscador-used-hint">
-                        <span className="buscador-used-hint__text">
-                          <i className="fa-solid fa-circle-info me-2"></i>
-                          Ya se usó en una bitácora
-                        </span>
-                      </div>
+                      <span className="buscador-used-hint__text">
+                        <i className="fa-solid fa-circle-info me-2"></i>
+                        Ya se usó en una bitácora
+                      </span>
                     ) : (
                       <span className="buscador-tap-hint">
                         <i className="fa-solid fa-hand-pointer me-2"></i>
@@ -276,12 +282,8 @@ const BuscadorPlanPage = () => {
               ) : (
                 <div className="buscador-not-found">
                   <i className="fa-solid fa-magnifying-glass-minus buscador-not-found-icon"></i>
-                  <p className="buscador-not-found-text">
-                    No se encontró ningún plan con ese Carrier Move.
-                  </p>
-                  <p className="buscador-not-found-sub">
-                    Verifica que el número sea exacto y vuelve a intentarlo.
-                  </p>
+                  <p className="buscador-not-found-text">No se encontró ningún plan con ese Carrier Move.</p>
+                  <p className="buscador-not-found-sub">Verifica que el número sea exacto y vuelve a intentarlo.</p>
                 </div>
               )
             )}
@@ -337,56 +339,33 @@ const BuscadorPlanPage = () => {
           {/* Transporte data fields */}
           {(planPerms.linea_transporte || planPerms.operador || planPerms.telefono) && (
             <>
-              <p className="fw-semibold mb-2" style={{fontSize: "0.9rem"}}>
-                Datos del transporte <span className="text-danger">*</span>
-              </p>
-              <div className="d-flex flex-column gap-3">
+              <p className="buscador-modal-section-label">Datos del transporte</p>
+              <div className="d-flex flex-column gap-2">
                 {planPerms.linea_transporte && (
                   <div>
-                    <label className="form-label fw-semibold" style={{fontSize: "0.85rem"}}>
-                      Línea de Transporte <span className="text-danger">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      name="lineaTransporte"
-                      value={transporteData.lineaTransporte}
-                      onChange={handleFieldChange}
-                      placeholder="Ej. TRANSPORTES XYZ"
-                      autoComplete="off"
-                    />
+                    <span className="pselect__label">Línea de Transporte <span className="text-danger">*</span></span>
+                    <div className="pdt-field">
+                      <i className="fa fa-truck pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" name="lineaTransporte" value={transporteData.lineaTransporte} onChange={handleFieldChange} placeholder="Ej. TRANSPORTES XYZ" autoComplete="off" />
+                    </div>
                   </div>
                 )}
                 {planPerms.operador && (
                   <div>
-                    <label className="form-label fw-semibold" style={{fontSize: "0.85rem"}}>
-                      Operador <span className="text-danger">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      name="operador"
-                      value={transporteData.operador}
-                      onChange={handleFieldChange}
-                      placeholder="Nombre del operador"
-                      autoComplete="off"
-                    />
+                    <span className="pselect__label">Operador <span className="text-danger">*</span></span>
+                    <div className="pdt-field">
+                      <i className="fa fa-user pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" name="operador" value={transporteData.operador} onChange={handleFieldChange} placeholder="Nombre del operador" autoComplete="off" />
+                    </div>
                   </div>
                 )}
                 {planPerms.telefono && (
                   <div>
-                    <label className="form-label fw-semibold" style={{fontSize: "0.85rem"}}>
-                      Teléfono <span className="text-danger">*</span>
-                    </label>
-                    <input
-                      type="tel"
-                      className="form-control"
-                      name="telefono"
-                      value={transporteData.telefono}
-                      onChange={handleFieldChange}
-                      placeholder="Ej. 55 1234 5678"
-                      autoComplete="off"
-                    />
+                    <span className="pselect__label">Teléfono <span className="text-danger">*</span></span>
+                    <div className="pdt-field">
+                      <i className="fa fa-phone pdt-field__icon"></i>
+                      <input type="tel" className="pdt-field__input" name="telefono" value={transporteData.telefono} onChange={handleFieldChange} placeholder="Ej. 55 1234 5678" autoComplete="off" />
+                    </div>
                   </div>
                 )}
               </div>

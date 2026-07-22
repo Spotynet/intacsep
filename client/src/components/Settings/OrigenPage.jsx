@@ -4,6 +4,7 @@ import PageHeader from "../PageHeader";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {convertToUpperCase} from "../../utils/utils";
@@ -45,6 +46,7 @@ const estados = [
 
 const OrigenPage = () => {
   const [origenes, setOrigenes] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [clients, setClients] = useState([]);
   const [formData, setFormData] = useState({estado: "", municipio: "", nombre: ""});
   const [currentOrigen, setCurrentOrigen] = useState(null);
@@ -57,7 +59,9 @@ const OrigenPage = () => {
   const [filters, setFilters] = useState({nombre: "", estado: "", cliente: ""});
 
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
 
   useEffect(() => {
@@ -90,8 +94,8 @@ const OrigenPage = () => {
     const fetchOrigenes = async () => {
       try {
         const response = await fetch(`${baseUrl}/origenes`, {method: "GET", credentials: "include"});
-        if (response.ok) setOrigenes(await response.json());
-        else console.error("Failed to fetch origenes:", response.statusText);
+        if (response.ok) { setOrigenes(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching origenes:", e);
       }
@@ -103,8 +107,8 @@ const OrigenPage = () => {
     const fetchClients = async () => {
       try {
         const response = await fetch(`${baseUrl}/clients`, {method: "GET", credentials: "include"});
-        if (response.ok) setClients(await response.json());
-        else console.error("Failed to fetch clients:", response.statusText);
+        if (response.ok) { setClients(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching clients:", e);
       }
@@ -130,6 +134,7 @@ const OrigenPage = () => {
   };
 
   const clearFilters = () => setFilters({nombre: "", estado: "", cliente: ""});
+  const hasActiveFilters = !!(filters.nombre || filters.estado || filters.cliente);
 
   const handleDelete = (id) => {setIdToDelete(id); setShowDeleteModal(true);};
 
@@ -208,7 +213,7 @@ const OrigenPage = () => {
   const columns = [
     {
       key: "numericId",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (row) => (row.numericId ? row.numericId.toString().padStart(4, "0") : "N/A"),
@@ -221,14 +226,14 @@ const OrigenPage = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.origenes?.update,
       onClick: (row) => handleEdit(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.origenes?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -272,37 +277,36 @@ const OrigenPage = () => {
           <PageHeader
             title="Catálogos - Orígenes"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.origenes?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por nombre..."
-                    name="nombre"
-                    value={filters.nombre}
-                    onChange={handleFilterChange}
-                  />
-                  <select
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    name="estado"
-                    value={filters.estado}
-                    onChange={handleFilterChange}>
-                    <option value="">Todos los estados</option>
-                    {estados.map((e) => (
-                      <option key={e.clave} value={e.nombre}>{e.nombre}</option>
-                    ))}
-                  </select>
-                  <select
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    name="cliente"
-                    value={filters.cliente}
-                    onChange={handleFilterChange}>
-                    <option value="">Todos los clientes</option>
-                    {clients.map((c) => (
-                      <option key={c._id} value={c.razon_social}>{c.razon_social}</option>
-                    ))}
-                  </select>
+                  <div>
+                    <span className="pselect__label">Nombre</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="nombre" value={filters.nombre} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <Select
+                      label="Estado"
+                      placeholder="Todos los estados"
+                      value={filters.estado || null}
+                      onChange={(v) => handleFilterChange({target: {name: "estado", value: v ?? ""}})}
+                      options={estados.map((e) => ({value: e.nombre, label: e.nombre}))}
+                    />
+                  </div>
+                  <div>
+                    <Select
+                      label="Cliente"
+                      placeholder="Todos los clientes"
+                      value={filters.cliente || null}
+                      onChange={(v) => handleFilterChange({target: {name: "cliente", value: v ?? ""}})}
+                      options={clients.map((c) => ({value: c.razon_social, label: c.razon_social}))}
+                    />
+                  </div>
                 </FilterBar>
               )
             }
@@ -314,16 +318,16 @@ const OrigenPage = () => {
             )}
           </PageHeader>
 
-          {roleData?.origenes?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredOrigenes}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron orígenes que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

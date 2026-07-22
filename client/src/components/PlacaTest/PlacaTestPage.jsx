@@ -5,6 +5,8 @@ import PageHeader from "../PageHeader";
 import FilterBar from "../FilterBar";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
+import CellBadge from "../CellBadge";
+import {Select} from "../Select";
 import { useAuth } from "../../context/AuthContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { fetchLineasTransporte } from "../../utils/api";
@@ -44,22 +46,21 @@ const formatDate = (iso) => {
 };
 
 const ConfidenceBadge = ({ value }) => {
-  if (value == null) return <span className="badge bg-secondary">N/A</span>;
-  let cls = "bg-danger"; let label = "Baja";
-  if (value >= 85) { cls = "bg-success"; label = "Alta"; }
-  else if (value >= 60) { cls = "bg-warning text-dark"; label = "Media"; }
-  return <span className={`badge ${cls}`}>{label} ({value.toFixed(1)}%)</span>;
+  if (value == null) return <CellBadge label="N/A" variant="gray" />;
+  if (value >= 85) return <CellBadge label={`Alta (${value.toFixed(1)}%)`} variant="green" />;
+  if (value >= 60) return <CellBadge label={`Media (${value.toFixed(1)}%)`} variant="yellow" />;
+  return <CellBadge label={`Baja (${value.toFixed(1)}%)`} variant="red" />;
 };
 
 const SwapBadge = ({ record }) => {
   if (record.hubo_cambio_remolque === null || record.hubo_cambio_remolque === undefined) {
     return record.placa_remolque_entrada
-      ? <span className="badge bg-secondary">En patio</span>
+      ? <CellBadge label="En patio" variant="blue" />
       : <span className="text-muted small">—</span>;
   }
   if (record.hubo_cambio_remolque === false)
-    return <span className="badge bg-success">Salió igual</span>;
-  return <span className="badge bg-warning text-dark">Cambio remolque</span>;
+    return <CellBadge label="Salió igual" variant="green" />;
+  return <CellBadge label="Cambio remolque" variant="yellow" />;
 };
 
 const PlacaTestPage = () => {
@@ -115,9 +116,11 @@ const PlacaTestPage = () => {
   const [error, setError] = useState("");
   const [savedRecords, setSavedRecords] = useState([]);
   const [remolqueRecords, setRemolqueRecords] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [filters, setFilters] = useState({ placa: "", linea: "", status: "", fechaDesde: "", fechaHasta: "" });
   const handleFilterChange = (e) => setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
   const clearFilters = () => setFilters({ placa: "", linea: "", status: "", fechaDesde: "", fechaHasta: "" });
+  const hasActiveFilters = !!(filters.placa || filters.linea || filters.status || filters.fechaDesde || filters.fechaHasta);
   const [showModal, setShowModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete] = useState(null);
@@ -193,6 +196,8 @@ const PlacaTestPage = () => {
       }
     } catch (e) {
       console.error("Error loading records:", e);
+    } finally {
+      setIsLoading(false);
     }
   }, [roleData]);
 
@@ -455,125 +460,98 @@ const PlacaTestPage = () => {
   const tractoColumns = [
     { key: "placa", header: "Placa", className: "fw-bold text-uppercase" },
     { key: "linea_transporte", header: "Línea", render: (row) => row.linea_transporte || <span className="text-muted">—</span> },
-    { key: "remolque_entrada", header: "Remolque entrada", render: (row) => row.placa_remolque_entrada ? <span className="dt-cross-link" onClick={() => navigateToRemolque(row.placa_remolque_entrada)}>{row.placa_remolque_entrada}</span> : <span className="text-muted">—</span> },
-    { key: "remolque_salida", header: "Remolque salida", render: (row) => row.fecha_hora_salida ? (row.placa_remolque_salida ? <span className="dt-cross-link" onClick={() => navigateToRemolque(row.placa_remolque_salida)}>{row.placa_remolque_salida}</span> : <span className="text-muted">Sin remolque</span>) : <span className="text-muted">—</span> },
+    { key: "remolque_entrada", header: "Remolque entrada", render: (row) => row.placa_remolque_entrada ? <CellBadge label={row.placa_remolque_entrada} variant="blue" onClick={() => navigateToRemolque(row.placa_remolque_entrada)} /> : <span className="text-muted">—</span> },
+    { key: "remolque_salida", header: "Remolque salida", render: (row) => row.fecha_hora_salida ? (row.placa_remolque_salida ? <CellBadge label={row.placa_remolque_salida} variant="blue" onClick={() => navigateToRemolque(row.placa_remolque_salida)} /> : <span className="text-muted">Sin remolque</span>) : <span className="text-muted">—</span> },
     { key: "fecha_hora_inicio", header: "Entrada", render: (row) => formatDate(row.fecha_hora_inicio) },
     {
       key: "fecha_hora_salida",
       header: "Salida",
       render: (row) => row.fecha_hora_salida
         ? formatDate(row.fecha_hora_salida)
-        : roleData?.control_patios?.update ? <button className="btn btn-sm btn-outline-warning" onClick={() => handleOpenModal(row)}>Marcar salida</button> : <span className="text-muted">—</span>,
+        : roleData?.control_patios?.update ? <button className="salida-btn" onClick={() => handleOpenModal(row)}><i className="fa fa-sign-out-alt"></i>Marcar salida</button> : <span className="text-muted">—</span>,
     },
-    { key: "status", header: "Estado", render: (row) => <span className={`badge ${row.status === "En patio" ? "bg-info" : "bg-success"}`}>{row.status}</span> },
+    { key: "status", header: "Estado", render: (row) => <CellBadge label={row.status} variant={row.status === "En patio" ? "blue" : "green"} /> },
     { key: "swap", header: "Cambio remolque", render: (row) => <SwapBadge record={row} /> },
+    {
+      key: "acciones", header: "Acciones", headerClassName: "text-end", width: "8%",
+      render: (row) => (
+        <div className="d-flex justify-content-end gap-2">
+          {roleData?.control_patios?.update && <button className="action-btn btn-primary" title="Editar" onClick={() => handleOpenModal(row, "edit")}><i className="fas fa-edit"></i></button>}
+          {roleData?.control_patios?.delete && <button className="action-btn btn-danger" title="Eliminar" onClick={() => deleteEntry(row._id, "tractor")}><i className="fas fa-trash"></i></button>}
+        </div>
+      ),
+    },
   ];
 
   const remolqueColumns = [
     { key: "placa", header: "Placa", className: "fw-bold text-uppercase" },
-    { key: "tracto_entrada", header: "Tracto entrada", render: (row) => row.tractor_entrada_placa ? <span className="dt-cross-link" onClick={() => navigateToTracto(row.tractor_entrada_placa)}>{row.tractor_entrada_placa}</span> : <span className="text-muted">—</span> },
-    { key: "tracto_salida", header: "Tracto salida", render: (row) => row.fecha_hora_salida ? (row.tractor_salida_placa ? <span className="dt-cross-link" onClick={() => navigateToTracto(row.tractor_salida_placa)}>{row.tractor_salida_placa}</span> : <span className="text-muted">—</span>) : <span className="text-muted">—</span> },
+    { key: "tracto_entrada", header: "Tracto entrada", render: (row) => row.tractor_entrada_placa ? <CellBadge label={row.tractor_entrada_placa} variant="blue" onClick={() => navigateToTracto(row.tractor_entrada_placa)} /> : <span className="text-muted">—</span> },
+    { key: "tracto_salida", header: "Tracto salida", render: (row) => row.fecha_hora_salida ? (row.tractor_salida_placa ? <CellBadge label={row.tractor_salida_placa} variant="blue" onClick={() => navigateToTracto(row.tractor_salida_placa)} /> : <span className="text-muted">—</span>) : <span className="text-muted">—</span> },
     { key: "fecha_hora_entrada", header: "Entrada", render: (row) => formatDate(row.fecha_hora_entrada) },
-    { key: "fecha_hora_salida", header: "Salida", render: (row) => row.fecha_hora_salida ? formatDate(row.fecha_hora_salida) : <span className="badge bg-secondary">En patio</span> },
-    { key: "status", header: "Estado", render: (row) => <span className={`badge ${row.status === "En patio" ? "bg-info" : "bg-success"}`}>{row.status}</span> },
-    { key: "cambio_tracto", header: "Cambio tracto", render: (row) => row.hubo_cambio_tractor === true ? <span className="badge bg-warning text-dark">Sí</span> : row.hubo_cambio_tractor === false ? <span className="badge bg-success">No</span> : <span className="text-muted small">—</span> },
-  ];
-
-  const tractoActions = [
-    { icon: "fas fa-edit", className: "btn btn-primary", title: "Editar", onClick: (row) => handleOpenModal(row, "edit"), show: roleData?.control_patios?.update },
-    { icon: "fas fa-trash", className: "btn btn-danger", title: "Eliminar", onClick: (row) => deleteEntry(row._id, "tractor"), show: roleData?.control_patios?.delete },
-  ];
-  const remolqueActions = [
-    { icon: "fas fa-trash", className: "btn btn-danger", title: "Eliminar", onClick: (row) => deleteEntry(row._id, "remolque"), show: roleData?.control_patios_remolques?.delete },
+    { key: "fecha_hora_salida", header: "Salida", render: (row) => row.fecha_hora_salida ? formatDate(row.fecha_hora_salida) : <CellBadge label="En patio" variant="blue" /> },
+    { key: "status", header: "Estado", render: (row) => <CellBadge label={row.status} variant={row.status === "En patio" ? "blue" : "green"} /> },
+    { key: "cambio_tracto", header: "Cambio tracto", render: (row) => row.hubo_cambio_tractor === true ? <CellBadge label="Sí" variant="yellow" /> : row.hubo_cambio_tractor === false ? <CellBadge label="No" variant="green" /> : <span className="text-muted small">—</span> },
+    {
+      key: "acciones", header: "Acciones", headerClassName: "text-end", width: "8%",
+      render: (row) => (
+        <div className="d-flex justify-content-end gap-2">
+          {roleData?.control_patios_remolques?.delete && <button className="action-btn btn-danger" title="Eliminar" onClick={() => deleteEntry(row._id, "remolque")}><i className="fas fa-trash"></i></button>}
+        </div>
+      ),
+    },
   ];
 
   return (
     <section id="placaTestPage" className="settings-page">
-      <style>{`
-        @media (max-width: 768px) {
-          .modal-dialog { margin: 0.5rem; }
-          .modal-content { border-radius: 12px; }
-          .btn { width: 100%; padding: 12px; margin-bottom: 5px; }
-        }
-        .remolque-choice-btn { border: 2px solid #dee2e6; border-radius: 10px; padding: 14px; cursor: pointer; transition: all 0.15s; background: #fff; }
-        .remolque-choice-btn.active { border-color: #0d6efd; background: #f0f6ff; }
-        .remolque-choice-btn:hover { border-color: #0d6efd; }
-        .patio-tab-bar {
-          display: flex; gap: 4px;
-          background: #f1f5f9; border-radius: 12px;
-          padding: 4px;
-          width: fit-content;
-        }
-        .patio-tab-btn {
-          display: flex; align-items: center; gap: 7px;
-          padding: 7px 18px; border-radius: 9px;
-          border: none; background: transparent;
-          font-size: 0.875rem; font-weight: 500; color: #64748b;
-          cursor: pointer; transition: all 0.15s; white-space: nowrap;
-        }
-        .patio-tab-btn.active {
-          background: #fff; color: #1e293b;
-          box-shadow: 0 1px 4px rgba(0,0,0,0.10);
-          font-weight: 600;
-        }
-        .patio-tab-btn:hover:not(.active) { background: rgba(255,255,255,0.6); color: #334155; }
-        .patio-tab-count {
-          font-size: 0.72rem; font-weight: 700; padding: 1px 7px;
-          border-radius: 20px; background: #e2e8f0; color: #475569; line-height: 1.6;
-        }
-        .patio-tab-btn.active .patio-tab-count { background: #e0e7ff; color: #4338ca; }
-      `}</style>
       <div className="w-100 d-flex h-100 mt-0">
         <div className="sidebar-wrapper"><Sidebar /></div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
           <PageHeader
             title="Control de patios"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
-              <FilterBar onClear={clearFilters}>
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar placa..."
-                  name="placa"
-                  value={filters.placa}
-                  onChange={handleFilterChange}
-                />
-                <select
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  name="linea"
-                  value={filters.linea}
-                  onChange={handleFilterChange}
-                >
-                  <option value="">Todas las líneas</option>
-                  {lineasTransporte.map(l => <option key={l._id} value={l.nombre}>{l.nombre}</option>)}
-                </select>
-                <select
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  name="status"
-                  value={filters.status}
-                  onChange={handleFilterChange}
-                >
-                  <option value="">Todos los estados</option>
-                  <option value="En patio">En patio</option>
-                  <option value="Salida">Salida</option>
-                </select>
-                <input
-                  type="date"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  name="fechaDesde"
-                  value={filters.fechaDesde}
-                  onChange={handleFilterChange}
-                  title="Fecha desde"
-                />
-                <input
-                  type="date"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  name="fechaHasta"
-                  value={filters.fechaHasta}
-                  onChange={handleFilterChange}
-                  title="Fecha hasta"
-                />
+              <FilterBar>
+                <div>
+                  <span className="pselect__label">Placa</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-search pdt-field__icon"></i>
+                    <input type="text" className="pdt-field__input" placeholder="Buscar..." name="placa" value={filters.placa} onChange={handleFilterChange} />
+                  </div>
+                </div>
+                <div>
+                  <Select
+                    label="Línea de transporte"
+                    placeholder="Todas las líneas"
+                    value={filters.linea || null}
+                    onChange={(v) => setFilters(p => ({...p, linea: v ?? ""}))}
+                    options={lineasTransporte.map(l => ({value: l.nombre, label: l.nombre}))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Estado"
+                    placeholder="Todos los estados"
+                    value={filters.status || null}
+                    onChange={(v) => setFilters(p => ({...p, status: v ?? ""}))}
+                    options={[{value: "En patio", label: "En patio"}, {value: "Salida", label: "Salida"}]}
+                  />
+                </div>
+                <div>
+                  <span className="pselect__label">Desde</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-calendar pdt-field__icon"></i>
+                    <input type="date" className="pdt-field__input" name="fechaDesde" value={filters.fechaDesde} onChange={handleFilterChange} />
+                  </div>
+                </div>
+                <div>
+                  <span className="pselect__label">Hasta</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-calendar pdt-field__icon"></i>
+                    <input type="date" className="pdt-field__input" name="fechaHasta" value={filters.fechaHasta} onChange={handleFilterChange} />
+                  </div>
+                </div>
               </FilterBar>
             }
           >
@@ -584,48 +562,48 @@ const PlacaTestPage = () => {
             )}
           </PageHeader>
 
-          <div className="settings-content">
-            <div className="d-flex align-items-center gap-3 mb-3 flex-wrap">
-              <div className="patio-tab-bar">
+          <div className="patio-shell">
+            <div className="patio-tab-bar">
+              <button
+                className={`patio-tab-btn ${activeTab === "tractos" ? "active" : ""}`}
+                onClick={() => { setActiveTab("tractos"); setHighlightedId(null); }}
+              >
+                <i className="fa fa-truck"></i>
+                Tractos
+                <span className="patio-tab-count">{tractosEnPatio} en patio</span>
+              </button>
+              {roleData?.control_patios_remolques?.read && (
                 <button
-                  className={`patio-tab-btn ${activeTab === "tractos" ? "active" : ""}`}
-                  onClick={() => { setActiveTab("tractos"); setHighlightedId(null); }}
+                  className={`patio-tab-btn ${activeTab === "remolques" ? "active" : ""}`}
+                  onClick={() => { setActiveTab("remolques"); setHighlightedId(null); }}
                 >
-                  <i className="fa fa-truck"></i>
-                  Tractos
-                  <span className="patio-tab-count">{tractosEnPatio} en patio</span>
+                  <i className="fa fa-trailer"></i>
+                  Remolques
+                  <span className="patio-tab-count">{remolqueRecords.filter(r => r.status === "En patio").length} en patio</span>
                 </button>
-                {roleData?.control_patios_remolques?.read && (
-                  <button
-                    className={`patio-tab-btn ${activeTab === "remolques" ? "active" : ""}`}
-                    onClick={() => { setActiveTab("remolques"); setHighlightedId(null); }}
-                  >
-                    <i className="fa fa-trailer"></i>
-                    Remolques
-                    <span className="patio-tab-count">{remolqueRecords.filter(r => r.status === "En patio").length} en patio</span>
-                  </button>
-                )}
-              </div>
+              )}
             </div>
-            {activeTab === "tractos" ? (
-              <DataTable
-                data={filteredTractores}
-                columns={tractoColumns}
-                actions={tractoActions}
-                maxHeight="calc(100vh - 340px)"
-                emptyMessage="No se encontraron tractos."
-                highlightId={highlightedId}
-              />
-            ) : (
-              <DataTable
-                data={filteredRemolques}
-                columns={remolqueColumns}
-                actions={remolqueActions}
-                maxHeight="calc(100vh - 340px)"
-                emptyMessage="No se encontraron remolques."
-                highlightId={highlightedId}
-              />
-            )}
+            <div className="bits-table-shell" style={{padding: 0}}>
+              {activeTab === "tractos" ? (
+                <DataTable
+                  data={filteredTractores}
+                  columns={tractoColumns}
+                  loading={isLoading}
+                  maxHeight="100%"
+                  emptyMessage="No se encontraron tractos."
+                  highlightId={highlightedId}
+                />
+              ) : (
+                <DataTable
+                  data={filteredRemolques}
+                  columns={remolqueColumns}
+                  loading={isLoading}
+                  maxHeight="100%"
+                  emptyMessage="No se encontraron remolques."
+                  highlightId={highlightedId}
+                />
+              )}
+            </div>
           </div>
         </div>
       </div>

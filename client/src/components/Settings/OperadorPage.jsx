@@ -4,11 +4,13 @@ import PageHeader from "../PageHeader";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 
 const OperadorPage = () => {
   const [operadores, setOperadores] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [lineasTransporte, setLineasTransporte] = useState([]);
   const [formData, setFormData] = useState({nombre: "", lineaTransporte: ""});
   const [idToDelete, setIdToDelete] = useState("");
@@ -21,7 +23,9 @@ const OperadorPage = () => {
   const [filters, setFilters] = useState({nombre: "", lineaTransporte: ""});
 
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
 
   useEffect(() => {
@@ -54,8 +58,8 @@ const OperadorPage = () => {
     const fetchOperadores = async () => {
       try {
         const response = await fetch(`${baseUrl}/operadores`, {method: "GET", credentials: "include"});
-        if (response.ok) setOperadores(await response.json());
-        else console.error("Failed to fetch operadores:", response.statusText);
+        if (response.ok) { setOperadores(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching operadores:", e);
       }
@@ -67,8 +71,8 @@ const OperadorPage = () => {
     const fetchLineasTransporte = async () => {
       try {
         const response = await fetch(`${baseUrl}/lineas-transporte`, {method: "GET", credentials: "include"});
-        if (response.ok) setLineasTransporte(await response.json());
-        else console.error("Failed to fetch lineas transporte:", response.statusText);
+        if (response.ok) { setLineasTransporte(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching lineas transporte:", e);
       }
@@ -95,6 +99,7 @@ const OperadorPage = () => {
   };
 
   const clearFilters = () => setFilters({nombre: "", lineaTransporte: ""});
+  const hasActiveFilters = !!(filters.nombre || filters.lineaTransporte);
 
   const handleDelete = (id) => {setIdToDelete(id); setShowDeleteModal(true);};
 
@@ -172,7 +177,7 @@ const OperadorPage = () => {
   const columns = [
     {
       key: "numericId",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (row) => (row.numericId ? row.numericId.toString().padStart(4, "0") : "N/A"),
@@ -184,14 +189,14 @@ const OperadorPage = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.operadores?.update,
       onClick: (row) => handleEdit(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.operadores?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -226,27 +231,27 @@ const OperadorPage = () => {
           <PageHeader
             title="Catálogos - Operadores"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.operadores?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por nombre..."
-                    name="nombre"
-                    value={filters.nombre}
-                    onChange={handleFilterChange}
-                  />
-                  <select
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    name="lineaTransporte"
-                    value={filters.lineaTransporte}
-                    onChange={handleFilterChange}>
-                    <option value="">Todas las líneas de transporte</option>
-                    {lineasTransporte.map((linea) => (
-                      <option key={linea._id} value={linea.nombre}>{linea.nombre}</option>
-                    ))}
-                  </select>
+                  <div>
+                    <span className="pselect__label">Nombre</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="nombre" value={filters.nombre} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <Select
+                      label="Línea de Transporte"
+                      placeholder="Todas las líneas"
+                      value={filters.lineaTransporte || null}
+                      onChange={(v) => handleFilterChange({target: {name: "lineaTransporte", value: v ?? ""}})}
+                      options={lineasTransporte.map((l) => ({value: l.nombre, label: l.nombre}))}
+                    />
+                  </div>
                 </FilterBar>
               )
             }
@@ -258,16 +263,16 @@ const OperadorPage = () => {
             )}
           </PageHeader>
 
-          {roleData?.operadores?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredOperadores}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron operadores que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

@@ -10,6 +10,7 @@ import {useNavigate} from "react-router-dom";
 
 const TiposMonitoreo = () => {
   const [monitoreos, setMonitoreos] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [newMonitoreo, setNewMonitoreo] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [currentMonitoreo, setCurrentMonitoreo] = useState(null);
@@ -22,7 +23,9 @@ const TiposMonitoreo = () => {
   const [filters, setFilters] = useState({tipoMonitoreo: ""});
 
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
 
@@ -70,6 +73,8 @@ const TiposMonitoreo = () => {
         }
       } catch (e) {
         console.error("Error fetching monitoreos:", e);
+      } finally {
+        setIsLoading(false);
       }
     };
     fetchMonitoreos();
@@ -90,6 +95,7 @@ const TiposMonitoreo = () => {
   };
 
   const clearFilters = () => setFilters({tipoMonitoreo: ""});
+  const hasActiveFilters = !!(filters.tipoMonitoreo);
 
   const handleConfirmDelete = async (id) => {
     try {
@@ -163,7 +169,7 @@ const TiposMonitoreo = () => {
   const columns = [
     {
       key: "numericId",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (row) => (row.numericId ? row.numericId.toString().padStart(4, "0") : "N/A"),
@@ -174,7 +180,7 @@ const TiposMonitoreo = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.tipos_de_monitoreo?.update,
       onClick: (row) => {
@@ -185,7 +191,7 @@ const TiposMonitoreo = () => {
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.tipos_de_monitoreo?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -202,17 +208,18 @@ const TiposMonitoreo = () => {
           <PageHeader
             title="Catálogos - Tipos de Monitoreo"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.tipos_de_monitoreo?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por tipo de monitoreo..."
-                    name="tipoMonitoreo"
-                    value={filters.tipoMonitoreo}
-                    onChange={handleFilterChange}
-                  />
+                  <div>
+                    <span className="pselect__label">Tipo de Monitoreo</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="tipoMonitoreo" value={filters.tipoMonitoreo} onChange={handleFilterChange} />
+                    </div>
+                  </div>
                 </FilterBar>
               )
             }
@@ -224,16 +231,16 @@ const TiposMonitoreo = () => {
             )}
           </PageHeader>
 
-          {roleData?.tipos_de_monitoreo?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredMonitoreos}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron tipos de monitoreo que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

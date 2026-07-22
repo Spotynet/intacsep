@@ -23,6 +23,7 @@ import {
   fetchOperadores,
 } from "../../utils/api";
 import {generateAuditoriaForCreation} from "../../utils/auditoria";
+import CellBadge from "../CellBadge";
 
 const defaultFormData = {
   bitacora_id: "",
@@ -992,12 +993,12 @@ const BitacorasPage = () => {
                     className: "table-cell",
                     sortable: true,
                     render: (row) => (
-                      <a
-                        href={`/bitacora/${row._id}`}
-                        className={`bitacora-link ${getLatestFrecuenciaColor(row) === "#000000" ? "text-white" : "text-dark"}`}
-                        style={{backgroundColor: getLatestFrecuenciaColor(row)}}>
-                        {row.bitacora_id}
-                      </a>
+                      <CellBadge
+                        label={row.bitacora_id}
+                        color={getLatestFrecuenciaColor(row)}
+                        className="cell-badge--nowrap"
+                        onClick={() => window.location.href = `/bitacora/${row._id}`}
+                      />
                     ),
                   },
                   {
@@ -1055,9 +1056,16 @@ const BitacorasPage = () => {
                     className: "table-cell",
                     render: (row) => (
                       <div style={{display: "flex", justifyContent: "flex-start", alignItems: "center", gap: "0.375rem"}}>
-                        <span className={`status-badge status-${row.status}`}>
-                          {row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}{row.edited ? " (e)" : ""}
-                        </span>
+                        <CellBadge
+                          label={`${row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}${row.edited ? " (e)" : ""}`}
+                          variant={
+                            row.status === "nueva"      ? "blue"   :
+                            row.status === "validada"   ? "yellow" :
+                            row.status === "iniciada"   ? "green"  :
+                            row.status === "cerrada"    ? "red"    :
+                            row.status === "finalizada" ? "purple" : "gray"
+                          }
+                        />
                         {roleData?.aceptar_draft && row.draft_pendiente && (
                           <Tooltip text="Borrador pendiente de aprobación" position="top">
                             <span className="draft-dot" />

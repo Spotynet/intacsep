@@ -4,11 +4,13 @@ import PageHeader from "../PageHeader";
 import ModalTemplate from "../ModalTemplate";
 import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
+import {Select} from "../Select";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 
 const LineaTransportePage = () => {
   const [lineasTransporte, setLineasTransporte] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [clients, setClients] = useState([]);
   const [formData, setFormData] = useState({nombre: "", cliente: ""});
   const [idToDelete, setIdToDelete] = useState("");
@@ -21,7 +23,9 @@ const LineaTransportePage = () => {
   const [filters, setFilters] = useState({nombre: "", cliente: ""});
 
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
 
   useEffect(() => {
@@ -54,8 +58,8 @@ const LineaTransportePage = () => {
     const fetchLineasTransporte = async () => {
       try {
         const response = await fetch(`${baseUrl}/lineas-transporte`, {method: "GET", credentials: "include"});
-        if (response.ok) setLineasTransporte(await response.json());
-        else console.error("Failed to fetch lineas transporte:", response.statusText);
+        if (response.ok) { setLineasTransporte(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching lineas transporte:", e);
       }
@@ -67,8 +71,8 @@ const LineaTransportePage = () => {
     const fetchClients = async () => {
       try {
         const response = await fetch(`${baseUrl}/clients`, {method: "GET", credentials: "include"});
-        if (response.ok) setClients(await response.json());
-        else console.error("Failed to fetch clients:", response.statusText);
+        if (response.ok) { setClients(await response.json()); } else { console.error("Failed to fetch", response.statusText); }
+        setIsLoading(false);
       } catch (e) {
         console.error("Error fetching clients:", e);
       }
@@ -92,6 +96,7 @@ const LineaTransportePage = () => {
   };
 
   const clearFilters = () => setFilters({nombre: "", cliente: ""});
+  const hasActiveFilters = !!(filters.nombre || filters.cliente);
 
   const handleDelete = (id) => {setIdToDelete(id); setShowDeleteModal(true);};
 
@@ -169,7 +174,7 @@ const LineaTransportePage = () => {
   const columns = [
     {
       key: "numericId",
-      header: "ID",
+      header: "ID", headerClassName: "text-center",
       width: "60px",
       className: "text-center fw-bold",
       render: (row) => (row.numericId ? row.numericId.toString().padStart(4, "0") : "N/A"),
@@ -181,14 +186,14 @@ const LineaTransportePage = () => {
   const actions = [
     {
       icon: "fas fa-edit",
-      className: "btn btn-primary",
+      className: "action-btn btn-primary",
       title: "Editar",
       show: roleData?.lineas_transporte?.update,
       onClick: (row) => handleEdit(row),
     },
     {
       icon: "fas fa-trash",
-      className: "btn btn-danger",
+      className: "action-btn btn-danger",
       title: "Eliminar",
       show: roleData?.lineas_transporte?.delete,
       onClick: (row) => handleDelete(row._id),
@@ -223,27 +228,27 @@ const LineaTransportePage = () => {
           <PageHeader
             title="Catálogos - Líneas de Transporte"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               roleData?.lineas_transporte?.read && (
                 <FilterBar onClear={clearFilters}>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    placeholder="Buscar por nombre..."
-                    name="nombre"
-                    value={filters.nombre}
-                    onChange={handleFilterChange}
-                  />
-                  <select
-                    className="form-control form-control-sm border-0 bg-white shadow-sm"
-                    name="cliente"
-                    value={filters.cliente}
-                    onChange={handleFilterChange}>
-                    <option value="">Todos los clientes</option>
-                    {clients.map((client) => (
-                      <option key={client._id} value={client.razon_social}>{client.razon_social}</option>
-                    ))}
-                  </select>
+                  <div>
+                    <span className="pselect__label">Nombre</span>
+                    <div className="pdt-field">
+                      <i className="fa fa-search pdt-field__icon"></i>
+                      <input type="text" className="pdt-field__input" placeholder="Buscar..." name="nombre" value={filters.nombre} onChange={handleFilterChange} />
+                    </div>
+                  </div>
+                  <div>
+                    <Select
+                      label="Cliente"
+                      placeholder="Todos los clientes"
+                      value={filters.cliente || null}
+                      onChange={(v) => handleFilterChange({target: {name: "cliente", value: v ?? ""}})}
+                      options={clients.map((c) => ({value: c.razon_social, label: c.razon_social}))}
+                    />
+                  </div>
                 </FilterBar>
               )
             }
@@ -255,16 +260,16 @@ const LineaTransportePage = () => {
             )}
           </PageHeader>
 
-          {roleData?.lineas_transporte?.read && (
-            <div className="settings-content mt-4">
+          <div className="bits-table-shell">
               <DataTable
+                loading={isLoading}
+                maxHeight="100%"
                 data={filteredLineasTransporte}
                 columns={columns}
                 actions={actions}
                 emptyMessage="No se encontraron líneas de transporte que coincidan con los filtros."
               />
             </div>
-          )}
         </div>
       </div>
 

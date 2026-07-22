@@ -237,11 +237,13 @@ const DataTable = ({
 
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan={colCount} className="text-center py-4">
-                    <p className="text-muted mb-0">Cargando...</p>
-                  </td>
-                </tr>
+                Array.from({length: 8}).map((_, i) => (
+                  <tr key={i} className="dt-skeleton-row">
+                    {Array.from({length: colCount}).map((_, j) => (
+                      <td key={j}><div className="dt-skeleton-cell" style={{width: `${55 + ((i * 3 + j * 7) % 35)}%`}} /></td>
+                    ))}
+                  </tr>
+                ))
               ) : displayData.length === 0 ? (
                 <tr>
                   <td colSpan={colCount} className="text-center py-4">

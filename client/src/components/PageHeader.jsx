@@ -34,7 +34,7 @@ const BREADCRUMB_MAP = {
   "/auditoria/bitacoras":       ["Configuración", "Auditoría", "Bitácoras"],
 };
 
-const PageHeader = ({ title, count, children, filters, onToggleSidebar, defaultFiltersOpen = false, hasActiveFilters = false, onClearFilters }) => {
+const PageHeader = ({ title, count, children, filters, filterActions, onToggleSidebar, defaultFiltersOpen = false, hasActiveFilters = false, onClearFilters }) => {
   const [isFiltersOpen, setIsFiltersOpen] = useState(defaultFiltersOpen);
   const { pathname } = useLocation();
 
@@ -63,6 +63,7 @@ const PageHeader = ({ title, count, children, filters, onToggleSidebar, defaultF
           </h1>
         </div>
         <div className="bits-header__right">
+          {filterActions}
           {filters && (
             <button
               type="button"

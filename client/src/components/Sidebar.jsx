@@ -13,17 +13,28 @@ const Sidebar = () => {
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
   const [showInacModal, setShowInacModal] = useState(false);
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try {
+      const saved = localStorage.getItem("sidebar-role");
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [isHovered, setIsHovered] = useState(false);
   // True whenever the sidebar should render in its expanded visual state
   const isExpanded = !isSidebarCollapsed || isHovered;
-  const [collapsedItems, setCollapsedItems] = useState({
-    dashboardCollapse: false,
-    bitacorasCollapse: false,
-    settingsCollapse: false,
-    catalogosCollapse: false,
-    sistemaCollapse: false,
-    auditoriaCollapse: false,
+  const [collapsedItems, setCollapsedItems] = useState(() => {
+    try {
+      const saved = localStorage.getItem("sidebar-sections");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      dashboardCollapse: false,
+      bitacorasCollapse: false,
+      settingsCollapse: false,
+      catalogosCollapse: false,
+      sistemaCollapse: false,
+      auditoriaCollapse: false,
+    };
   });
 
   useEffect(() => {
@@ -31,7 +42,11 @@ const Sidebar = () => {
     const fetchRolePermissions = async () => {
       try {
         const response = await fetch(`${baseUrl}/roles/${user.role}`, {method: "GET", credentials: "include"});
-        if (response.ok) setRoleData(await response.json());
+        if (response.ok) {
+          const data = await response.json();
+          setRoleData(data);
+          try { localStorage.setItem("sidebar-role", JSON.stringify(data)); } catch {}
+        }
       } catch (e) {
         console.error("Error fetching role permissions:", e);
       }
@@ -78,10 +93,11 @@ const Sidebar = () => {
   };
 
   const toggleCollapse = (itemKey) => {
-    setCollapsedItems((prev) => ({
-      ...prev,
-      [itemKey]: !prev[itemKey],
-    }));
+    setCollapsedItems((prev) => {
+      const next = {...prev, [itemKey]: !prev[itemKey]};
+      try { localStorage.setItem("sidebar-sections", JSON.stringify(next)); } catch {}
+      return next;
+    });
   };
 
   const handleIconClick = (callback, itemKey) => {
