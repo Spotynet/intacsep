@@ -7,892 +7,545 @@ import {useToast} from "../../hooks/useToast";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
+import {Select} from "../Select";
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const emptyPerms = {
+  bitacoras:               {create: false, read: false, read_all: false, update: false, delete: false},
+  eventos:                 {create: false, read: false, update: false, delete: false},
+  clientes:                {create: false, read: false, update: false, delete: false},
+  usuarios:                {create: false, read: false, update: false, delete: false},
+  roles:                   {create: false, read: false, update: false, delete: false},
+  origenes:                {create: false, read: false, update: false, delete: false},
+  destinos:                {create: false, read: false, update: false, delete: false},
+  operadores:              {create: false, read: false, update: false, delete: false},
+  lineas_transporte:       {create: false, read: false, update: false, delete: false},
+  tipos_de_monitoreo:      {create: false, read: false, update: false, delete: false},
+  integraciones:           {create: false, read: false, update: false, delete: false},
+  inactividad:             {create: false, read: false, update: false, delete: false},
+  bitacora_abierta:        {create: false, read: false, update: false, delete: false},
+  bitacora_cerrada:        {create: false, read: false, update: false, delete: false},
+  bit_detalles:            {create: false, read: false, update: false, delete: false},
+  bit_eventos:             {create: false, read: false, update: false, delete: false},
+  bit_transportes:         {create: false, read: false, update: false, delete: false},
+  auditoria_bitacora:      {create: false, read: false, update: false, delete: false},
+  dashboard:               {create: false, read: false, update: false, delete: false},
+  dashboard_anomalias:     {create: false, read: false, update: false, delete: false},
+  gps_id:                  {create: false, read: false, update: false, delete: false},
+  tracto:                  {create: false, read: false, update: false, delete: false},
+  remolque:                {create: false, read: false, update: false, delete: false},
+  operador:                {create: false, read: false, update: false, delete: false},
+  planes_embarque:         {create: false, read: false, update: false, delete: false},
+  buscador_plan:           {create: false, read: false, update: false, delete: false},
+  reporte_eventos:         {create: false, read: false, update: false, delete: false},
+  reporte_estadisticas:    {create: false, read: false, update: false, delete: false},
+  reporte_control_patios:  {create: false, read: false, update: false, delete: false},
+  control_patios:          {create: false, read: false, update: false, delete: false},
+  control_patios_remolques:{create: false, read: false, update: false, delete: false},
+};
+
+const emptyFlags = {
+  client_access: "all",
+  allowed_clients: [],
+  ver_bitacoras_cerradas: true,
+  crear_draft_transporte: false,
+  aceptar_draft: false,
+  plan_linea_transporte: true,
+  plan_operador: true,
+  plan_telefono: true,
+};
+
+const defaultRole = {name: "", ...emptyPerms, ...emptyFlags};
+
+const permLabels = {
+  bitacoras:               "Bitácoras",
+  planes_embarque:         "Planes de embarque",
+  buscador_plan:           "Buscador de planes",
+  control_patios:          "Control de patios — Tractos",
+  control_patios_remolques:"Control de patios — Remolques",
+  bit_detalles:            "Detalles de bitácora",
+  bit_transportes:         "Transportes de bitácora",
+  bit_eventos:             "Eventos de bitácora",
+  gps_id:                  "GPS ID",
+  remolque:                "Remolque",
+  tracto:                  "Tracto",
+  operador:                "Operador",
+  tipos_de_monitoreo:      "Tipos de monitoreo",
+  eventos:                 "Eventos",
+  clientes:                "Clientes",
+  origenes:                "Orígenes",
+  destinos:                "Destinos",
+  lineas_transporte:       "Líneas de transporte",
+  operadores:              "Operadores",
+  usuarios:                "Usuarios",
+  roles:                   "Roles",
+  integraciones:           "Integraciones",
+  inactividad:             "Inactividad",
+  auditoria_bitacora:      "Auditoría bitácora",
+  dashboard:               "Dashboard",
+  dashboard_anomalias:     "Dashboard anomalías",
+  reporte_eventos:         "Reporte eventos",
+  reporte_estadisticas:    "Reporte de puntualidad",
+  reporte_control_patios:  "Control de patios",
+};
+
+const disabledPerms = {
+  bit_detalles:       {create: true, delete: true},
+  bit_transportes:    {delete: true},
+  bit_eventos:        {delete: true},
+  gps_id:             {delete: true},
+  tracto:             {delete: true},
+  remolque:           {delete: true},
+  operador:           {delete: true},
+  inactividad:        {create: true, delete: true},
+  auditoria_bitacora: {create: true, update: true, delete: true},
+  dashboard:          {create: true, update: true, delete: true},
+  dashboard_anomalias:{create: true, update: true, delete: true},
+};
+
+const permSections = [
+  {label: "Monitoreo",                        keys: ["bitacoras","planes_embarque","buscador_plan","control_patios","control_patios_remolques"]},
+  {label: "Bitácoras — Datos",                keys: ["bit_detalles","bit_transportes","bit_eventos"]},
+  {label: "Bitácoras — Datos de transporte",  keys: ["gps_id","remolque","tracto","operador"]},
+  {label: "Catálogos",                        keys: ["tipos_de_monitoreo","eventos","clientes","origenes","destinos","lineas_transporte","operadores"]},
+  {label: "Sistema",                          keys: ["usuarios","roles","integraciones","inactividad"]},
+  {label: "Auditoría",                        keys: ["auditoria_bitacora"]},
+  {label: "Dashboard & Reportes",             keys: ["dashboard","dashboard_anomalias","reporte_eventos","reporte_estadisticas","reporte_control_patios"]},
+  {label: "Configuración adicional", flags: [
+    {key: "ver_bitacoras_cerradas",   label: "Ver bitácoras cerradas",              def: true},
+    {key: "crear_draft_transporte",   label: "Crear borrador de transporte",         def: false},
+    {key: "aceptar_draft",            label: "Aceptar / rechazar borradores",        def: false},
+    {key: "plan_linea_transporte",    label: "Planes — mostrar línea de transporte", def: true},
+    {key: "plan_operador",            label: "Planes — mostrar operador",            def: true},
+    {key: "plan_telefono",            label: "Planes — mostrar teléfono",            def: true},
+  ]},
+];
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+const RpCheck = ({checked, disabled, onChange, na = false}) =>
+  na ? (
+    <span className="rp-check-na">—</span>
+  ) : (
+    <input
+      type="checkbox"
+      className="rp-check"
+      checked={checked}
+      disabled={disabled}
+      onChange={onChange}
+    />
+  );
+
+const PermRow = ({permKey, data, setData, disabled}) => {
+  const isBitacoras = permKey === "bitacoras";
+  const cols = ["create", "read", "update", "delete"];
+
+  return (
+    <tr className="rp-perm-row">
+      <td className="rp-perm-label">{permLabels[permKey] || permKey.replace(/_/g, " ")}</td>
+      {cols.map((action) => (
+        <td key={action} className="rp-perm-cell">
+          <RpCheck
+            na={!!disabledPerms[permKey]?.[action]}
+            checked={data[permKey]?.[action] || false}
+            disabled={disabled}
+            onChange={(e) =>
+              setData((prev) => ({
+                ...prev,
+                [permKey]: {...prev[permKey], [action]: e.target.checked},
+              }))
+            }
+          />
+        </td>
+      ))}
+      <td className="rp-perm-cell">
+        {isBitacoras ? (
+          <RpCheck
+            checked={data.bitacoras?.read_all || false}
+            disabled={disabled}
+            onChange={(e) =>
+              setData((prev) => ({
+                ...prev,
+                bitacoras: {...prev.bitacoras, read_all: e.target.checked},
+              }))
+            }
+          />
+        ) : (
+          <span className="rp-check-na">—</span>
+        )}
+      </td>
+    </tr>
+  );
+};
+
+const SectionRow = ({label}) => (
+  <tr className="rp-section-row">
+    <td colSpan={6}>{label}</td>
+  </tr>
+);
+
+const BoolRow = ({flagKey, label, def, data, setData, disabled}) => (
+  <tr className="rp-perm-row">
+    <td className="rp-perm-label">{label}</td>
+    <td className="rp-perm-cell">
+      <RpCheck
+        checked={data[flagKey] ?? def}
+        disabled={disabled}
+        onChange={(e) => setData((prev) => ({...prev, [flagKey]: e.target.checked}))}
+      />
+    </td>
+    <td className="rp-perm-cell"><span className="rp-check-na">—</span></td>
+    <td className="rp-perm-cell"><span className="rp-check-na">—</span></td>
+    <td className="rp-perm-cell"><span className="rp-check-na">—</span></td>
+    <td className="rp-perm-cell"><span className="rp-check-na">—</span></td>
+  </tr>
+);
+
+const PermTable = ({data, setData, editMode}) => (
+  <table className="rp-table">
+    <thead>
+      <tr>
+        <th className="rp-th-module">Módulo</th>
+        <th className="rp-th-action">Crear</th>
+        <th className="rp-th-action">Ver</th>
+        <th className="rp-th-action">Editar</th>
+        <th className="rp-th-action">Eliminar</th>
+        <th className="rp-th-action">Ver todo</th>
+      </tr>
+    </thead>
+    <tbody>
+      {permSections.map(({label, keys, flags}) => (
+        <>
+          <SectionRow key={`s-${label}`} label={label} />
+          {flags
+            ? flags.map(({key, label: fl, def}) => (
+                <BoolRow key={key} flagKey={key} label={fl} def={def} data={data} setData={setData} disabled={!editMode} />
+              ))
+            : keys.map((k) => (
+            <PermRow key={k} permKey={k} data={data} setData={setData} disabled={!editMode} />
+          ))}
+        </>
+      ))}
+    </tbody>
+  </table>
+);
+
+;
+
+// ── Main component ────────────────────────────────────────────────────────────
 
 const RolePage = () => {
-  const [roles, setRoles] = useState([]);
-  const [clients, setClients] = useState([]); // Lista de todos los clientes disponibles
-  const [newRole, setNewRole] = useState({
-    name: "",
-    bitacoras: {create: false, read: false, read_all: false, update: false, delete: false},
-    eventos: {create: false, read: false, update: false, delete: false},
-    clientes: {create: false, read: false, update: false, delete: false},
-    usuarios: {create: false, read: false, update: false, delete: false},
-    roles: {create: false, read: false, update: false, delete: false},
-    origenes: {create: false, read: false, update: false, delete: false},
-    destinos: {create: false, read: false, update: false, delete: false},
-    operadores: {create: false, read: false, update: false, delete: false},
-    lineas_transporte: {create: false, read: false, update: false, delete: false},
-    tipos_de_monitoreo: {create: false, read: false, update: false, delete: false},
-    integraciones: {create: false, read: false, update: false, delete: false},
-    inactividad: {create: false, read: false, update: false, delete: false},
-    bitacora_abierta: {create: false, read: false, update: false, delete: false},
-    bitacora_cerrada: {create: false, read: false, update: false, delete: false},
-    bit_detalles: {create: false, read: false, update: false, delete: false},
-    bit_eventos: {create: false, read: false, update: false, delete: false},
-    bit_transportes: {create: false, read: false, update: false, delete: false},
-    auditoria_bitacora: {create: false, read: false, update: false, delete: false},
-    dashboard: {create: false, read: false, update: false, delete: false},
-    dashboard_anomalias: {create: false, read: false, update: false, delete: false},
-    gps_id: {create: false, read: false, update: false, delete: false},
-    tracto: {create: false, read: false, update: false, delete: false},
-    remolque: {create: false, read: false, update: false, delete: false},
-    operador: {create: false, read: false, update: false, delete: false},
-    // Permisos de acceso a clientes
-    client_access: "all", // 'all' o 'specific'
-    allowed_clients: [], // Array de clientes permitidos
-    ver_bitacoras_cerradas: true,
-    crear_draft_transporte: false,
-    aceptar_draft: false,
-    plan_linea_transporte: true,
-    plan_operador: true,
-    plan_telefono: true,
-    planes_embarque: {create: false, read: false, update: false, delete: false},
-    buscador_plan: {create: false, read: false, update: false, delete: false},
-    reporte_eventos: {create: false, read: false, update: false, delete: false},
-    reporte_estadisticas: {create: false, read: false, update: false, delete: false},
-    reporte_control_patios: {create: false, read: false, update: false, delete: false},
-    control_patios: {create: false, read: false, update: false, delete: false},
-    control_patios_remolques: {create: false, read: false, update: false, delete: false},
-  });
-
-  const [editRole, setEditRole] = useState(null);
-  const [editRoleData, setEditRoleData] = useState({
-    name: "",
-    bitacoras: {create: false, read: false, read_all: false, update: false, delete: false},
-    eventos: {create: false, read: false, update: false, delete: false},
-    clientes: {create: false, read: false, update: false, delete: false},
-    usuarios: {create: false, read: false, update: false, delete: false},
-    roles: {create: false, read: false, update: false, delete: false},
-    origenes: {create: false, read: false, update: false, delete: false},
-    destinos: {create: false, read: false, update: false, delete: false},
-    operadores: {create: false, read: false, update: false, delete: false},
-    lineas_transporte: {create: false, read: false, update: false, delete: false},
-    tipos_de_monitoreo: {create: false, read: false, update: false, delete: false},
-    integraciones: {create: false, read: false, update: false, delete: false},
-    inactividad: {create: false, read: false, update: false, delete: false},
-    bitacora_abierta: {create: false, read: false, update: false, delete: false},
-    bitacora_cerrada: {create: false, read: false, update: false, delete: false},
-    bit_detalles: {create: false, read: false, update: false, delete: false},
-    bit_eventos: {create: false, read: false, update: false, delete: false},
-    bit_transportes: {create: false, read: false, update: false, delete: false},
-    auditoria_bitacora: {create: false, read: false, update: false, delete: false},
-    dashboard: {create: false, read: false, update: false, delete: false},
-    dashboard_anomalias: {create: false, read: false, update: false, delete: false},
-    gps_id: {create: false, read: false, update: false, delete: false},
-    tracto: {create: false, read: false, update: false, delete: false},
-    remolque: {create: false, read: false, update: false, delete: false},
-    operador: {create: false, read: false, update: false, delete: false},
-    // Permisos de acceso a clientes
-    client_access: "all", // 'all' o 'specific'
-    allowed_clients: [], // Array de clientes permitidos
-    ver_bitacoras_cerradas: true,
-    crear_draft_transporte: false,
-    aceptar_draft: false,
-    plan_linea_transporte: true,
-    plan_operador: true,
-    plan_telefono: true,
-    planes_embarque: {create: false, read: false, update: false, delete: false},
-    buscador_plan: {create: false, read: false, update: false, delete: false},
-    reporte_eventos: {create: false, read: false, update: false, delete: false},
-    reporte_estadisticas: {create: false, read: false, update: false, delete: false},
-    reporte_control_patios: {create: false, read: false, update: false, delete: false},
-    control_patios: {create: false, read: false, update: false, delete: false},
-    control_patios_remolques: {create: false, read: false, update: false, delete: false},
-  });
-
-  const [showModal, setShowModal] = useState(false);
-  const baseUrl = import.meta.env.VITE_BASE_URL;
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [idToDelete, setIdToDelete] = useState("");
+  const [roles, setRoles]         = useState([]);
+  const [clients, setClients]     = useState([]);
+  const [editRole, setEditRole]   = useState(null);
+  const [editRoleData, setEditRoleData] = useState(defaultRole);
   const [isEditing, setIsEditing] = useState(false);
+  const [showCreate, setShowCreate]   = useState(false);
+  const [newRole, setNewRole]     = useState(defaultRole);
+  const [showDelete, setShowDelete]   = useState(false);
+  const [idToDelete, setIdToDelete]   = useState("");
 
+  const baseUrl = import.meta.env.VITE_BASE_URL;
   const {user, verifyToken, setUser} = useAuth();
-  const [roleData, setRoleData] = useState(null);
+  const [roleData, setRoleData] = useState(() => {
+    try { const s = localStorage.getItem("sidebar-role"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
   const {toasts, showToast, removeToast} = useToast();
 
   useEffect(() => {
-    const init = async () => {
-      try {
-        const data = await verifyToken(); // Ensure user is verified
-        setUser(data);
-      } catch (e) {
-        console.log("Error verifying token or fetching user:", e);
-        navigate("/login");
-      }
-    };
-    init();
+    verifyToken().then(setUser).catch(() => navigate("/login"));
   }, []);
 
   useEffect(() => {
-    const fetchRolePermissions = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/roles/${user.role}`, {
-          method: "GET",
-          credentials: "include",
-        });
-        const data = await response.json();
-        setRoleData(data);
-      } catch (e) {
-        console.log("Error fetching role permissions:", e);
-      }
-    };
-
-    fetchRolePermissions();
+    if (!user?.role) return;
+    fetch(`${baseUrl}/roles/${user.role}`, {credentials: "include"})
+      .then((r) => r.json()).then(setRoleData).catch(() => {});
   }, [user]);
 
-  // Fetch roles from API
   useEffect(() => {
-    const fetchRoles = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/roles`, {
-          method: "GET",
-          credentials: "include",
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setRoles(data);
-        } else {
-          console.error("Failed to fetch roles:", response.statusText);
-        }
-      } catch (e) {
-        console.error("Error fetching roles:", e);
-      }
-    };
-
-    fetchRoles();
+    fetch(`${baseUrl}/roles`, {credentials: "include"})
+      .then((r) => r.ok ? r.json() : []).then(setRoles).catch(() => {});
+    fetch(`${baseUrl}/clients`, {credentials: "include"})
+      .then((r) => r.ok ? r.json() : []).then(setClients).catch(() => {});
   }, [baseUrl]);
 
-  // Fetch clients for client permissions
-  useEffect(() => {
-    const fetchClients = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/clients`, {
-          method: "GET",
-          credentials: "include",
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setClients(data);
-        } else {
-          console.error("Failed to fetch clients:", response.statusText);
-        }
-      } catch (e) {
-        console.error("Error fetching clients:", e);
-      }
-    };
-
-    fetchClients();
-  }, [baseUrl]);
-
-  // Handle role deletion
-  const handleConfirmDelete = async (id) => {
-    try {
-      const response = await fetch(`${baseUrl}/roles/${id}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (response.ok) {
-        setRoles(roles.filter((role) => role._id !== id));
-        setShowDeleteModal(false);
-        showToast("Rol eliminado correctamente", "success");
-      } else {
-        console.error("Failed to delete role:", response.statusText);
-        showToast("Error al eliminar el rol", "error");
-      }
-    } catch (e) {
-      console.error("Error deleting role:", e);
-      showToast("Error al eliminar el rol", "error");
-    }
-  };
-
-  const handleDelete = (id) => {
-    setIdToDelete(id);
-    setShowDeleteModal(true);
-  };
-  const handleCloseDeleteModal = () => {
-    setShowDeleteModal(false);
-  };
-
-  // Handle new role creation
-  const handleCreate = async (e) => {
-    e.preventDefault();
-
-    try {
-      const response = await fetch(`${baseUrl}/roles`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(newRole),
-        credentials: "include",
-      });
-
-      if (response.ok) {
-        const createdRole = await response.json();
-        setRoles([...roles, createdRole]);
-
-        // Reset state using proper nested permission object
-        const resetPermissions = {};
-        Object.keys(newRole).forEach((key) => {
-          if (typeof newRole[key] === "object") {
-            resetPermissions[key] = {create: false, read: false, update: false, delete: false};
-          }
-        });
-
-        setNewRole({name: "", ...resetPermissions});
-        setShowModal(false);
-        showToast("Rol creado correctamente", "success");
-      } else {
-        console.error("Failed to create role:", response.statusText);
-        showToast("Error al crear el rol", "error");
-      }
-    } catch (e) {
-      console.error("Error creating role:", e);
-      showToast("Error al crear el rol", "error");
-    }
-  };
-
-  // Handle role edit button click
-  const handleEditClick = (role) => {
+  const selectRole = (role) => {
+    setIsEditing(false);
     setEditRole(role);
-    setEditRoleData({ver_bitacoras_cerradas: true, crear_draft_transporte: false, aceptar_draft: false, plan_linea_transporte: true, plan_operador: true, plan_telefono: true, ...role});
-    setIsEditing(true); // << ENABLE EDIT MODE
+    setEditRoleData({...defaultRole, ...role});
   };
 
-  // Handle role update
-  const handleEditSave = async (id) => {
+  const handleEditClick = () => {
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setEditRoleData({...defaultRole, ...editRole});
+    setIsEditing(false);
+  };
+
+  const handleEditSave = async () => {
     try {
-      const response = await fetch(`${baseUrl}/roles/${id}`, {
+      const res = await fetch(`${baseUrl}/roles/${editRole._id}`, {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(editRoleData),
         credentials: "include",
       });
-
-      if (response.ok) {
-        const updatedRole = await response.json();
-        setRoles(roles.map((role) => (role._id === id ? updatedRole : role)));
-        setEditRole(updatedRole);
-        setEditRoleData({ver_bitacoras_cerradas: true, plan_linea_transporte: true, plan_operador: true, plan_telefono: true, ...updatedRole});
+      if (res.ok) {
+        const updated = await res.json();
+        setRoles((prev) => prev.map((r) => (r._id === updated._id ? updated : r)));
+        setEditRole(updated);
+        setEditRoleData({...defaultRole, ...updated});
         setIsEditing(false);
         showToast("Rol actualizado correctamente", "success");
       } else {
-        console.error("Failed to update role:", response.statusText);
         showToast("Error al actualizar el rol", "error");
       }
-    } catch (e) {
-      console.error("Error updating role:", e);
+    } catch {
       showToast("Error al actualizar el rol", "error");
     }
   };
 
-  // Handle cancel edit
-  const handleCancelEdit = () => {
-    setEditRoleData({ver_bitacoras_cerradas: true, plan_linea_transporte: true, plan_operador: true, plan_telefono: true, ...editRole});
-    setIsEditing(false);
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch(`${baseUrl}/roles`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(newRole),
+        credentials: "include",
+      });
+      if (res.ok) {
+        const created = await res.json();
+        setRoles((prev) => [...prev, created]);
+        setNewRole(defaultRole);
+        setShowCreate(false);
+        showToast("Rol creado correctamente", "success");
+        selectRole(created);
+      } else {
+        showToast("Error al crear el rol", "error");
+      }
+    } catch {
+      showToast("Error al crear el rol", "error");
+    }
   };
 
-  // Handle form input changes
-  const handleInputChange = (e, setter) => {
-    const {name, type, checked, value} = e.target;
-    setter((prevState) => ({
-      ...prevState,
-      [name]: type === "checkbox" ? checked : value,
+  const handleConfirmDelete = async () => {
+    try {
+      const res = await fetch(`${baseUrl}/roles/${idToDelete}`, {method: "DELETE", credentials: "include"});
+      if (res.ok) {
+        setRoles((prev) => prev.filter((r) => r._id !== idToDelete));
+        setShowDelete(false);
+        if (editRole?._id === idToDelete) { setEditRole(null); setIsEditing(false); }
+        showToast("Rol eliminado correctamente", "success");
+      } else {
+        showToast("Error al eliminar el rol", "error");
+      }
+    } catch {
+      showToast("Error al eliminar el rol", "error");
+    }
+  };
+
+  const addAllowedClient = (clientId, clientName, setter) =>
+    setter((prev) => ({
+      ...prev,
+      allowed_clients: prev.allowed_clients.some((c) => c.client_id === clientId)
+        ? prev.allowed_clients
+        : [...prev.allowed_clients, {client_id: clientId, client_name: clientName}],
     }));
-  };
 
-  // Handle client access type change
-  const handleClientAccessChange = (value, setter) => {
-    setter((prevState) => ({
-      ...prevState,
-      client_access: value,
-      allowed_clients: value === "all" ? [] : prevState.allowed_clients,
+  const removeAllowedClient = (clientId, setter) =>
+    setter((prev) => ({
+      ...prev,
+      allowed_clients: prev.allowed_clients.filter((c) => c.client_id !== clientId),
     }));
-  };
 
-  // Handle adding client to allowed list
-  const handleAddAllowedClient = (clientId, clientName, setter) => {
-    setter((prevState) => {
-      const isAlreadyAdded = prevState.allowed_clients.some((c) => c.client_id === clientId);
-      if (isAlreadyAdded) return prevState;
+  // ── Extras panel ────────────────────────────────────────────────────────────
 
-      return {
-        ...prevState,
-        allowed_clients: [
-          ...prevState.allowed_clients,
-          {client_id: clientId, client_name: clientName},
-        ],
-      };
-    });
-  };
-
-  // Handle removing client from allowed list
-  const handleRemoveAllowedClient = (clientId, setter) => {
-    setter((prevState) => ({
-      ...prevState,
-      allowed_clients: prevState.allowed_clients.filter((c) => c.client_id !== clientId),
-    }));
-  };
-
-  const disabledPermissions = {
-    bit_detalles: {
-      create: true,
-      delete: true,
-    },
-    bit_transportes: {
-      delete: true,
-    },
-    bit_eventos: {
-      delete: true,
-    },
-    gps_id: {
-      delete: true,
-    },
-    tracto: {
-      delete: true,
-    },
-    remolque: {
-      delete: true,
-    },
-    operador: {
-      delete: true,
-    },
-    inactividad: {
-      create: true,
-      delete: true,
-    },
-    auditoria_bitacora: {
-      create: true,
-      update: true,
-      delete: true,
-    },
-    dashboard: {
-      create: true,
-      update: true,
-      delete: true,
-    },
-    dashboard_anomalias: {
-      create: true,
-      update: true,
-      delete: true,
-    },
-  };
-
-  const permissionLabels = {
-    bitacoras: "Bitácoras",
-    planes_embarque: "Planes de embarque",
-    buscador_plan: "Buscador de planes",
-    bit_detalles: "Detalles de bitácora",
-    bit_transportes: "Transportes de bitácora",
-    bit_eventos: "Eventos de bitácora",
-    gps_id: "GPS ID",
-    remolque: "Remolque",
-    tracto: "Tracto",
-    operador: "Operador",
-    tipos_de_monitoreo: "Tipos de monitoreo",
-    eventos: "Eventos",
-    clientes: "Clientes",
-    origenes: "Orígenes",
-    destinos: "Destinos",
-    lineas_transporte: "Líneas de transporte",
-    operadores: "Operadores",
-    usuarios: "Usuarios",
-    roles: "Roles",
-    integraciones: "Integraciones",
-    inactividad: "Inactividad",
-    auditoria_bitacora: "Auditoría bitácora",
-    dashboard: "Dashboard",
-    dashboard_anomalias: "Dashboard anomalías",
-    reporte_eventos: "Reporte eventos",
-    reporte_estadisticas: "Reporte de puntualidad",
-    reporte_control_patios: "Control de Patios",
-    control_patios: "Control de patios — Tractos",
-    control_patios_remolques: "Control de patios — Remolques",
-  };
-
-  const renderPermissionRow = (key, roleData, setRoleData) => {
-    const actions =
-      key === "bitacoras"
-        ? ["create", "read", "update", "delete", "read_all"]
-        : ["create", "read", "update", "delete"];
-
+  const ExtrasPanel = ({data, setData, editMode}) => {
     return (
-      <tr key={key}>
-        <td>{permissionLabels[key] || key.replace(/_/g, " ")}</td>
-        {actions.map((action) => {
-          const isDisabled = disabledPermissions[key]?.[action];
+      <div className="rp-extras">
+        <div className="rp-access-row">
+          <p className="rp-extras__col-title">Acceso a clientes</p>
 
-          return (
-            <td className="text-center" key={action}>
-              {isDisabled ? (
-                <span className="text-muted">N/A</span>
-              ) : (
-                <input
-                  type="checkbox"
-                  checked={roleData[key]?.[action] || false}
-                  disabled={!isEditing}
-                  onChange={(e) =>
-                    setRoleData((prev) => ({
-                      ...prev,
-                      [key]: {
-                        ...prev[key],
-                        [action]: e.target.checked,
-                      },
-                    }))
-                  }
-                />
-              )}
-            </td>
-          );
-        })}
-        {key !== "bitacoras" && (
-          <td className="text-center">
-            <span className="text-muted">—</span>
-          </td>
-        )}
-      </tr>
-    );
-  };
+          <div className="rp-access-select-wrap">
+            <Select
+              clearable={false}
+              searchable={false}
+              direction="up"
+              disabled={!editMode}
+              value={data.client_access}
+              options={[
+                {value: "all",      label: "Todos los clientes"},
+                {value: "specific", label: "Clientes específicos"},
+              ]}
+              onChange={(val) =>
+                setData((prev) => ({
+                  ...prev,
+                  client_access: val,
+                  allowed_clients: val === "all" ? [] : prev.allowed_clients,
+                }))
+              }
+            />
+          </div>
 
-  return (
-    <section id="rolePage" className="settings-page">
-      <div className="w-100 d-flex">
-        <div className="sidebar-wrapper">
-          <Sidebar />
-        </div>
-        <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-          <PageHeader
-            title="Sistema - Roles"
-            onToggleSidebar={() => setIsMobileSidebarOpen(true)}
-          >
-            {roleData?.roles?.create && (
-              <button className="new-btn" onClick={() => setShowModal(true)}>
-                <i className="fas fa-plus"></i>Crear
-              </button>
-            )}
-          </PageHeader>
-
-          {/* Role Cards */}
-          {roleData?.roles?.read && (
-            <div className="settings-content">
-              <div className="mb-3 d-flex align-items-end gap-2">
-                <div className="flex-grow-1">
-                  <label htmlFor="roleSelect" className="form-label fw-bold">
-                    Seleccionar Rol
-                  </label>
-                  <select
-                    id="roleSelect"
-                    className="form-select"
-                    value={editRole?._id || ""}
-                    onChange={(e) => {
-                      const selected = roles.find((r) => r._id === e.target.value);
-                      setEditRole(selected || null);
-                      setEditRoleData({ver_bitacoras_cerradas: true, plan_linea_transporte: true, plan_operador: true, plan_telefono: true, ...JSON.parse(JSON.stringify(selected))});
-                    }}>
-                    <option value="">-- Seleccione un rol --</option>
-                    {roles.map((role) => (
-                      <option key={role._id} value={role._id}>
-                        {role.name}
-                      </option>
-                    ))}
-                  </select>
+          {data.client_access === "specific" && (
+            <div className="rp-access-chips">
+              {editMode && (
+                <div className="rp-access-select">
+                  <Select
+                    placeholder="Agregar cliente…"
+                    value={null}
+                    clearable={false}
+                    direction="up"
+                    options={clients
+                      .filter((c) => !data.allowed_clients?.some((a) => a.client_id === c._id))
+                      .map((c) => ({value: c._id, label: c.razon_social || c.name}))}
+                    onChange={(id) => {
+                      const c = clients.find((x) => x._id === id);
+                      if (c) addAllowedClient(c._id, c.razon_social || c.name, setData);
+                    }}
+                  />
                 </div>
-
-                <>
-                  {roleData?.roles?.update &&
-                    (isEditing ? (
-                      <button
-                        className="btn btn-secondary"
-                        title="Cancelar"
-                        onClick={handleCancelEdit}>
-                        <i className="fa fa-times"></i>
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-primary"
-                        title="Editar"
-                        onClick={() => handleEditClick(editRole)}>
-                        <i className="fa fa-edit"></i>
-                      </button>
-                    ))}
-
-                  {isEditing ? (
-                    <button
-                      className="btn btn-success"
-                      title="Guardar"
-                      onClick={() => handleEditSave(editRole._id)}>
-                      <i className="fa fa-save"></i>
+              )}
+              {data.allowed_clients?.length > 0 ? data.allowed_clients.map((ac) => (
+                <span key={ac.client_id} className="rp-client-chip">
+                  {ac.client_name}
+                  {editMode && (
+                    <button type="button" className="rp-client-chip__remove"
+                      onClick={() => removeAllowedClient(ac.client_id, setData)}>
+                      <i className="fa fa-times"></i>
                     </button>
-                  ) : (
-                    roleData?.roles?.delete && (
-                      <button
-                        className="btn btn-danger"
-                        title="Eliminar"
-                        onClick={() => handleDelete(editRole._id)}>
-                        <i className="fa fa-trash"></i>
-                      </button>
-                    )
                   )}
-                </>
-              </div>
-
-              {editRole && (
-                <>
-                  <div className="table-wrapper" style={{minHeight: "60vh", maxHeight: "80vh", overflowY: "auto"}}>
-                    <div className="table-responsive">
-                      <table className="table">
-                        <thead
-                          className="table-light"
-                          style={{
-                            position: "sticky",
-                            top: 0,
-                            zIndex: 1,
-                            backgroundColor: "#f8f9fa",
-                          }}>
-                          <tr>
-                            <th>Módulo</th>
-                            <th className="text-center">Crear</th>
-                            <th className="text-center">Ver</th>
-                            <th className="text-center">Editar</th>
-                            <th className="text-center">Eliminar</th>
-                            <th className="text-center">Ver Todo</th>
-                          </tr>
-                        </thead>
-
-                        <tbody>
-                          {/* PANEL 1: Monitoreo */}
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">Monitoreo</td>
-                          </tr>
-                          {["bitacoras", "planes_embarque", "buscador_plan", "control_patios", "control_patios_remolques"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">Monitoreo &gt; Bitácoras &gt; Datos Bitácora</td>
-                          </tr>
-                          {["bit_detalles", "bit_transportes", "bit_eventos"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">
-                              Monitoreo &gt; Bitácoras &gt; Datos Bitácora &gt; Datos Transportes
-                            </td>
-                          </tr>
-                          {["gps_id", "remolque", "tracto", "operador"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-
-                          {/* PANEL 2: Configuración > Catálogos */}
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">Configuración &gt; Catálogos</td>
-                          </tr>
-                          {[
-                            "tipos_de_monitoreo",
-                            "eventos",
-                            "clientes",
-                            "origenes",
-                            "destinos",
-                            "lineas_transporte",
-                            "operadores",
-                          ].map((key) => renderPermissionRow(key, editRoleData, setEditRoleData))}
-
-                          {/* PANEL 2: Configuración > Sistema */}
-                          <tr className="fw-bold bg-secondary text-white">
-                            <td colSpan="6">Configuración &gt; Sistema</td>
-                          </tr>
-                          {["usuarios", "roles", "integraciones", "inactividad"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-
-                          {/* PANEL 3: Auditoría */}
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">Auditoría</td>
-                          </tr>
-                          {["auditoria_bitacora"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-
-                          {/* PANEL 4: Dashboard */}
-                          <tr className="table-group-divider fw-bold bg-secondary text-white">
-                            <td colSpan="6">Dashboard</td>
-                          </tr>
-                          {["dashboard", "dashboard_anomalias", "reporte_eventos", "reporte_estadisticas", "reporte_control_patios"].map((key) =>
-                            renderPermissionRow(key, editRoleData, setEditRoleData)
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Sección de Permisos adicionales */}
-                    <div className="mt-3 pt-3 border-top">
-                      <h6 className="mb-2 text-secondary">Permisos adicionales</h6>
-                      <div className="bg-light p-3 rounded">
-                        {[
-                          { key: "ver_bitacoras_cerradas", label: "Ver bitácoras cerradas", defaultVal: true },
-                          { key: "crear_draft_transporte", label: "Crear borrador de transporte (línea / operador)", defaultVal: false },
-                          { key: "aceptar_draft", label: "Aceptar / rechazar borradores de transporte", defaultVal: false },
-                        ].map(({ key, label, defaultVal }) => (
-                          <div className="d-flex align-items-center mb-2" key={key}>
-                            <input
-                              type="checkbox"
-                              id={key}
-                              className="form-check-input me-2"
-                              checked={editRoleData[key] ?? defaultVal}
-                              disabled={!isEditing}
-                              onChange={(e) =>
-                                setEditRoleData((prev) => ({ ...prev, [key]: e.target.checked }))
-                              }
-                            />
-                            <label htmlFor={key} className="form-check-label fw-semibold">
-                              {label}
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Sección de Planes de embarque — campos visibles */}
-                    <div className="mt-3 pt-3 border-top">
-                      <h6 className="mb-2 text-secondary">Planes de embarque — campos del transporte</h6>
-                      <div className="bg-light p-3 rounded">
-                        {[
-                          { key: "plan_linea_transporte", label: "Mostrar campo Línea de Transporte" },
-                          { key: "plan_operador",         label: "Mostrar campo Operador" },
-                          { key: "plan_telefono",         label: "Mostrar campo Teléfono" },
-                        ].map(({ key, label }) => (
-                          <div className="d-flex align-items-center mb-2" key={key}>
-                            <input
-                              type="checkbox"
-                              id={key}
-                              className="form-check-input me-2"
-                              checked={editRoleData[key] ?? true}
-                              disabled={!isEditing}
-                              onChange={(e) =>
-                                setEditRoleData((prev) => ({ ...prev, [key]: e.target.checked }))
-                              }
-                            />
-                            <label htmlFor={key} className="form-check-label fw-semibold">
-                              {label}
-                            </label>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Sección de Permisos de Clientes */}
-                    <div className="mt-3 pt-3 border-top">
-                      <h6 className="mb-2 text-secondary">Permisos de Acceso a Clientes</h6>
-
-                      <div className="bg-light p-3 rounded">
-                        {/* Tipo de acceso - inline radio buttons */}
-                        <div className="d-flex align-items-center mb-2">
-                          <span className="fw-semibold me-3" style={{minWidth: "120px"}}>
-                            Tipo de Acceso:
-                          </span>
-                          <div className="form-check form-check-inline me-3">
-                            <input
-                              className="form-check-input"
-                              type="radio"
-                              name="client_access"
-                              id="access_all"
-                              value="all"
-                              checked={editRoleData.client_access === "all"}
-                              disabled={!isEditing}
-                              onChange={(e) =>
-                                handleClientAccessChange(e.target.value, setEditRoleData)
-                              }
-                            />
-                            <label className="form-check-label" htmlFor="access_all">
-                              Todos los clientes
-                            </label>
-                          </div>
-                          <div className="form-check form-check-inline">
-                            <input
-                              className="form-check-input"
-                              type="radio"
-                              name="client_access"
-                              id="access_specific"
-                              value="specific"
-                              checked={editRoleData.client_access === "specific"}
-                              disabled={!isEditing}
-                              onChange={(e) =>
-                                handleClientAccessChange(e.target.value, setEditRoleData)
-                              }
-                            />
-                            <label className="form-check-label" htmlFor="access_specific">
-                              Clientes específicos
-                            </label>
-                          </div>
-                        </div>
-
-                        {/* Sección de clientes específicos */}
-                        {editRoleData.client_access === "specific" && (
-                          <>
-                            {/* Selector de clientes */}
-                            {isEditing && (
-                              <div className="d-flex align-items-center mb-2">
-                                <span className="fw-semibold me-3" style={{minWidth: "120px"}}>
-                                  Agregar Cliente:
-                                </span>
-                                <select
-                                  className="form-select form-select-sm"
-                                  style={{maxWidth: "300px"}}
-                                  onChange={(e) => {
-                                    const clientId = e.target.value;
-                                    const clientName =
-                                      e.target.options[e.target.selectedIndex].text;
-                                    if (clientId) {
-                                      handleAddAllowedClient(clientId, clientName, setEditRoleData);
-                                      e.target.value = "";
-                                    }
-                                  }}>
-                                  <option value="">-- Seleccionar Cliente --</option>
-                                  {clients
-                                    .filter(
-                                      (client) =>
-                                        !editRoleData.allowed_clients?.some(
-                                          (ac) => ac.client_id === client._id
-                                        )
-                                    )
-                                    .map((client) => (
-                                      <option key={client._id} value={client._id}>
-                                        {client.razon_social || client.name}
-                                      </option>
-                                    ))}
-                                </select>
-                              </div>
-                            )}
-
-                            {/* Lista de clientes permitidos */}
-                            <div className="d-flex align-items-start">
-                              <span
-                                className="fw-semibold me-3"
-                                style={{minWidth: "120px", paddingTop: "2px"}}>
-                                Clientes Permitidos:
-                              </span>
-                              <div className="flex-grow-1">
-                                {editRoleData.allowed_clients?.length > 0 ? (
-                                  <div className="d-flex flex-wrap gap-1">
-                                    {editRoleData.allowed_clients.map((allowedClient) => (
-                                      <span
-                                        key={allowedClient.client_id}
-                                        className="badge bg-primary d-flex align-items-center gap-1"
-                                        style={{fontSize: "11px", padding: "4px 8px"}}>
-                                        {allowedClient.client_name}
-                                        {isEditing && (
-                                          <button
-                                            type="button"
-                                            className="btn-close btn-close-white"
-                                            style={{fontSize: "8px", width: "8px", height: "8px"}}
-                                            onClick={() =>
-                                              handleRemoveAllowedClient(
-                                                allowedClient.client_id,
-                                                setEditRoleData
-                                              )
-                                            }
-                                            aria-label="Remover"></button>
-                                        )}
-                                      </span>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span className="text-muted fst-italic small">
-                                    No hay clientes seleccionados
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </>
+                </span>
+              )) : (
+                <span className="rp-client-empty">Sin clientes seleccionados</span>
               )}
             </div>
           )}
         </div>
       </div>
-      {/* Modal for Creating New Role */}
-      {showModal && (
-        <ModalTemplate
-          show={showModal}
-          title="Crear Rol"
-          onClose={() => setShowModal(false)}
-          onSubmit={handleCreate}>
-          <div className="mb-3">
-            <label htmlFor="roleName" className="form-label">
-              Nombre
-            </label>
-            <input
-              type="text"
-              id="roleName"
-              name="name"
-              className="form-control"
-              value={newRole.name}
-              onChange={(e) => handleInputChange(e, setNewRole)}
-              placeholder="Nombre del rol"
-              required
-            />
-          </div>
+    );
+  };
 
-          <div className="mb-3">
-            <label className="form-label fw-bold">Permisos</label>
-            <div className="table-responsive" style={{maxHeight: "300px", overflowY: "auto"}}>
-              <table className="table table-bordered table-sm">
-                <thead className="table-light sticky-top bg-light">
-                  <tr>
-                    <th>Módulo</th>
-                    <th className="text-center">Crear</th>
-                    <th className="text-center">Ver</th>
-                    <th className="text-center">Editar</th>
-                    <th className="text-center">Eliminar</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(newRole)
-                    .filter(([, val]) => typeof val === "object" && "create" in val)
-                    .map(([key]) => (
-                      <tr key={key}>
-                        <td>{permissionLabels[key] || key.replace(/_/g, " ")}</td>
-                        {["create", "read", "update", "delete"].map((action) => (
-                          <td className="text-center" key={action}>
-                            <input
-                              type="checkbox"
-                              checked={newRole[key][action]}
-                              onChange={(e) =>
-                                setNewRole((prev) => ({
-                                  ...prev,
-                                  [key]: {
-                                    ...prev[key],
-                                    [action]: e.target.checked,
-                                  },
-                                }))
-                              }
-                            />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
+  // ── Render ───────────────────────────────────────────────────────────────────
+
+  return (
+    <section id="rolePage" className="settings-page">
+      <div className="w-100 d-flex h-100 mt-0">
+        <div className="sidebar-wrapper"><Sidebar /></div>
+        <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+          <PageHeader title="Sistema - Roles" onToggleSidebar={() => setIsMobileSidebarOpen(true)}>
+            {roleData?.roles?.create && (
+              <button className="new-btn" onClick={() => { setNewRole(defaultRole); setShowCreate(true); }}>
+                <i className="fa fa-plus"></i>Crear
+              </button>
+            )}
+          </PageHeader>
+
+          <div className="rp-shell">
+            {/* ── Left: role list ── */}
+            <nav className="rp-nav">
+              {roles.length === 0 ? (
+                <p className="rp-nav-empty">Sin roles</p>
+              ) : (
+                roles.map((role) => (
+                  <button
+                    key={role._id}
+                    className={`rp-nav-item${editRole?._id === role._id ? " rp-nav-item--active" : ""}`}
+                    onClick={() => selectRole(role)}>
+                    {role.name}
+                  </button>
+                ))
+              )}
+            </nav>
+
+            {/* ── Right: editor ── */}
+            <div className="rp-editor">
+              {editRole ? (
+                <>
+                  {/* Editor header */}
+                  <div className="rp-editor__header">
+                    <div className="rp-editor__title-block">
+                      <span className="rp-editor__title">{editRole.name}</span>
+                      {isEditing && <span className="rp-editor__editing-badge">Editando</span>}
+                    </div>
+                    <div className="rp-editor__actions">
+                      {isEditing ? (
+                        <>
+                          <button className="rp-btn rp-btn--ghost" onClick={handleCancelEdit}>
+                            <i className="fa fa-times"></i> Cancelar
+                          </button>
+                          <button className="rp-btn rp-btn--save" onClick={handleEditSave}>
+                            <i className="fa fa-check"></i> Guardar
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {roleData?.roles?.update && (
+                            <button className="action-btn btn-primary" title="Editar" onClick={handleEditClick}>
+                              <i className="fa fa-edit"></i>
+                            </button>
+                          )}
+                          {roleData?.roles?.delete && (
+                            <button className="action-btn btn-danger" title="Eliminar" onClick={() => { setIdToDelete(editRole._id); setShowDelete(true); }}>
+                              <i className="fa fa-trash"></i>
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Scrollable table */}
+                  <div className="rp-editor__content">
+                    <PermTable data={editRoleData} setData={setEditRoleData} editMode={isEditing} />
+                  </div>
+
+                  {/* Fixed extras below */}
+                  <div className="rp-editor__extras">
+                    <ExtrasPanel data={editRoleData} setData={setEditRoleData} editMode={isEditing} />
+                  </div>
+                </>
+              ) : (
+                <div className="rp-empty">
+                  <i className="fa fa-shield-alt"></i>
+                  <p>Selecciona un rol para ver y editar sus permisos</p>
+                </div>
+              )}
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Create modal ── */}
+      {showCreate && (
+        <ModalTemplate show title="Nuevo Rol" onClose={() => setShowCreate(false)} onSubmit={handleCreate}>
+          <div className="rp-create-modal">
+            <div>
+              <span className="pselect__label">Nombre del rol<span className="text-danger ms-1">*</span></span>
+              <div className="pdt-field">
+                <i className="fa fa-tag pdt-field__icon"></i>
+                <input className="pdt-field__input" type="text" placeholder="Ej: Monitorista, Supervisor…"
+                  value={newRole.name} onChange={(e) => setNewRole((p) => ({...p, name: e.target.value}))} required />
+              </div>
+            </div>
+            <p className="rp-create-hint">Los permisos se configuran después de crear el rol.</p>
           </div>
         </ModalTemplate>
       )}
 
-      {/* Delete Modal */}
-      {showDeleteModal && (
-        <ModalTemplate
-          show={showDeleteModal}
-          title="Confirmar Eliminación"
-          onClose={handleCloseDeleteModal}
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleConfirmDelete(idToDelete);
-          }}>
-          <p>¿Está seguro de que desea eliminar este rol?</p>
+      {/* ── Delete modal ── */}
+      {showDelete && (
+        <ModalTemplate show title="Eliminar Rol"
+          onClose={() => setShowDelete(false)}
+          onSubmit={(e) => { e.preventDefault(); handleConfirmDelete(); }}
+          submitText="Eliminar" submitClass="btn btn-danger">
+          <p>¿Confirmas que deseas eliminar el rol <strong>{editRole?.name}</strong>? Esta acción no se puede deshacer.</p>
         </ModalTemplate>
       )}
 

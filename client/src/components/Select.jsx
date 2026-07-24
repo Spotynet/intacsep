@@ -35,6 +35,7 @@ export const Select = ({
   clearable = true,
   searchable = true,
   className,
+  direction = "down",
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -93,7 +94,7 @@ export const Select = ({
       </div>
 
       {open && (
-        <div className="pselect__menu">
+        <div className={`pselect__menu${direction === "up" ? " pselect__menu--up" : ""}`}>
           {searchable && (
             <div className="pselect__search">
               <i className="fa fa-magnifying-glass"></i>

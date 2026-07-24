@@ -96,13 +96,10 @@ const DashboardPage = () => {
                 nombre: linea.nombre,
               }));
             }
-          } catch (error) {
-            console.warn("New transport lines endpoint not available:", error);
+          } catch {
+            // endpoint unavailable
           }
         }
-
-        // Only use data from the LineaTransporte model, not from bitacoras
-        // This ensures we only show transport lines that exist in the database
 
         setAvailableLineasTransporte(lineasData);
       } catch (error) {
@@ -139,13 +136,10 @@ const DashboardPage = () => {
                 nombre: operador.nombre || operador.name || "",
               }));
             }
-          } catch (error) {
-            console.warn("New operators endpoint not available:", error);
+          } catch {
+            // endpoint unavailable
           }
         }
-
-        // Only use data from the Operador model, not from bitacoras
-        // This ensures we only show operators that exist in the database
 
         setAvailableOperadores(operadoresData);
       } catch (error) {
@@ -829,38 +823,7 @@ const DashboardPage = () => {
     try {
       setLoading(true);
 
-      // Fetch available clients for filter with role permissions
-      const clientsResponse = await fetch(`${baseUrl}/clients`, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (clientsResponse.ok) {
-        const allClientsData = await clientsResponse.json();
-        // Apply client permissions filtering
-        const allowedClientsData = getAllowedClients(roleData, allClientsData);
-        setAvailableClients(allowedClientsData);
-      }
-
-      // Fetch available transport lines for filter based on selected client
-      // Only fetch if a specific client is selected (not "all")
-      if (appliedClientFilter && appliedClientFilter !== "all") {
-        await fetchLineasTransporte(appliedClientFilter);
-      } else {
-        // If no client selected, clear transport lines
-        setAvailableLineasTransporte([]);
-      }
-
-      // Fetch available operators for filter based on selected transport line
-      // Only fetch if a specific transport line is selected (not "all")
-      if (appliedLineaTransporteFilter && appliedLineaTransporteFilter !== "all") {
-        await fetchOperadores(appliedLineaTransporteFilter);
-      } else {
-        // If no transport line selected, clear operators
-        setAvailableOperadores([]);
-      }
-
-      // Fetch basic dashboard statistics with filters - using the regular dashboard stats endpoint
-      const statsUrl = `${baseUrl}/dashboard/stats?clientFilter=${encodeURIComponent(
+      const commonParams = `clientFilter=${encodeURIComponent(
         appliedClientFilter
       )}&fechaDesde=${encodeURIComponent(appliedFechaDesde)}&fechaHasta=${encodeURIComponent(
         appliedFechaHasta
@@ -868,86 +831,22 @@ const DashboardPage = () => {
         appliedLineaTransporteFilter
       )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
 
-      console.log("🔍 Dashboard Stats URL:", statsUrl);
-      console.log("🔍 Applied Filters:", {
-        clientFilter: appliedClientFilter,
-        fechaDesde: appliedFechaDesde,
-        fechaHasta: appliedFechaHasta,
-        lineaTransporte: appliedLineaTransporteFilter,
-        operador: appliedOperadorFilter,
-      });
+      const statsUrl = `${baseUrl}/dashboard/stats?${commonParams}&geoType=${encodeURIComponent(appliedGeoType)}`;
+      const lineasStatsUrl = `${baseUrl}/dashboard/lineas-transporte-stats?${commonParams}`;
 
-      const statsResponse = await fetch(statsUrl, {
-        method: "GET",
-        credentials: "include",
-      });
+      const [statsResponse, lineasResponse] = await Promise.all([
+        fetch(statsUrl, {method: "GET", credentials: "include"}),
+        fetch(lineasStatsUrl, {method: "GET", credentials: "include"}),
+      ]);
 
       if (statsResponse.ok) {
         const statsData = await statsResponse.json();
-        console.log("📊 Dashboard Stats Response:", {
-          totalBitacoras: statsData.totalBitacoras || 0,
-          nuevasBitacoras: statsData.nuevasBitacoras || 0,
-          enProcesoBitacoras: statsData.enProcesoBitacoras || 0,
-          cerradasBitacoras: statsData.cerradasBitacoras || 0,
-          totalBitacorasConAnomalias: statsData.totalBitacorasConAnomalias || 0,
-          eventCategoriesStats: statsData.eventCategoriesStats?.length || 0,
-        });
-        console.log("📋 Event Categories Sample:", statsData.eventCategoriesStats?.slice(0, 3));
-        setDashboardStats((prev) => ({
-          ...prev,
-          ...statsData,
-        }));
+        setDashboardStats((prev) => ({...prev, ...statsData}));
       }
 
-      // Fetch transport lines anomalies statistics (same as AnomaliasDashboardPage)
-      const lineasTransporteStatsUrl = `${baseUrl}/dashboard/lineas-transporte-stats?clientFilter=${encodeURIComponent(
-        appliedClientFilter
-      )}&fechaDesde=${encodeURIComponent(appliedFechaDesde)}&fechaHasta=${encodeURIComponent(
-        appliedFechaHasta
-      )}&lineaTransporte=${encodeURIComponent(
-        appliedLineaTransporteFilter
-      )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
-
-      const lineasTransporteStatsResponse = await fetch(lineasTransporteStatsUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-
-      if (lineasTransporteStatsResponse.ok) {
-        const lineasTransporteStatsData = await lineasTransporteStatsResponse.json();
-        setDashboardStats((prev) => ({
-          ...prev,
-          lineasTransporteStats: lineasTransporteStatsData,
-        }));
-      }
-
-      // Fetch additional data for geographic analysis and other charts
-      const geoUrl = `${baseUrl}/dashboard/stats?clientFilter=${encodeURIComponent(
-        appliedClientFilter
-      )}&geoType=${encodeURIComponent(appliedGeoType)}&fechaDesde=${encodeURIComponent(
-        appliedFechaDesde
-      )}&fechaHasta=${encodeURIComponent(appliedFechaHasta)}&lineaTransporte=${encodeURIComponent(
-        appliedLineaTransporteFilter
-      )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
-
-      const geoResponse = await fetch(geoUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-
-      if (geoResponse.ok) {
-        const geoData = await geoResponse.json();
-        // Merge the geographic and additional data with the main stats
-        setDashboardStats((prev) => ({
-          ...prev,
-          monthlyData: geoData.monthlyData || [],
-          topClients: geoData.topClients || [],
-          topLineasTransporte: geoData.topLineasTransporte || [],
-          topOperadores: geoData.topOperadores || [],
-          topOperadoresTransportes: geoData.topOperadoresTransportes || [],
-          geographicData: geoData.geographicData || [],
-          tiposMonitoreo: geoData.tiposMonitoreo || [],
-        }));
+      if (lineasResponse.ok) {
+        const lineasData = await lineasResponse.json();
+        setDashboardStats((prev) => ({...prev, lineasTransporteStats: lineasData}));
       }
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
@@ -962,29 +861,25 @@ const DashboardPage = () => {
     appliedFechaHasta,
     appliedLineaTransporteFilter,
     appliedOperadorFilter,
-    fetchLineasTransporte,
-    fetchOperadores,
   ]);
 
-  // Fetch role permissions
+  // Fetch role permissions once on mount
   useEffect(() => {
-    const fetchRolePermissions = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/roles/${user.role}`, {
-          method: "GET",
-          credentials: "include",
-        });
-        const data = await response.json();
-        setRoleData(data);
-      } catch (e) {
-        console.log("Error fetching role permissions:", e);
-      }
-    };
+    if (!user?.role) return;
+    fetch(`${baseUrl}/roles/${user.role}`, {method: "GET", credentials: "include"})
+      .then((r) => r.json())
+      .then(setRoleData)
+      .catch(() => {});
+  }, [baseUrl, user?.role]);
 
-    if (user?.role) {
-      fetchRolePermissions();
-    }
-  }, [user]);
+  // Fetch available clients once after roleData is ready
+  useEffect(() => {
+    if (!roleData) return;
+    fetch(`${baseUrl}/clients`, {method: "GET", credentials: "include"})
+      .then((r) => r.ok ? r.json() : [])
+      .then((data) => setAvailableClients(getAllowedClients(roleData, data)))
+      .catch(() => {});
+  }, [baseUrl, roleData]);
 
   useEffect(() => {
     if (!user) {
