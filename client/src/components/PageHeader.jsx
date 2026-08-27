@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 const BREADCRUMB_MAP = {
   // Dashboard group
@@ -15,6 +15,8 @@ const BREADCRUMB_MAP = {
   "/planes-embarque":           ["Monitoreo", "Planes de Embarque"],
   "/buscador-plan":             ["Monitoreo", "Buscador de Plan"],
   "/placa-test":                ["Monitoreo", "Control de Patios"],
+  "/eventos-wialon":            ["Monitoreo", "Alertas Wialon"],
+  "/map-wialon":                ["Monitoreo", "Mapa Wialon"],
 
   // Configuración — Catálogos
   "/tipos_monitoreo":           ["Configuración", "Catálogos", "Tipos de Monitoreo"],
@@ -34,11 +36,14 @@ const BREADCRUMB_MAP = {
   "/auditoria/bitacoras":       ["Configuración", "Auditoría", "Bitácoras"],
 };
 
-const PageHeader = ({ title, count, children, filters, filterActions, onToggleSidebar, defaultFiltersOpen = false, hasActiveFilters = false, onClearFilters }) => {
+const PageHeader = ({ title, subtitle, count, children, filters, filterActions, onToggleSidebar, defaultFiltersOpen = false, hasActiveFilters = false, onClearFilters }) => {
   const [isFiltersOpen, setIsFiltersOpen] = useState(defaultFiltersOpen);
   const { pathname } = useLocation();
+  const navigate = useNavigate();
 
-  const crumbs = BREADCRUMB_MAP[pathname] ?? null;
+  const baseCrumbs = BREADCRUMB_MAP[pathname]
+    ?? (pathname.startsWith("/bitacora/") ? ["Monitoreo", "Bitácoras"] : null);
+  const crumbs = baseCrumbs && subtitle ? [...baseCrumbs, subtitle] : baseCrumbs;
 
   return (
     <div className="bits-header-container">
@@ -50,6 +55,16 @@ const PageHeader = ({ title, count, children, filters, filterActions, onToggleSi
               className="btn btn-sm bits-menu-toggle d-md-none me-2"
               onClick={onToggleSidebar}>
               <i className="fa fa-bars"></i>
+            </button>
+          )}
+          {crumbs && (
+            <button
+              type="button"
+              className="bits-breadcrumb__back"
+              onClick={() => navigate(-1)}
+              title="Regresar"
+            >
+              <i className="fa fa-chevron-left"></i>
             </button>
           )}
           <h1 className="bits-header__title">

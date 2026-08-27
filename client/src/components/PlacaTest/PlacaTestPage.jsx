@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
@@ -117,10 +117,37 @@ const PlacaTestPage = () => {
   const [savedRecords, setSavedRecords] = useState([]);
   const [remolqueRecords, setRemolqueRecords] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [filters, setFilters] = useState({ placa: "", linea: "", status: "", fechaDesde: "", fechaHasta: "" });
+  const [filters, setFilters] = useState(() => {
+    const today = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(today.getDate() - 30);
+    return {
+      placa: "",
+      linea: "",
+      status: "",
+      fechaDesde: thirtyDaysAgo.toISOString().split("T")[0],
+      fechaHasta: today.toISOString().split("T")[0]
+    };
+  });
   const handleFilterChange = (e) => setFilters(prev => ({ ...prev, [e.target.name]: e.target.value }));
-  const clearFilters = () => setFilters({ placa: "", linea: "", status: "", fechaDesde: "", fechaHasta: "" });
-  const hasActiveFilters = !!(filters.placa || filters.linea || filters.status || filters.fechaDesde || filters.fechaHasta);
+  const clearFilters = () => {
+    const today = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(today.getDate() - 30);
+    setFilters({
+      placa: "",
+      linea: "",
+      status: "",
+      fechaDesde: thirtyDaysAgo.toISOString().split("T")[0],
+      fechaHasta: today.toISOString().split("T")[0]
+    });
+  };
+  const hasActiveFilters = useMemo(() => {
+    const today = new Date().toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split("T")[0];
+    return !!(filters.placa || filters.linea || filters.status || 
+             filters.fechaDesde !== thirtyDaysAgo || filters.fechaHasta !== today);
+  }, [filters]);
   const [showModal, setShowModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete] = useState(null);

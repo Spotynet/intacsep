@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -39,6 +40,7 @@ export const Select = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuStyle, setMenuStyle] = useState({});
   const wrapRef = useRef(null);
   const searchRef = useRef(null);
 
@@ -49,10 +51,30 @@ export const Select = ({
   );
 
   const filtered = query
-    ? normalizedOptions.filter((o) => normalize(o.label).includes(normalize(query)))
+    ? normalizedOptions.filter((o) => {
+        const searchStr = typeof o.label === "string" ? o.label : (o.searchText || "");
+        return normalize(searchStr).includes(normalize(query));
+      })
     : normalizedOptions;
 
   const selected = normalizedOptions.find((o) => o.value === value) ?? null;
+
+  const positionMenu = useCallback(() => {
+    if (!wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const menuHeight = 240;
+    const openUp = direction !== "up" && spaceBelow < menuHeight && rect.top > menuHeight;
+
+    setMenuStyle({
+      position: "fixed",
+      left: rect.left,
+      width: rect.width,
+      ...(openUp
+        ? { bottom: window.innerHeight - rect.top + 5, top: "auto" }
+        : { top: rect.bottom + 5, bottom: "auto" }),
+    });
+  }, [direction]);
 
   const handleSelect = (opt) => {
     onChange(opt.value);
@@ -69,17 +91,68 @@ export const Select = ({
   const handleToggle = () => {
     if (disabled) return;
     setOpen((prev) => {
-      if (!prev) setTimeout(() => searchRef.current?.focus(), 10);
+      if (!prev) {
+        positionMenu();
+        setTimeout(() => searchRef.current?.focus(), 10);
+      }
       return !prev;
     });
   };
+
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => positionMenu();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, positionMenu]);
+
+  const menu = open && createPortal(
+    <div className={`pselect__menu${direction === "up" ? " pselect__menu--up" : ""}`} style={menuStyle} onMouseDown={(e) => e.stopPropagation()}>
+      {searchable && (
+        <div className="pselect__search">
+          <i className="fa fa-magnifying-glass"></i>
+          <input
+            ref={searchRef}
+            type="text"
+            className="pselect__search-input"
+            placeholder="Buscar..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      )}
+      <ul className="pselect__options">
+        {filtered.length === 0 ? (
+          <li className="pselect__option pselect__option--empty">Sin resultados</li>
+        ) : (
+          filtered.map((opt) => (
+            <li
+              key={opt.value}
+              className={`pselect__option${opt.value === value ? " pselect__option--selected" : ""}`}
+              onClick={() => handleSelect(opt)}
+            >
+              {opt.value === value && <i className="fa fa-check pselect__check"></i>}
+              <div className="d-flex align-items-center justify-content-between w-100 gap-2">
+                {opt.display || opt.label}
+              </div>
+            </li>
+          ))
+        )}
+      </ul>
+    </div>,
+    document.body
+  );
 
   return (
     <div className={`pselect${open ? " pselect--open" : ""}${disabled ? " pselect--disabled" : ""}${className ? ` ${className}` : ""}`} ref={wrapRef}>
       {label && <span className="pselect__label">{label}</span>}
       <div className="pselect__control" onClick={handleToggle}>
         <span className={`pselect__value${!selected ? " pselect__value--placeholder" : ""}`}>
-          {selected ? selected.label : placeholder}
+          {selected ? (selected.display || selected.label) : placeholder}
         </span>
         <div className="pselect__indicators">
           {clearable && selected && (
@@ -93,40 +166,7 @@ export const Select = ({
         </div>
       </div>
 
-      {open && (
-        <div className={`pselect__menu${direction === "up" ? " pselect__menu--up" : ""}`}>
-          {searchable && (
-            <div className="pselect__search">
-              <i className="fa fa-magnifying-glass"></i>
-              <input
-                ref={searchRef}
-                type="text"
-                className="pselect__search-input"
-                placeholder="Buscar..."
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </div>
-          )}
-          <ul className="pselect__options">
-            {filtered.length === 0 ? (
-              <li className="pselect__option pselect__option--empty">Sin resultados</li>
-            ) : (
-              filtered.map((opt) => (
-                <li
-                  key={opt.value}
-                  className={`pselect__option${opt.value === value ? " pselect__option--selected" : ""}`}
-                  onClick={() => handleSelect(opt)}
-                >
-                  {opt.value === value && <i className="fa fa-check pselect__check"></i>}
-                  {opt.label}
-                </li>
-              ))
-            )}
-          </ul>
-        </div>
-      )}
+      {menu}
     </div>
   );
 };
@@ -154,6 +194,7 @@ export const MultiSelect = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [menuStyle, setMenuStyle] = useState({});
   const wrapRef = useRef(null);
   const searchRef = useRef(null);
 
@@ -164,7 +205,10 @@ export const MultiSelect = ({
   );
 
   const filtered = query
-    ? normalizedOptions.filter((o) => normalize(o.label).includes(normalize(query)))
+    ? normalizedOptions.filter((o) => {
+        const searchStr = typeof o.label === "string" ? o.label : (o.searchText || "");
+        return normalize(searchStr).includes(normalize(query));
+      })
     : normalizedOptions;
 
   const isSelected = useCallback((v) => value.includes(v), [value]);
@@ -183,17 +227,94 @@ export const MultiSelect = ({
     onChange([]);
   };
 
+  const positionMenu = useCallback(() => {
+    if (!wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const menuHeight = 240;
+    const openUp = spaceBelow < menuHeight && rect.top > menuHeight;
+
+    setMenuStyle({
+      position: "fixed",
+      left: rect.left,
+      width: rect.width,
+      ...(openUp
+        ? { bottom: window.innerHeight - rect.top + 5, top: "auto" }
+        : { top: rect.bottom + 5, bottom: "auto" }),
+    });
+  }, []);
+
   const handleToggle = () => {
     if (disabled) return;
     setOpen((prev) => {
-      if (!prev) setTimeout(() => searchRef.current?.focus(), 10);
+      if (!prev) {
+        positionMenu();
+        setTimeout(() => searchRef.current?.focus(), 10);
+      }
       return !prev;
     });
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => positionMenu();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, positionMenu]);
+
   const selectedOptions = normalizedOptions.filter((o) => isSelected(o.value));
   const visibleChips = selectedOptions.slice(0, maxDisplay);
   const overflow = selectedOptions.length - maxDisplay;
+
+  const menu = open && createPortal(
+    <div className="pselect__menu" style={menuStyle} onMouseDown={(e) => e.stopPropagation()}>
+      <div className="pselect__search">
+        <i className="fa fa-magnifying-glass"></i>
+        <input
+          ref={searchRef}
+          type="text"
+          className="pselect__search-input"
+          placeholder="Buscar..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+      {selectedOptions.length > 0 && (
+        <div className="pselect__menu-header">
+          <span>{selectedOptions.length} seleccionado{selectedOptions.length !== 1 ? "s" : ""}</span>
+          <button type="button" className="pselect__deselect-all" onClick={clearAll}>Limpiar</button>
+        </div>
+      )}
+      <ul className="pselect__options">
+        {filtered.length === 0 ? (
+          <li className="pselect__option pselect__option--empty">Sin resultados</li>
+        ) : (
+          filtered.map((opt) => {
+            const sel = isSelected(opt.value);
+            return (
+              <li
+                key={opt.value}
+                className={`pselect__option${sel ? " pselect__option--selected" : ""}`}
+                onClick={() => toggle(opt)}
+              >
+                <span className={`pselect__checkbox${sel ? " pselect__checkbox--checked" : ""}`}>
+                  {sel && <i className="fa fa-check"></i>}
+                </span>
+                <div className="d-flex align-items-center justify-content-between w-100 gap-2">
+                  {opt.display || opt.label}
+                </div>
+              </li>
+            );
+          })
+        )}
+      </ul>
+    </div>,
+    document.body
+  );
 
   return (
     <div className={`pselect pselect--multi${open ? " pselect--open" : ""}${disabled ? " pselect--disabled" : ""}`} ref={wrapRef}>
@@ -220,7 +341,7 @@ export const MultiSelect = ({
         </div>
         <div className="pselect__indicators">
           {selectedOptions.length > 0 && (
-            <button type="button" className="pselect__clear" onClick={clearAll} tabIndex={-1}>
+            <button type="button" className="pselect__clear" onClick={clearAll} tabIndex={1}>
               <i className="fa fa-times"></i>
             </button>
           )}
@@ -230,49 +351,7 @@ export const MultiSelect = ({
         </div>
       </div>
 
-      {open && (
-        <div className="pselect__menu">
-          <div className="pselect__search">
-            <i className="fa fa-magnifying-glass"></i>
-            <input
-              ref={searchRef}
-              type="text"
-              className="pselect__search-input"
-              placeholder="Buscar..."
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-            />
-          </div>
-          {selectedOptions.length > 0 && (
-            <div className="pselect__menu-header">
-              <span>{selectedOptions.length} seleccionado{selectedOptions.length !== 1 ? "s" : ""}</span>
-              <button type="button" className="pselect__deselect-all" onClick={clearAll}>Limpiar</button>
-            </div>
-          )}
-          <ul className="pselect__options">
-            {filtered.length === 0 ? (
-              <li className="pselect__option pselect__option--empty">Sin resultados</li>
-            ) : (
-              filtered.map((opt) => {
-                const sel = isSelected(opt.value);
-                return (
-                  <li
-                    key={opt.value}
-                    className={`pselect__option${sel ? " pselect__option--selected" : ""}`}
-                    onClick={() => toggle(opt)}
-                  >
-                    <span className={`pselect__checkbox${sel ? " pselect__checkbox--checked" : ""}`}>
-                      {sel && <i className="fa fa-check"></i>}
-                    </span>
-                    {opt.label}
-                  </li>
-                );
-              })
-            )}
-          </ul>
-        </div>
-      )}
+      {menu}
     </div>
   );
 };

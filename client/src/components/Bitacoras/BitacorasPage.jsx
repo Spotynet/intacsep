@@ -7,6 +7,7 @@ import Sidebar from "../Sidebar";
 import "jspdf-autotable"; // For table support in jsPDF
 import {convertToUpperCase} from "../../utils/utils"; // Assume these functions exist
 import PageHeader from "../PageHeader";
+import FilterBar from "../FilterBar";
 import DataTable from "../DataTable";
 import { Select } from "../Select";
 import DatePicker from "../DatePicker";
@@ -74,6 +75,7 @@ const BitacorasPage = () => {
   const {user} = useAuth();
   const {isSidebarCollapsed, toggleSidebar, setIsMobileSidebarOpen} = useSidebar();
   const [showModal, setShowModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [roleData, setRoleData] = useState(null);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [selectedOption, setSelectedOption] = useState("all");
@@ -91,7 +93,14 @@ const BitacorasPage = () => {
   const [sortField, setSortField] = useState("bitacora_id"); // Default sort field
   const [sortOrder, setSortOrder] = useState("desc"); // Default sort order
   const [statusFilter, setStatusFilter] = useState("");
-  const [creationDateFilter, setCreationDateFilter] = useState("");
+  const [fechaDesde, setFechaDesde] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  });
+  const [fechaHasta, setFechaHasta] = useState(() => {
+    return new Date().toISOString().split("T")[0];
+  });
   const [clienteFilter, setClienteFilter] = useState("");
   const [operadorFilter, setOperadorFilter] = useState("");
   const [monitoreoFilter, setMonitoreoFilter] = useState("");
@@ -106,9 +115,17 @@ const BitacorasPage = () => {
   const [bitacoraToDelete, setBitacoraToDelete] = useState(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
 
+  const todayStr = new Date().toISOString().split("T")[0];
+  const lastMonthStr = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  })();
+
   const hasActiveFilters =
     idFilter || clienteFilter || statusFilter || monitoreoFilter ||
-    operadorFilter || lineaTransporteFilter || creationDateFilter;
+    operadorFilter || lineaTransporteFilter || 
+    fechaDesde !== lastMonthStr || fechaHasta !== todayStr;
 
   const updateFormDataFromUser = useCallback(() => {
     if (user) {
@@ -131,7 +148,8 @@ const BitacorasPage = () => {
         // Build filters object
         const filters = {
           statusFilter,
-          creationDateFilter,
+          fechaDesde,
+          fechaHasta,
           clienteFilter,
           monitoreoFilter,
           operadorFilter,
@@ -236,7 +254,8 @@ const BitacorasPage = () => {
     currentPage,
     itemsPerPage,
     statusFilter,
-    creationDateFilter,
+    fechaDesde,
+    fechaHasta,
     clienteFilter,
     monitoreoFilter,
     operadorFilter,
@@ -320,6 +339,7 @@ const BitacorasPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setSubmitting(true);
     try {
       // Validate ObjectIds before processing
       const validateObjectId = (id) => {
@@ -331,11 +351,13 @@ const BitacorasPage = () => {
       // Check if origen and destino are valid ObjectIds
       if (!validateObjectId(formData.origen)) {
         alert("Error: El origen debe ser un ID válido (24 caracteres hexadecimales sin espacios)");
+        setSubmitting(false);
         return;
       }
 
       if (!validateObjectId(formData.destino)) {
         alert("Error: El destino debe ser un ID válido (24 caracteres hexadecimales sin espacios)");
+        setSubmitting(false);
         return;
       }
 
@@ -430,6 +452,7 @@ const BitacorasPage = () => {
         }
 
         handleModalToggle();
+        window.location.href = `/bitacora/${createdBitacora._id}`;
       } else {
         // Handle validation errors from backend
         if (response.status === 400) {
@@ -446,6 +469,8 @@ const BitacorasPage = () => {
       }
     } catch (e) {
       console.error("Error creating bitácora:", e);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -475,7 +500,11 @@ const BitacorasPage = () => {
   // Clear filters function
   const clearFilters = () => {
     setStatusFilter("");
-    setCreationDateFilter("");
+    const today = new Date().toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    setFechaDesde(thirtyDaysAgo.toISOString().split("T")[0]);
+    setFechaHasta(today);
     setClienteFilter("");
     setMonitoreoFilter("");
     setOperadorFilter("");
@@ -492,8 +521,13 @@ const BitacorasPage = () => {
     setCurrentPage(1);
   };
 
-  const handleCreationDateFilterChange = (value) => {
-    setCreationDateFilter(value);
+  const handleFechaDesdeChange = (value) => {
+    setFechaDesde(value);
+    setCurrentPage(1);
+  };
+
+  const handleFechaHastaChange = (value) => {
+    setFechaHasta(value);
     setCurrentPage(1);
   };
 
@@ -855,90 +889,95 @@ const BitacorasPage = () => {
             hasActiveFilters={hasActiveFilters}
             onClearFilters={clearFilters}
             filters={
-              <div className="bits-filters-panel">
-                <div className="bits-filters-grid">
-                  <div>
-                    <span className="pselect__label">ID</span>
-                    <div className="pdt-field">
-                      <i className="fa fa-hashtag pdt-field__icon"></i>
-                      <input
-                        type="text"
-                        className="pdt-field__input"
-                        placeholder="Buscar..."
-                        value={idFilter}
-                        onChange={(e) => handleIdFilterChange(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <Select
-                      label="Cliente"
-                      placeholder="Todos los clientes"
-                      value={clienteFilter || null}
-                      onChange={(v) => handleClienteFilterChange(v ?? "")}
-                      options={clients
-                        .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
-                        .map((c) => ({ value: c.razon_social, label: c.razon_social }))}
-                    />
-                  </div>
-                  <div>
-                    <Select
-                      label="Línea Transporte"
-                      placeholder="Todas las líneas"
-                      value={lineaTransporteFilter || null}
-                      onChange={(v) => handleLineaTransporteFilterChange(v ?? "")}
-                      options={getAllUniqueTransportLines().map((l) => ({ value: l, label: l }))}
-                    />
-                  </div>
-                  <div>
-                    <Select
-                      label="Tipo Monitoreo"
-                      placeholder="Todos los tipos"
-                      value={monitoreoFilter || null}
-                      onChange={(v) => handleMonitoreoFilterChange(v ?? "")}
-                      options={monitoreos
-                        .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
-                        .map((m) => ({ value: m.tipoMonitoreo, label: m.tipoMonitoreo }))}
-                    />
-                  </div>
-                  <div>
-                    <Select
-                      label="Usuario"
-                      placeholder="Todos los usuarios"
-                      value={operadorFilter || null}
-                      onChange={(v) => handleOperadorFilterChange(v ?? "")}
-                      options={operadores
-                        .filter((o) => o?.name)
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map((o) => ({ value: o.name, label: o.name }))}
-                    />
-                  </div>
-                  <div>
-                    <DatePicker
-                      label="Fecha Creación"
-                      value={creationDateFilter}
-                      onChange={handleCreationDateFilterChange}
-                    />
-                  </div>
-                  <div>
-                    <Select
-                      label="Estatus"
-                      placeholder="Todos los estatus"
-                      value={statusFilter || null}
-                      onChange={(v) => handleStatusFilterChange(v ?? "")}
-                      options={[
-                        { value: "nueva", label: "Nueva" },
-                        { value: "validada", label: "Validada" },
-                        { value: "iniciada", label: "Iniciada" },
-                        ...(roleData?.ver_bitacoras_cerradas !== false
-                          ? [{ value: "cerrada", label: "Cerrada" }, { value: "cerrada (e)", label: "Cerrada (e)" }]
-                          : []),
-                        { value: "finalizada", label: "Finalizada" },
-                      ]}
+              <FilterBar onClear={clearFilters}>
+                <div>
+                  <span className="pselect__label">ID</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-hashtag pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
+                      value={idFilter}
+                      onChange={(e) => handleIdFilterChange(e.target.value)}
                     />
                   </div>
                 </div>
-              </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    placeholder="Todos los clientes"
+                    value={clienteFilter || null}
+                    onChange={(v) => handleClienteFilterChange(v ?? "")}
+                    options={clients
+                      .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                      .map((c) => ({ value: c.razon_social, label: c.razon_social }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Línea Transporte"
+                    placeholder="Todas las líneas"
+                    value={lineaTransporteFilter || null}
+                    onChange={(v) => handleLineaTransporteFilterChange(v ?? "")}
+                    options={getAllUniqueTransportLines().map((l) => ({ value: l, label: l }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Tipo Monitoreo"
+                    placeholder="Todos los tipos"
+                    value={monitoreoFilter || null}
+                    onChange={(v) => handleMonitoreoFilterChange(v ?? "")}
+                    options={monitoreos
+                      .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
+                      .map((m) => ({ value: m.tipoMonitoreo, label: m.tipoMonitoreo }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Usuario"
+                    placeholder="Todos los usuarios"
+                    value={operadorFilter || null}
+                    onChange={(v) => handleOperadorFilterChange(v ?? "")}
+                    options={operadores
+                      .filter((o) => o?.name)
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((o) => ({ value: o.name, label: o.name }))}
+                  />
+                </div>
+                <div>
+                  <DatePicker
+                    label="Desde"
+                    value={fechaDesde}
+                    onChange={handleFechaDesdeChange}
+                  />
+                </div>
+                <div>
+                  <DatePicker
+                    label="Hasta"
+                    value={fechaHasta}
+                    onChange={handleFechaHastaChange}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Estatus"
+                    placeholder="Todos los estatus"
+                    value={statusFilter || null}
+                    onChange={(v) => handleStatusFilterChange(v ?? "")}
+                    options={[
+                      { value: "nueva", label: "Nueva" },
+                      { value: "validada", label: "Validada" },
+                      { value: "iniciada", label: "Iniciada" },
+                      ...(roleData?.ver_bitacoras_cerradas !== false
+                        ? [{ value: "cerrada", label: "Cerrada" }, { value: "cerrada (e)", label: "Cerrada (e)" }]
+                        : []),
+                      { value: "finalizada", label: "Finalizada" },
+                    ]}
+                  />
+                </div>
+              </FilterBar>
             }
           >
             {roleData?.bitacoras?.create && (
@@ -976,14 +1015,16 @@ const BitacorasPage = () => {
                     sortable: true,
                     sortKey: "frecuencia",
                     render: (row) => (
-                      <div
-                        className="semaforo-container"
-                        onClick={() => openFrecuenciaModal(row)}
-                        style={{cursor: "pointer"}}>
-                        {getEventColor(row).map((color, i) => (
-                          <div key={i} className="semaforo-circle" style={{backgroundColor: color}} />
-                        ))}
-                      </div>
+                      <Tooltip text="Tracking de Monitoreo" position="right">
+                        <div
+                          className="semaforo-container"
+                          onClick={() => openFrecuenciaModal(row)}
+                          style={{cursor: "pointer"}}>
+                          {getEventColor(row).map((color, i) => (
+                            <div key={i} className="semaforo-circle" style={{backgroundColor: color}} />
+                          ))}
+                        </div>
+                      </Tooltip>
                     ),
                   },
                   {
@@ -993,12 +1034,14 @@ const BitacorasPage = () => {
                     className: "table-cell",
                     sortable: true,
                     render: (row) => (
-                      <CellBadge
-                        label={row.bitacora_id}
-                        color={getLatestFrecuenciaColor(row)}
-                        className="cell-badge--nowrap"
-                        onClick={() => window.location.href = `/bitacora/${row._id}`}
-                      />
+                      <Tooltip text="Ver Detalles" position="top">
+                        <CellBadge
+                          label={row.bitacora_id}
+                          color={getLatestFrecuenciaColor(row)}
+                          className="cell-badge--nowrap"
+                          onClick={() => window.location.href = `/bitacora/${row._id}`}
+                        />
+                      </Tooltip>
                     ),
                   },
                   {
@@ -1057,7 +1100,7 @@ const BitacorasPage = () => {
                     render: (row) => (
                       <div style={{display: "flex", justifyContent: "flex-start", alignItems: "center", gap: "0.375rem"}}>
                         <CellBadge
-                          label={`${row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}${row.edited ? " (e)" : ""}`}
+                          label={`${row.status === "plan de embarque" ? "Embarque" : row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}${row.edited ? " (e)" : ""}`}
                           variant={
                             row.status === "nueva"      ? "blue"   :
                             row.status === "validada"   ? "yellow" :
@@ -1091,20 +1134,22 @@ const BitacorasPage = () => {
                     headerClassName: "text-end",
                     render: (row) => (
                       <div className="d-flex justify-content-end gap-2">
-                        <button
-                          className={`action-btn ${isAnyTransporteClosed(row) ? "btn-primary" : "btn-secondary"}`}
-                          onClick={() => handlePDFToggle(row)}
-                          disabled={!isAnyTransporteClosed(row)}
-                          title="Descargar PDF">
-                          <i className="fa fa-file-pdf"></i>
-                        </button>
-                        {roleData?.bitacoras?.delete && (
+                        <Tooltip text="Descargar PDF" position="left">
                           <button
-                            className="action-btn btn-danger"
-                            onClick={() => handleDeleteClick(row)}
-                            title="Eliminar bitácora">
-                            <i className="fa fa-trash"></i>
+                            className={`action-btn ${isAnyTransporteClosed(row) ? "btn-pdf" : "btn-secondary"}`}
+                            onClick={() => handlePDFToggle(row)}
+                            disabled={!isAnyTransporteClosed(row)}>
+                            <i className="fa fa-file-pdf"></i>
                           </button>
+                        </Tooltip>
+                        {roleData?.bitacoras?.delete && (
+                          <Tooltip text="Eliminar bitácora" position="left">
+                            <button
+                              className="action-btn btn-danger"
+                              onClick={() => handleDeleteClick(row)}>
+                              <i className="fa fa-trash"></i>
+                            </button>
+                          </Tooltip>
                         )}
                       </div>
                     ),
@@ -1201,54 +1246,40 @@ const BitacorasPage = () => {
           show={showModal}
           title="Nueva Bitácora"
           onClose={handleModalToggle}
-          onSubmit={handleSubmit}>
+          onSubmit={handleSubmit}
+          submitDisabled={submitting}
+          submitText={submitting ? "Guardando..." : "Guardar"}>
           <div style={{maxHeight: "60vh", overflowY: "auto", paddingRight: "6px"}}>
             {/* Tipo de Monitoreo */}
             <div className="mb-3">
-              <label htmlFor="monitoreo" className="form-label">
-                Tipo de Monitoreo <span className="text-danger">*</span>
-              </label>
-              <select
-                className="form-select"
-                id="monitoreo"
-                value={formData.monitoreo}
-                onChange={handleChange}
-                required>
-                <option value="">Selecciona una opción</option>
-                {monitoreos
+              <Select
+                label="Tipo de Monitoreo *"
+                placeholder="Selecciona una opción"
+                value={formData.monitoreo || null}
+                onChange={(val) => setFormData((prev) => ({...prev, monitoreo: val}))}
+                options={monitoreos
                   .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
-                  .map((monitoreo) => (
-                    <option key={monitoreo._id} value={monitoreo.tipoMonitoreo}>
-                      {monitoreo.tipoMonitoreo}
-                    </option>
-                  ))}
-              </select>
+                  .map((m) => ({value: m.tipoMonitoreo, label: m.tipoMonitoreo}))}
+              />
             </div>
 
             {/* Cliente */}
             <div className="mb-3">
-              <label htmlFor="cliente" className="form-label">
-                Cliente <span className="text-danger">*</span>
-              </label>
-              <select
-                className="form-select"
-                id="cliente"
-                value={formData.cliente}
-                onChange={handleChange}
-                required>
-                <option value="">Selecciona una opción</option>
-                {clients
+              <Select
+                label="Cliente *"
+                placeholder="Selecciona una opción"
+                value={formData.cliente || null}
+                onChange={(val) =>
+                  setFormData((prev) => ({...prev, cliente: val, origen: "", destino: ""}))
+                }
+                options={clients
                   .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
-                  .map((client) => (
-                    <option key={client._id} value={client.razon_social}>
-                      {client.razon_social}
-                    </option>
-                  ))}
-              </select>
+                  .map((c) => ({value: c.razon_social, label: c.razon_social}))}
+              />
             </div>
 
             <div className="form-group mb-3">
-              <label htmlFor="folio_servicio">Folio de Servicio <span className="text-danger">*</span></label>
+              <label htmlFor="folio_servicio" className="form-label">Folio de Servicio <span className="text-danger">*</span></label>
               <input
                 id="folio_servicio"
                 type="text"
@@ -1261,60 +1292,40 @@ const BitacorasPage = () => {
 
             {/* Origen */}
             <div className="mb-3">
-              <label htmlFor="origen" className="form-label">
-                Origen <span className="text-danger">*</span>
-              </label>
-              <select
-                id="origen"
-                className="form-select"
-                value={formData.origen}
-                onChange={handleChange}
+              <Select
+                label="Origen *"
+                placeholder={formData.cliente ? "Seleccionar origen" : "Primero selecciona un cliente"}
+                value={formData.origen || null}
+                onChange={(val) => setFormData((prev) => ({...prev, origen: val}))}
                 disabled={!formData.cliente}
-                required>
-                <option value="">
-                  {formData.cliente ? "Seleccionar origen" : "Primero selecciona un cliente"}
-                </option>
-                {formData.cliente &&
-                  origenes
-                    .filter((origen) => origen.cliente === formData.cliente)
-                    .sort((a, b) =>
-                      `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`)
-                    )
-                    .map((origen) => (
-                      <option key={origen._id} value={origen._id}>
-                        {`${origen.nombre}, ${origen.estado}`}
-                      </option>
-                    ))}
-              </select>
+                options={
+                  formData.cliente
+                    ? origenes
+                        .filter((o) => o.cliente === formData.cliente)
+                        .sort((a, b) => `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`))
+                        .map((o) => ({value: o._id, label: `${o.nombre}, ${o.estado}`}))
+                    : []
+                }
+              />
             </div>
 
             {/* Destino */}
             <div className="mb-3">
-              <label htmlFor="destino" className="form-label">
-                Destino <span className="text-danger">*</span>
-              </label>
-              <select
-                id="destino"
-                className="form-select"
-                value={formData.destino}
-                onChange={handleChange}
+              <Select
+                label="Destino *"
+                placeholder={formData.cliente ? "Seleccionar destino" : "Primero selecciona un cliente"}
+                value={formData.destino || null}
+                onChange={(val) => setFormData((prev) => ({...prev, destino: val}))}
                 disabled={!formData.cliente}
-                required>
-                <option value="">
-                  {formData.cliente ? "Seleccionar destino" : "Primero selecciona un cliente"}
-                </option>
-                {formData.cliente &&
-                  destinos
-                    .filter((destino) => destino.cliente === formData.cliente)
-                    .sort((a, b) =>
-                      `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`)
-                    )
-                    .map((destino) => (
-                      <option key={destino._id} value={destino._id}>
-                        {`${destino.nombre}, ${destino.estado}`}
-                      </option>
-                    ))}
-              </select>
+                options={
+                  formData.cliente
+                    ? destinos
+                        .filter((d) => d.cliente === formData.cliente)
+                        .sort((a, b) => `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`))
+                        .map((d) => ({value: d._id, label: `${d.nombre}, ${d.estado}`}))
+                    : []
+                }
+              />
             </div>
             {(formData.monitoreo === "Custodia fisica" ||
               formData.monitoreo === "CUSTODIA FISICA" ||

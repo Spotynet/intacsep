@@ -1,6 +1,6 @@
 import "bootstrap/dist/js/bootstrap.bundle.min";
-import {useState, useEffect} from "react";
-import {useNavigate} from "react-router-dom";
+import {useState, useEffect, useCallback} from "react";
+import {useNavigate, useLocation} from "react-router-dom";
 import {useAuth} from "../context/AuthContext.jsx";
 import {useSidebar} from "../context/SidebarContext.jsx";
 import InactivityModal from "./Settings/InactivityModal.jsx";
@@ -10,6 +10,7 @@ const Sidebar = () => {
   const {user, logout} = useAuth();
   const {isSidebarCollapsed, toggleSidebar, isMobileSidebarOpen, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
+  const location = useLocation();
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
   const [showInacModal, setShowInacModal] = useState(false);
@@ -37,6 +38,32 @@ const Sidebar = () => {
     };
   });
 
+  const [summaryCounts, setSummaryCounts] = useState(null);
+
+  const fetchSummaryCounts = useCallback(async () => {
+    try {
+      const res = await fetch(`${baseUrl}/dashboard/summary-counts`, {credentials: "include"});
+      if (res.ok) {
+        const data = await res.json();
+        setSummaryCounts(data);
+      } else {
+        console.warn("[Sidebar] summary-counts HTTP", res.status);
+      }
+    } catch (e) {
+      console.warn("[Sidebar] summary-counts error:", e);
+    }
+  }, [baseUrl]);
+
+  useEffect(() => {
+    fetchSummaryCounts();
+    const interval = setInterval(fetchSummaryCounts, 60000);
+    return () => clearInterval(interval);
+  }, [fetchSummaryCounts]);
+
+  // Active route matching
+  const path = location.pathname;
+  const isActive = (route) => path === route || path.startsWith(route + "/");
+
   useEffect(() => {
     if (!user?.role) return;
     const fetchRolePermissions = async () => {
@@ -52,7 +79,7 @@ const Sidebar = () => {
       }
     };
     fetchRolePermissions();
-  }, [user]);
+  }, [user, location.pathname]);
 
   // Derived visibility flags for parent groups
   const hasRead = (...keys) => keys.some((k) => roleData?.[k]?.read);
@@ -81,7 +108,9 @@ const Sidebar = () => {
   const showPlanesEmbarque = hasRead("planes_embarque", "plandeembarque");
   const showBuscadorPlan = hasRead("buscador_plan");
   const showControlPatios = hasRead("control_patios");
-  const showMonitoreo = showBitacoras || showPlanesEmbarque || showBuscadorPlan || showControlPatios;
+  const showEventosWialon = hasRead("eventos_wialon");
+  const showMapWialon = hasRead("map_wialon");
+  const showMonitoreo = showBitacoras || showPlanesEmbarque || showBuscadorPlan || showControlPatios || showEventosWialon || showMapWialon;
 
   // Functions
   const openInacModal = () => {
@@ -141,7 +170,7 @@ const Sidebar = () => {
             </div>
             {isExpanded && (
               <div className="user-info">
-                <h6 className="user-name">
+                <h6 className="user-name" style={{cursor: "pointer"}} onClick={() => navigate("/perfil")} title="Ver perfil">
                   {user?.firstName} {user?.lastName}
                 </h6>
                 <span className="user-role">{user?.role}</span>
@@ -182,37 +211,37 @@ const Sidebar = () => {
                   {collapsedItems.dashboardCollapse && isExpanded && (
                     <ul className="submenu">
                       {showDashboardGeneral && (
-                        <li onClick={() => navigate("/dashboard/general")}>
+                        <li onClick={() => navigate("/dashboard/general")} className={isActive("/dashboard/general") ? "active" : ""}>
                           <i className="fa fa-chart-bar"></i>
                           <span>General</span>
                         </li>
                       )}
                       {showDashboardAnomalias && (
-                        <li onClick={() => navigate("/dashboard/anomalias")}>
+                        <li onClick={() => navigate("/dashboard/anomalias")} className={isActive("/dashboard/anomalias") ? "active" : ""}>
                           <i className="fa fa-exclamation-triangle"></i>
                           <span>Anomalías</span>
                         </li>
                       )}
                       {showReporteEventos && (
-                        <li onClick={() => navigate("/reporte-eventos")}>
+                        <li onClick={() => navigate("/reporte-eventos")} className={isActive("/reporte-eventos") ? "active" : ""}>
                           <i className="fa fa-file-lines"></i>
                           <span>Reporte Eventos</span>
                         </li>
                       )}
                       {showReporteEstadisticas && (
-                        <li onClick={() => navigate("/reporte-estadisticas")}>
+                        <li onClick={() => navigate("/reporte-estadisticas")} className={isActive("/reporte-estadisticas") ? "active" : ""}>
                           <i className="fa fa-clock"></i>
                           <span>Reporte de puntualidad</span>
                         </li>
                       )}
                       {showReporteControlPatios && (
-                        <li onClick={() => navigate("/reporte-control-patios")}>
+                        <li onClick={() => navigate("/reporte-control-patios")} className={isActive("/reporte-control-patios") ? "active" : ""}>
                           <i className="fa fa-warehouse"></i>
                           <span>Dashboard Patios</span>
                         </li>
                       )}
                       {showReporteControlPatios && (
-                        <li onClick={() => navigate("/reporte-detalle-patios")}>
+                        <li onClick={() => navigate("/reporte-detalle-patios")} className={isActive("/reporte-detalle-patios") ? "active" : ""}>
                           <i className="fa fa-list-alt"></i>
                           <span>Reporte Patios</span>
                         </li>
@@ -249,27 +278,61 @@ const Sidebar = () => {
                   {collapsedItems.bitacorasCollapse && isExpanded && (
                     <ul className="submenu">
                       {showBitacoras && (
-                        <li onClick={() => navigate("/bitacoras")}>
+                        <li onClick={() => navigate("/bitacoras")} className={isActive("/bitacoras") ? "active" : ""}>
                           <i className="fa fa-book"></i>
                           <span>Bitácoras</span>
+                          {summaryCounts?.totalBitacoras != null && (
+                            <span className="sidebar-badge sidebar-badge--bitacora">
+                              {summaryCounts.totalBitacoras}
+                            </span>
+                          )}
                         </li>
                       )}
                       {showPlanesEmbarque && (
-                        <li onClick={() => navigate("/planes-embarque")}>
+                        <li onClick={() => navigate("/planes-embarque")} className={isActive("/planes-embarque") ? "active" : ""}>
                           <i className="fa fa-ship"></i>
                           <span>Planes de Embarque</span>
                         </li>
                       )}
                       {showBuscadorPlan && (
-                        <li onClick={() => navigate("/buscador-plan")}>
+                        <li onClick={() => navigate("/buscador-plan")} className={isActive("/buscador-plan") ? "active" : ""}>
                           <i className="fa fa-magnifying-glass"></i>
                           <span>Buscador de Plan</span>
                         </li>
                       )}
                       {showControlPatios && (
-                        <li onClick={() => navigate("/placa-test")}>
+                        <li onClick={() => navigate("/placa-test")} className={isActive("/placa-test") ? "active" : ""}>
                           <i className="fa fa-id-card"></i>
                           <span>Control de patios</span>
+                          {summaryCounts?.enPatio && (
+                            <span className="sidebar-badge sidebar-badge--patio">
+                              <i className="fa fa-truck sidebar-badge__icon"></i>{summaryCounts.enPatio.tractores}
+                              <span className="sidebar-badge__sep">·</span>
+                              <i className="fa fa-trailer sidebar-badge__icon"></i>{summaryCounts.enPatio.remolques}
+                            </span>
+                          )}
+                        </li>
+                      )}
+                      {showEventosWialon && (
+                        <li onClick={() => navigate("/eventos-wialon")} className={isActive("/eventos-wialon") ? "active" : ""}>
+                          <i className="fa fa-satellite-dish"></i>
+                          <span>Alertas Wialon</span>
+                          {summaryCounts?.currentAlerts != null && (
+                            <span className="sidebar-badge sidebar-badge--alert">
+                              {summaryCounts.currentAlerts}
+                            </span>
+                          )}
+                        </li>
+                      )}
+                      {showMapWialon && (
+                        <li onClick={() => navigate("/map-wialon")} className={isActive("/map-wialon") ? "active" : ""}>
+                          <i className="fa fa-map-marked-alt"></i>
+                          <span>Mapa Wialon</span>
+                          {summaryCounts?.activeUnits != null && (
+                            <span className="sidebar-badge sidebar-badge--unit">
+                              {summaryCounts.activeUnits}
+                            </span>
+                          )}
                         </li>
                       )}
                     </ul>
@@ -316,46 +379,46 @@ const Sidebar = () => {
                           />
                         </div>
 
-                        {collapsedItems.catalogosCollapse && (
+                          {collapsedItems.catalogosCollapse && (
                           <ul className="sub-submenu">
                             {roleData.tipos_de_monitoreo?.read && (
-                              <li onClick={() => navigate("/tipos_monitoreo")}>
+                              <li onClick={() => navigate("/tipos_monitoreo")} className={isActive("/tipos_monitoreo") ? "active" : ""}>
                                 <i className="fa fa-tags"></i>
                                 <span>Tipos Monitoreo</span>
                               </li>
                             )}
                             {roleData.eventos?.read && (
-                              <li onClick={() => navigate("/eventos")}>
+                              <li onClick={() => navigate("/eventos")} className={isActive("/eventos") ? "active" : ""}>
                                 <i className="fa fa-calendar-alt"></i>
                                 <span>Eventos</span>
                               </li>
                             )}
                             {roleData.clientes?.read && (
-                              <li onClick={() => navigate("/clientes")}>
+                              <li onClick={() => navigate("/clientes")} className={isActive("/clientes") ? "active" : ""}>
                                 <i className="fa fa-building"></i>
                                 <span>Clientes</span>
                               </li>
                             )}
                             {roleData.origenes?.read && (
-                              <li onClick={() => navigate("/origenes")}>
+                              <li onClick={() => navigate("/origenes")} className={isActive("/origenes") ? "active" : ""}>
                                 <i className="fa fa-map-marker-alt"></i>
                                 <span>Origenes</span>
                               </li>
                             )}
                             {roleData.destinos?.read && (
-                              <li onClick={() => navigate("/destinos")}>
+                              <li onClick={() => navigate("/destinos")} className={isActive("/destinos") ? "active" : ""}>
                                 <i className="fa fa-map-pin"></i>
                                 <span>Destinos</span>
                               </li>
                             )}
                             {roleData?.lineas_transporte?.read && (
-                              <li onClick={() => navigate("/lineas-transporte")}>
+                              <li onClick={() => navigate("/lineas-transporte")} className={isActive("/lineas-transporte") ? "active" : ""}>
                                 <i className="fa fa-truck"></i>
                                 <span>Líneas de transporte</span>
                               </li>
                             )}
                             {roleData?.operadores?.read && (
-                              <li onClick={() => navigate("/operadores")}>
+                              <li onClick={() => navigate("/operadores")} className={isActive("/operadores") ? "active" : ""}>
                                 <i className="fa fa-user-tie"></i>
                                 <span>Operadores</span>
                               </li>
@@ -383,25 +446,25 @@ const Sidebar = () => {
                         {collapsedItems.sistemaCollapse && (
                           <ul className="sub-submenu">
                             {roleData.usuarios?.read && (
-                              <li onClick={() => navigate("/usuarios")}>
+                              <li onClick={() => navigate("/usuarios")} className={isActive("/usuarios") ? "active" : ""}>
                                 <i className="fa fa-users"></i>
                                 <span>Usuarios</span>
                               </li>
                             )}
                             {roleData.roles?.read && (
-                              <li onClick={() => navigate("/roles")}>
+                              <li onClick={() => navigate("/roles")} className={isActive("/roles") ? "active" : ""}>
                                 <i className="fa fa-user-shield"></i>
                                 <span>Roles</span>
                               </li>
                             )}
                             {roleData.integraciones?.read && (
-                              <li onClick={() => navigate("/integraciones")}>
+                              <li onClick={() => navigate("/integraciones")} className={isActive("/integraciones") ? "active" : ""}>
                                 <i className="fa fa-plug"></i>
                                 <span>Integraciones</span>
                               </li>
                             )}
                             {roleData.inactividad?.read && (
-                              <li onClick={openInacModal}>
+                              <li onClick={openInacModal} className={isActive("/inactividad") ? "active" : ""}>
                                 <i className="fa fa-clock"></i>
                                 <span>Inactividad</span>
                               </li>
@@ -429,7 +492,7 @@ const Sidebar = () => {
                         {collapsedItems.auditoriaCollapse && (
                           <ul className="sub-submenu">
                             {roleData.auditoria_bitacora?.read && (
-                              <li onClick={() => navigate("/auditoria/bitacoras")}>
+                              <li onClick={() => navigate("/auditoria/bitacoras")} className={isActive("/auditoria/bitacoras") ? "active" : ""}>
                                 <i className="fa fa-history"></i>
                                 <span>Bitácoras</span>
                               </li>

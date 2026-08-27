@@ -49,6 +49,8 @@ const RoleSchema = new mongoose.Schema({
   reporte_control_patios: permissionSchema,
   control_patios: permissionSchema,
   control_patios_remolques: permissionSchema,
+  eventos_wialon: permissionSchema,
+  map_wialon: permissionSchema,
 
   // Sistema de permisos de clientes
   client_access: {

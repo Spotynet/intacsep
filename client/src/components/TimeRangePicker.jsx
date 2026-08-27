@@ -1,5 +1,7 @@
+import DatePicker from "./DatePicker";
+
 /**
- * TimeRangePicker — styled to match the pselect component system.
+ * TimeRangePicker — uses portal-based CustomDatePicker for premium experience.
  * Props: label, startValue, endValue, onStartChange, onEndChange
  */
 const TimeRangePicker = ({ label, startValue, endValue, onStartChange, onEndChange }) => {
@@ -7,25 +9,21 @@ const TimeRangePicker = ({ label, startValue, endValue, onStartChange, onEndChan
     <div className="pdt-range">
       {label && <span className="pselect__label">{label}</span>}
       <div className="pdt-range__inputs">
-        <div className="pdt-field">
-          <span className="pdt-field__prefix">De</span>
-          <input
-            type="time"
-            className="pdt-field__input"
-            value={startValue}
-            onChange={(e) => onStartChange(e.target.value)}
-          />
-        </div>
+        <DatePicker
+          prefix="De"
+          timeOnly={true}
+          value={startValue}
+          onChange={onStartChange}
+          placeholder="Inicio..."
+        />
         <span className="pdt-range__sep">—</span>
-        <div className="pdt-field">
-          <span className="pdt-field__prefix">A</span>
-          <input
-            type="time"
-            className="pdt-field__input"
-            value={endValue}
-            onChange={(e) => onEndChange(e.target.value)}
-          />
-        </div>
+        <DatePicker
+          prefix="A"
+          timeOnly={true}
+          value={endValue}
+          onChange={onEndChange}
+          placeholder="Fin..."
+        />
       </div>
     </div>
   );

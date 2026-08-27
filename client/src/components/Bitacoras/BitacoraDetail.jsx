@@ -280,7 +280,7 @@ const BitacoraDetail = React.forwardRef(({bitacora, transporteId = ""}, ref) => 
                         <Row>
                           <hr />
                           {(() => {
-                            // Construir la lista de entradas de GPS: usar todos los gpsData; si no hay, usar gpsUnits
+                            // Construir la lista de entradas de GPS: usar todos los gpsData; si no hay, usar gpsUnits como identidad
                             const entries =
                               t.gpsData && t.gpsData.length > 0
                                 ? t.gpsData
@@ -288,7 +288,7 @@ const BitacoraDetail = React.forwardRef(({bitacora, transporteId = ""}, ref) => 
                                 ? t.gpsUnits.map((u) => ({
                                     wialonId: u.wialonId,
                                     name: u.name,
-                                    data: u.data,
+                                    data: null,
                                   }))
                                 : [{name: null, wialonId: null, data: null}];
 

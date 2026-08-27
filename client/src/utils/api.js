@@ -116,6 +116,8 @@ export const fetchBitacoras = async (
   // Add all filter parameters
   if (filters.statusFilter) params.append("statusFilter", filters.statusFilter);
   if (filters.creationDateFilter) params.append("creationDateFilter", filters.creationDateFilter);
+  if (filters.fechaDesde) params.append("fechaDesde", filters.fechaDesde);
+  if (filters.fechaHasta) params.append("fechaHasta", filters.fechaHasta);
   if (filters.clienteFilter) params.append("clienteFilter", filters.clienteFilter);
   if (filters.monitoreoFilter) params.append("monitoreoFilter", filters.monitoreoFilter);
   if (filters.operadorFilter) params.append("operadorFilter", filters.operadorFilter);

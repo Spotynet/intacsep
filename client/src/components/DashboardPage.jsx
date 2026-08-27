@@ -1,10 +1,20 @@
-import {useState, useEffect, useCallback} from "react";
+import {useState, useEffect, useCallback, useRef} from "react";
 import {useAuth} from "../context/AuthContext";
 import {useSidebar} from "../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
 import Sidebar from "./Sidebar";
 import PageHeader from "./PageHeader";
+import FilterBar from "./FilterBar";
+import {Select} from "./Select";
+import DatePicker from "./DatePicker";
 import {getAllowedClients} from "../utils/clientPermissions";
+
+const Skeleton = ({ width = "100%", height = "20px", className = "" }) => (
+  <div 
+    className={`skeleton-loader ${className}`} 
+    style={{ width, height, borderRadius: '6px' }}
+  />
+);
 
 const DashboardPage = () => {
   const {user} = useAuth();
@@ -39,12 +49,21 @@ const DashboardPage = () => {
   });
 
   const [loading, setLoading] = useState(true);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [loadingTrends, setLoadingTrends] = useState(false);
+  const [loadingRankings, setLoadingRankings] = useState(false);
+  const [loadingEvents, setLoadingEvents] = useState(false);
+  const [loadingPerformance, setLoadingPerformance] = useState(false);
   const [clientFilter, setClientFilter] = useState("all");
   const [availableClients, setAvailableClients] = useState([]);
   const [geoType, setGeoType] = useState("origen");
 
   // Filtros pendientes (que se pueden cambiar sin aplicar)
-  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaDesde, setFechaDesde] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  });
   const [fechaHasta, setFechaHasta] = useState(() => {
     // Set default value to today's date in YYYY-MM-DD format
     const today = new Date();
@@ -55,7 +74,11 @@ const DashboardPage = () => {
 
   // Filtros aplicados (que realmente se usan en las consultas)
   const [appliedClientFilter, setAppliedClientFilter] = useState("all");
-  const [appliedFechaDesde, setAppliedFechaDesde] = useState("");
+  const [appliedFechaDesde, setAppliedFechaDesde] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  });
   const [appliedFechaHasta, setAppliedFechaHasta] = useState(() => {
     const today = new Date();
     return today.toISOString().split("T")[0];
@@ -69,6 +92,7 @@ const DashboardPage = () => {
   const [applyFiltersTrigger, setApplyFiltersTrigger] = useState(0);
   const [loadingLineasTransporte, setLoadingLineasTransporte] = useState(false);
   const [loadingOperadores, setLoadingOperadores] = useState(false);
+  const [loadingGeo, setLoadingGeo] = useState(false);
 
   const baseUrl = import.meta.env.VITE_BASE_URL || "http://localhost:3001";
 
@@ -185,75 +209,80 @@ const DashboardPage = () => {
   const [geographicPage, setGeographicPage] = useState(1);
   const [geographicPageSize, setGeographicPageSize] = useState(50); // Aumentado a 50 por defecto
 
-  // Function to apply filters when check button is pressed
-  const applyFilters = () => {
-    setAppliedClientFilter(clientFilter);
-    setAppliedGeoType(geoType);
-    setAppliedFechaDesde(fechaDesde);
-    setAppliedFechaHasta(fechaHasta);
-    setAppliedLineaTransporteFilter(lineaTransporteFilter);
-    setAppliedOperadorFilter(operadorFilter);
+  const clearExpandedStates = () => {
+    setExpandedClients({});
+    setClientBitacoras({});
+    setLoadingClientBitacoras({});
+    setClientPagination({});
+    setLoadingClientDownload({});
+
+    setExpandedUsers({});
+    setUserBitacoras({});
+    setLoadingUserBitacoras({});
+    setUserPagination({});
+    setLoadingUserDownload({});
+
+    setExpandedLocations({});
+    setLocationBitacoras({});
+    setLoadingLocationBitacoras({});
+    setLocationPagination({});
+    setLoadingLocationDownload({});
+
+    setGeographicPage(1);
+  };
+
+  const commitFilters = ({
+    nextClientFilter = clientFilter,
+    nextGeoType = geoType,
+    nextFechaDesde = fechaDesde,
+    nextFechaHasta = fechaHasta,
+    nextLineaTransporteFilter = lineaTransporteFilter,
+    nextOperadorFilter = operadorFilter,
+  } = {}) => {
+    setClientFilter(nextClientFilter);
+    setGeoType(nextGeoType);
+    setFechaDesde(nextFechaDesde);
+    setFechaHasta(nextFechaHasta);
+    setLineaTransporteFilter(nextLineaTransporteFilter);
+    setOperadorFilter(nextOperadorFilter);
+
+    setAppliedClientFilter(nextClientFilter);
+    setAppliedGeoType(nextGeoType);
+    setAppliedFechaDesde(nextFechaDesde);
+    setAppliedFechaHasta(nextFechaHasta);
+    setAppliedLineaTransporteFilter(nextLineaTransporteFilter);
+    setAppliedOperadorFilter(nextOperadorFilter);
     setApplyFiltersTrigger((prev) => prev + 1);
-
-    // Limpiar estados de dropdowns de clientes cuando cambien los filtros
-    setExpandedClients({});
-    setClientBitacoras({});
-    setLoadingClientBitacoras({});
-    setClientPagination({});
-    setLoadingClientDownload({});
-
-    // Limpiar estados de dropdowns de usuarios cuando cambien los filtros
-    setExpandedUsers({});
-    setUserBitacoras({});
-    setLoadingUserBitacoras({});
-    setUserPagination({});
-    setLoadingUserDownload({});
-
-    // Limpiar estados de dropdowns de ubicaciones cuando cambien los filtros
-    setExpandedLocations({});
-    setLocationBitacoras({});
-    setLoadingLocationBitacoras({});
-    setLocationPagination({});
-    setLoadingLocationDownload({});
-
-    // Reset paginación geográfica
-    setGeographicPage(1);
+    clearExpandedStates();
   };
 
-  // Function to reset filters
-  const resetFilters = () => {
+  const clearFilters = () => {
     const today = new Date().toISOString().split("T")[0];
-    setClientFilter("all");
-    setGeoType("origen");
-    setFechaDesde("");
-    setFechaHasta(today);
-    setLineaTransporteFilter("all");
-    setOperadorFilter("all");
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const fechaDesdeDefault = thirtyDaysAgo.toISOString().split("T")[0];
 
-    // Limpiar estados de dropdowns de clientes cuando se reseteen los filtros
-    setExpandedClients({});
-    setClientBitacoras({});
-    setLoadingClientBitacoras({});
-    setClientPagination({});
-    setLoadingClientDownload({});
-
-    // Limpiar estados de dropdowns de usuarios cuando se reseteen los filtros
-    setExpandedUsers({});
-    setUserBitacoras({});
-    setLoadingUserBitacoras({});
-    setUserPagination({});
-    setLoadingUserDownload({});
-
-    // Limpiar estados de dropdowns de ubicaciones cuando se reseteen los filtros
-    setExpandedLocations({});
-    setLocationBitacoras({});
-    setLoadingLocationBitacoras({});
-    setLocationPagination({});
-    setLoadingLocationDownload({});
-
-    // Reset paginación geográfica
-    setGeographicPage(1);
+    commitFilters({
+      nextClientFilter: "all",
+      nextGeoType: "origen",
+      nextFechaDesde: fechaDesdeDefault,
+      nextFechaHasta: today,
+      nextLineaTransporteFilter: "all",
+      nextOperadorFilter: "all",
+    });
   };
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split("T")[0];
+
+  const hasActiveFilters =
+    appliedFechaDesde !== thirtyDaysAgoStr ||
+    appliedFechaHasta !== todayStr ||
+    appliedClientFilter !== "all" ||
+    appliedLineaTransporteFilter !== "all" ||
+    appliedOperadorFilter !== "all";
 
   // Helper function to format numbers with thousands separator
   const formatNumber = (num) => {
@@ -819,48 +848,125 @@ const DashboardPage = () => {
     };
   };
 
-  const fetchDashboardData = useCallback(async () => {
-    try {
-      setLoading(true);
+  const appliedGeoTypeRef = useRef(appliedGeoType);
+  useEffect(() => {
+    appliedGeoTypeRef.current = appliedGeoType;
+  }, [appliedGeoType]);
 
-      const commonParams = `clientFilter=${encodeURIComponent(
-        appliedClientFilter
-      )}&fechaDesde=${encodeURIComponent(appliedFechaDesde)}&fechaHasta=${encodeURIComponent(
-        appliedFechaHasta
-      )}&lineaTransporte=${encodeURIComponent(
-        appliedLineaTransporteFilter
-      )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
+  const fetchGeographicData = useCallback(
+    async (nextGeoType = appliedGeoType) => {
+      try {
+        setLoadingGeo(true);
+        const commonParams = `clientFilter=${encodeURIComponent(
+          appliedClientFilter
+        )}&fechaDesde=${encodeURIComponent(appliedFechaDesde)}&fechaHasta=${encodeURIComponent(
+          appliedFechaHasta
+        )}&lineaTransporte=${encodeURIComponent(
+          appliedLineaTransporteFilter
+        )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
 
-      const statsUrl = `${baseUrl}/dashboard/stats?${commonParams}&geoType=${encodeURIComponent(appliedGeoType)}`;
-      const lineasStatsUrl = `${baseUrl}/dashboard/lineas-transporte-stats?${commonParams}`;
+        const geoUrl = `${baseUrl}/dashboard/geographic-stats?${commonParams}&geoType=${encodeURIComponent(
+          nextGeoType
+        )}`;
+        const response = await fetch(geoUrl, {method: "GET", credentials: "include"});
 
-      const [statsResponse, lineasResponse] = await Promise.all([
-        fetch(statsUrl, {method: "GET", credentials: "include"}),
-        fetch(lineasStatsUrl, {method: "GET", credentials: "include"}),
-      ]);
-
-      if (statsResponse.ok) {
-        const statsData = await statsResponse.json();
-        setDashboardStats((prev) => ({...prev, ...statsData}));
+        if (response.ok) {
+          const geoData = await response.json();
+          setDashboardStats((prev) => ({...prev, geographicData: geoData}));
+          setAppliedGeoType(nextGeoType);
+        }
+      } catch (error) {
+        console.error("Error fetching geographic data:", error);
+      } finally {
+        setLoadingGeo(false);
       }
+    },
+    [
+      baseUrl,
+      appliedClientFilter,
+      appliedFechaDesde,
+      appliedFechaHasta,
+      appliedLineaTransporteFilter,
+      appliedOperadorFilter,
+      appliedGeoType,
+    ]
+  );
 
-      if (lineasResponse.ok) {
-        const lineasData = await lineasResponse.json();
-        setDashboardStats((prev) => ({...prev, lineasTransporteStats: lineasData}));
+  const controllersRef = useRef({});
+
+  const getAbortSignal = (key) => {
+    if (controllersRef.current[key]) {
+      controllersRef.current[key].abort();
+    }
+    controllersRef.current[key] = new AbortController();
+    return controllersRef.current[key].signal;
+  };
+
+  const fetchDashboardData = useCallback(async () => {
+    // Initial full-page loading only on first mount
+    // Subsquent updates will use individual skeleton loaders
+    const isInitialLoad = loading;
+    
+    const commonParams = `clientFilter=${encodeURIComponent(
+      appliedClientFilter
+    )}&fechaDesde=${encodeURIComponent(appliedFechaDesde)}&fechaHasta=${encodeURIComponent(
+      appliedFechaHasta
+    )}&lineaTransporte=${encodeURIComponent(
+      appliedLineaTransporteFilter
+    )}&operador=${encodeURIComponent(appliedOperadorFilter)}`;
+
+    const fetchGranular = async (key, endpoint, loadingSetter) => {
+      const signal = getAbortSignal(key);
+      try {
+        if (!isInitialLoad) loadingSetter(true);
+        const response = await fetch(`${baseUrl}${endpoint}?${commonParams}`, {
+          method: "GET",
+          credentials: "include",
+          signal
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setDashboardStats(prev => ({ ...prev, ...data }));
+        }
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          console.error(`Error fetching ${key}:`, error);
+        }
+      } finally {
+        if (!isInitialLoad) loadingSetter(false);
+      }
+    };
+
+    try {
+      if (isInitialLoad) setLoading(true);
+
+      // Execute all granular fetches in parallel without awaiting the whole group if not initial load
+      const tasks = [
+        fetchGranular('summary', '/dashboard/summary', setLoadingSummary),
+        fetchGranular('trends', '/dashboard/trends', setLoadingTrends),
+        fetchGranular('rankings', '/dashboard/rankings', setLoadingRankings),
+        fetchGranular('events', '/dashboard/event-stats', setLoadingEvents),
+        fetchGranular('performance', '/dashboard/performance', setLoadingPerformance),
+        fetchGeographicData(appliedGeoTypeRef.current)
+      ];
+
+      if (isInitialLoad) {
+        await Promise.all(tasks);
       }
     } catch (error) {
-      console.error("Error fetching dashboard data:", error);
+      console.error("Error in fetchDashboardData:", error);
     } finally {
-      setLoading(false);
+      if (isInitialLoad) setLoading(false);
     }
   }, [
     baseUrl,
     appliedClientFilter,
-    appliedGeoType,
     appliedFechaDesde,
     appliedFechaHasta,
     appliedLineaTransporteFilter,
     appliedOperadorFilter,
+    fetchGeographicData,
+    loading
   ]);
 
   // Fetch role permissions once on mount
@@ -889,6 +995,13 @@ const DashboardPage = () => {
     fetchDashboardData();
   }, [user, navigate, fetchDashboardData, applyFiltersTrigger]);
 
+  // Cleanup abort controllers on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(controllersRef.current).forEach(c => c.abort());
+    };
+  }, []);
+
   // Update transport lines when client filter changes
   useEffect(() => {
     if (user) {
@@ -904,174 +1017,240 @@ const DashboardPage = () => {
   }, [user, lineaTransporteFilter, fetchOperadores]);
 
   // Chart rendering functions
+  const renderEventDistributionChart = () => {
+    if (loadingEvents) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="35px" />
+          ))}
+        </div>
+      );
+    }
+    const eventDistribution = dashboardStats.eventDistribution || [];
+    if (eventDistribution.length === 0) {
+      return (
+        <div className="text-center py-4 text-muted">
+          <p className="small mb-0">No hay datos de eventos</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="event-distribution-list">
+        {eventDistribution.map((event, index) => (
+          <div key={index} className="mb-3">
+            <div className="d-flex justify-content-between mb-1">
+              <span className="small fw-bold">{event.name}</span>
+              <span className="small text-muted">{event.count}</span>
+            </div>
+            <div className="progress" style={{ height: "6px" }}>
+              <div
+                className="progress-bar"
+                role="progressbar"
+                style={{
+                  width: `${(event.count / eventDistribution[0].count) * 100}%`,
+                  backgroundColor: event.color || "#3b82f6",
+                }}
+              ></div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const renderPerformanceChart = () => {
+    if (loadingPerformance) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="35px" />
+          ))}
+        </div>
+      );
+    }
+    const operatorEfficiency = dashboardStats.operatorEfficiency || [];
+    if (operatorEfficiency.length === 0) {
+      return (
+        <div className="text-center py-4 text-muted">
+          <p className="small mb-0">No hay datos de rendimiento</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="performance-list">
+        {operatorEfficiency.map((op, index) => {
+          const rate = op.total > 0 ? Math.round((op.completed / op.total) * 100) : 0;
+          return (
+            <div key={index} className="mb-3">
+              <div className="d-flex justify-content-between mb-1">
+                <span className="small fw-bold">{op.name || "N/A"}</span>
+                <span className="small text-muted">{rate}% ({op.completed}/{op.total})</span>
+              </div>
+              <div className="progress" style={{ height: "6px" }}>
+                <div
+                  className="progress-bar"
+                  role="progressbar"
+                  style={{
+                    width: `${rate}%`,
+                    backgroundColor: rate > 80 ? "#10b981" : rate > 50 ? "#f59e0b" : "#ef4444",
+                  }}
+                ></div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderTiposMonitoreoChart = () => {
     const tiposMonitoreo = dashboardStats.tiposMonitoreo || [];
 
     if (tiposMonitoreo.length === 0) {
-      return <div className="text-center text-muted">No hay datos disponibles</div>;
+      return (
+        <div className="text-center py-4 text-muted">
+          <i className="fa fa-info-circle mb-2 opacity-50" style={{ fontSize: '1.5rem' }}></i>
+          <p className="small mb-0">No hay datos disponibles</p>
+        </div>
+      );
     }
 
     const total = tiposMonitoreo.reduce((sum, tipo) => sum + tipo.count, 0);
+    
+    // Icon mapping for common monitoring types
+    const getTipoIcon = (nombre) => {
+      const lower = (nombre || "").toLowerCase();
+      if (lower.includes("gps")) return "fa-satellite";
+      if (lower.includes("custodia")) return "fa-shield-alt";
+      if (lower.includes("escolta")) return "fa-user-shield";
+      if (lower.includes("dedicado")) return "fa-truck-loading";
+      if (lower.includes("spot")) return "fa-map-marker-alt";
+      return "fa-broadcast-tower";
+    };
 
     return (
       <div className="tipos-monitoreo-chart">
-        <div className="tipos-table">
-          <div className="table-header">
-            <div className="header-cell small">Tipo</div>
-            <div className="header-cell small">Cant.</div>
-            <div className="header-cell small">%</div>
-            <div className="header-cell small">Barra</div>
-          </div>
-          <div className="table-body">
-            {tiposMonitoreo.map((tipo, index) => {
-              const percentage = (tipo.count / total) * 100;
-              return (
-                <div key={index} className="table-row">
-                  <div className="cell tipo-name">
-                    <span className="small">{tipo.nombre}</span>
+        <div className="tipos-list">
+          {tiposMonitoreo.map((tipo, index) => {
+            const percentage = (tipo.count / total) * 100;
+            return (
+              <div key={index} className="tipo-item-modern">
+                <div className="tipo-info-header">
+                  <div className="tipo-label-group">
+                    <div className="tipo-icon-box" style={{ backgroundColor: `${tipo.color}15`, color: tipo.color }}>
+                      <i className={`fa ${getTipoIcon(tipo.nombre)}`}></i>
+                    </div>
+                    <span className="tipo-name-text">{tipo.nombre}</span>
                   </div>
-                  <div className="cell tipo-count small">{formatNumber(tipo.count)}</div>
-                  <div className="cell tipo-percentage small">{percentage.toFixed(1)}%</div>
-                  <div className="cell tipo-bar">
-                    <div className="bar-container">
-                      <div
-                        className="bar-fill"
-                        style={{
-                          width: `${percentage}%`,
-                          backgroundColor: tipo.color || "#3b82f6",
-                        }}></div>
+                  <div className="tipo-stats-group">
+                    <span className="tipo-count-text">{formatNumber(tipo.count)}</span>
+                    <span className="tipo-percentage-text">{percentage.toFixed(1)}%</span>
+                  </div>
+                </div>
+                <div className="tipo-progress-wrapper">
+                  <div className="bar-container-modern">
+                    <div
+                      className="bar-fill-modern"
+                      style={{
+                        width: `${percentage}%`,
+                        backgroundColor: tipo.color || "#3b82f6",
+                        boxShadow: `0 0 10px ${tipo.color}40`
+                      }}>
                     </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
   };
 
   const renderMonthlyTrendChart = () => {
+    if (loadingTrends) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4 px-2">
+          <Skeleton height="200px" />
+          <div className="d-flex justify-content-between">
+            {[...Array(6)].map((_, i) => (
+              <Skeleton key={i} width="40px" height="12px" />
+            ))}
+          </div>
+        </div>
+      );
+    }
     const monthlyData = dashboardStats.monthlyData || [];
 
-    // Si no hay datos, mostrar mensaje
     if (!monthlyData || monthlyData.length === 0) {
       return (
-        <div className="text-center text-muted">
-          No hay datos disponibles para el período seleccionado
+        <div className="text-center py-5">
+          <i className="fa fa-chart-bar mb-3 opacity-20" style={{ fontSize: "3rem" }}></i>
+          <p className="text-muted">No hay datos disponibles para el período seleccionado</p>
         </div>
       );
     }
 
     const maxValue = Math.max(...monthlyData.map((d) => d.value));
-
-    // Calculate dynamic spacing based on number of months
-    const gapSize = monthlyData.length <= 3 ? "20px" : monthlyData.length <= 6 ? "12px" : "8px";
-    const minBarWidth =
-      monthlyData.length <= 3 ? "60px" : monthlyData.length <= 6 ? "45px" : "35px";
+    const totalValue = monthlyData.reduce((sum, item) => sum + item.value, 0);
+    const monthsWithData = monthlyData.filter((item) => item.value > 0).length;
+    const average = monthsWithData > 0 ? Math.round(totalValue / monthsWithData) : 0;
 
     return (
-      <div className="trend-chart">
-        <div
-          className="chart-bars"
-          style={{
-            height: "250px",
-            display: "flex",
-            alignItems: "flex-end",
-            gap: gapSize,
-            padding: "15px 0 35px 0",
-            position: "relative",
-            minWidth:
-              monthlyData.length <= 3 ? "300px" : monthlyData.length <= 6 ? "450px" : "600px",
-            justifyContent: monthlyData.length <= 3 ? "center" : "flex-start",
-          }}>
-          {monthlyData.map((item, index) => {
-            const barHeight = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
-            return (
-              <div
-                key={index}
-                className="chart-bar-item"
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  flex: 1,
-                  height: "100%",
-                  position: "relative",
-                  justifyContent: "flex-end",
-                  minWidth: monthlyData.length <= 3 ? "60px" : "40px", // Dynamic minimum bar width
-                }}>
-                <div
-                  className="bar"
-                  style={{
-                    height: `${barHeight}%`,
-                    backgroundColor: "#3b82f6",
-                    minHeight: item.value > 0 ? "4px" : "0px",
-                    width: "100%",
-                    maxWidth: minBarWidth,
-                    borderRadius: "4px 4px 0 0",
-                    transition: "height 0.3s ease",
-                    marginBottom: "40px",
-                  }}></div>
-                <div
-                  style={{
-                    position: "absolute",
-                    bottom: "-35px",
-                    left: "50%",
-                    transform: "translateX(-50%)",
-                    textAlign: "center",
-                    width: "100%",
-                  }}>
-                  <span
-                    className="bar-label"
-                    style={{
-                      fontSize: "11px",
-                      fontWeight: "500",
-                      color: "#6b7280",
-                      display: "block",
-                    }}>
-                    {item.month}
-                  </span>
-                  <span
-                    className="bar-value"
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: "bold",
-                      color: "#3b82f6",
-                      display: "block",
-                      marginTop: "2px",
-                    }}>
-                    {formatNumber(item.value)}
-                  </span>
-                </div>
+      <div className="trend-chart-container">
+        <div className="trend-chart">
+          {/* Background Grid */}
+          <div className="chart-grid">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div key={i} className="grid-line">
+                <span>{maxValue > 0 ? formatNumber(Math.round((maxValue * (4 - i)) / 4)) : ""}</span>
               </div>
-            );
-          })}
+            ))}
+          </div>
+
+          <div className="chart-bars">
+            {monthlyData.map((item, index) => {
+              const barHeight = maxValue > 0 ? (item.value / maxValue) * 100 : 0;
+              const isPeak = item.value === maxValue && maxValue > 0;
+              return (
+                <div key={index} className="chart-bar-wrap">
+                  <div className="chart-bar-fill-container">
+                    <div
+                      className={`chart-bar-fill ${isPeak ? 'peak' : ''}`}
+                      style={{ height: `${barHeight}%` }}
+                    >
+                      {item.value > 0 && (
+                        <div className="bar-tooltip">
+                          {formatNumber(item.value)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="chart-bar-info">
+                    <span className="bar-label">{item.month}</span>
+                    {item.year && <span className="bar-year">'{item.year.toString().slice(-2)}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <div className="chart-summary">
-          <div className="summary-item">
-            <span className="summary-label">Total del período:</span>
-            <span className="summary-value">
-              {formatNumber(monthlyData.reduce((sum, item) => sum + item.value, 0))} bitácoras
-            </span>
+
+        <div className="chart-summary-row mt-3">
+          <div className="chart-summary-item">
+            <span className="summary-label">Total Período</span>
+            <span className="summary-value">{formatNumber(totalValue)}</span>
           </div>
-          <div className="summary-item">
-            <span className="summary-label">Promedio mensual:</span>
-            <span className="summary-value">
-              {(() => {
-                const monthsWithData = monthlyData.filter((item) => item.value > 0).length;
-                const totalValue = monthlyData.reduce((sum, item) => sum + item.value, 0);
-                const average = monthsWithData > 0 ? Math.round(totalValue / monthsWithData) : 0;
-                return formatNumber(average);
-              })()}{" "}
-              bitácoras
-            </span>
+          <div className="chart-summary-item">
+            <span className="summary-label">Promedio Mensual</span>
+            <span className="summary-value">{formatNumber(average)}</span>
           </div>
-          <div className="summary-item">
-            <span className="summary-label">Meses con datos:</span>
-            <span className="summary-value">
-              {monthlyData.filter((item) => item.value > 0).length} de {monthlyData.length}
-            </span>
+          <div className="chart-summary-item">
+            <span className="summary-label">Meses Activos</span>
+            <span className="summary-value">{monthsWithData}</span>
           </div>
         </div>
       </div>
@@ -1079,95 +1258,100 @@ const DashboardPage = () => {
   };
 
   const renderGeographicChart = () => {
+    if (loadingGeo) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4 px-2">
+          <Skeleton height="250px" />
+          <div className="d-flex flex-column gap-2">
+            {[...Array(3)].map((_, i) => (
+              <Skeleton key={i} height="15px" />
+            ))}
+          </div>
+        </div>
+      );
+    }
     const geographicData = dashboardStats.geographicData || [];
     const paginatedGeographic = getPaginatedGeographicData();
 
     if (!geographicData || geographicData.length === 0) {
-      return <div className="text-center text-muted">No hay datos disponibles</div>;
+      return <div className="text-center text-muted py-5">No hay datos disponibles</div>;
     }
 
     return (
-      <div className="geographic-chart">
-        <div className="d-flex align-items-center justify-content-between mb-3">
+      <div className="geographic-chart position-relative">
+        {loadingGeo && (
+          <div 
+            className="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" 
+            style={{ 
+              background: "rgba(255,255,255,0.7)", 
+              zIndex: 10,
+              borderRadius: "12px"
+            }}>
+            <i className="fa fa-spinner fa-spin text-primary"></i>
+          </div>
+        )}
+        <div className="d-flex align-items-center justify-content-between mb-3 px-1">
           <div className="d-flex align-items-center gap-2">
             <span
               className="badge"
               style={{
                 backgroundColor: appliedGeoType === "origen" ? "#10b981" : "#f59e0b",
                 color: "#fff",
-                fontSize: "0.75rem",
-                marginLeft: 8,
+                fontSize: "0.65rem",
+                padding: "3px 8px",
+                borderRadius: "6px"
               }}>
               {appliedGeoType === "origen" ? "Origen" : "Destino"}
             </span>
-            <span className="text-muted small">Total: {geographicData.length} ubicaciones</span>
+            <span className="text-muted" style={{fontSize: "0.7rem"}}>Total: {geographicData.length}</span>
           </div>
           <div className="d-flex align-items-center gap-3">
-            {/* Selector de cantidad por página */}
             <div className="d-flex align-items-center gap-2">
-              <span className="text-muted small">Mostrar:</span>
+              <span className="text-muted" style={{fontSize: "0.7rem"}}>Mostrar:</span>
               <select
                 value={geographicPageSize}
                 onChange={(e) => handleGeographicPageSizeChange(parseInt(e.target.value))}
-                className="form-select form-select-sm"
+                className="form-select form-select-sm py-0"
                 style={{
-                  width: "80px",
-                  fontSize: "0.75rem",
-                  padding: "4px 8px",
-                  border: "1px solid #e5e7eb",
+                  width: "70px",
+                  fontSize: "0.7rem",
+                  height: "24px",
                   borderRadius: "6px",
+                  borderColor: "#e2e8f0"
                 }}>
                 <option value={10}>10</option>
                 <option value={25}>25</option>
                 <option value={50}>50</option>
                 <option value={100}>100</option>
-                <option value={250}>250</option>
-                <option value={500}>500</option>
                 <option value={9999}>Todas</option>
               </select>
             </div>
-            {/* Selector de tipo geográfico */}
             <select
               value={geoType}
               onChange={(e) => {
-                setGeoType(e.target.value);
-                setAppliedGeoType(e.target.value);
-                setGeographicPage(1); // Reset page when changing type
-                setApplyFiltersTrigger((prev) => prev + 1);
+                const nextGeo = e.target.value;
+                setGeoType(nextGeo);
+                setGeographicPage(1);
+                fetchGeographicData(nextGeo);
               }}
-              className={`filter-select geo-type-select ${geoType} form-select form-select-sm`}
+              className="form-select form-select-sm py-0"
               style={{
-                width: 120,
-                borderRadius: 8,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
+                width: "110px",
+                fontSize: "0.75rem",
+                height: "28px",
+                borderRadius: "8px",
+                fontWeight: "600",
                 color: geoType === "origen" ? "#10b981" : "#f59e0b",
-                fontWeight: 600,
-                boxShadow: "0 2px 8px rgba(16,24,40,0.06)",
-                padding: "6px 12px",
-                outline: "none",
-                transition: "border-color 0.2s",
-                fontSize: "0.8rem",
+                borderColor: "#e2e8f0"
               }}>
-              <option value="origen">Por Origen</option>
-              <option value="destino">Por Destino</option>
+              <option value="origen">Origen</option>
+              <option value="destino">Destino</option>
             </select>
           </div>
         </div>
 
-        {/* Mensaje informativo cuando se muestran todas las ubicaciones */}
-        {geographicPageSize >= 9999 && geographicData.length > 0 && (
-          <div
-            className="alert alert-success mb-3"
-            style={{fontSize: "0.85rem", padding: "8px 12px"}}>
-            <i className="fa fa-info-circle me-2"></i>
-            <strong>Mostrando todas las ubicaciones:</strong> {geographicData.length} ubicaciones en
-            total
-          </div>
-        )}
-
         {/* Lista de ubicaciones paginada */}
-        <div className="geo-items" style={{minHeight: "400px"}}>
+        <div className="geo-items custom-scrollbar">
           {paginatedGeographic.data.map((location, index) => {
             const percentage = Math.round(
               (location.count / geographicData.reduce((sum, loc) => sum + loc.count, 0)) * 100
@@ -1189,368 +1373,89 @@ const DashboardPage = () => {
                     <i className="fa fa-map-marker-alt" style={{color: "#fff"}}></i>
                   </div>
                   <div className="geo-info">
-                    <div className="geo-name small" style={{color: "#ffffff", fontWeight: "500"}}>
+                    <div className="geo-name">
                       {location.name}
                     </div>
-                    <div className="geo-count small" style={{color: "#e2e8f0", fontSize: "0.8rem"}}>
+                    <div className="geo-count">
                       {formatNumber(location.count)} bitácoras
                     </div>
                   </div>
-                  <div
-                    className="geo-percentage-container"
-                    style={{display: "flex", alignItems: "center", gap: "8px"}}>
-                    <div
-                      className="geo-percentage small"
-                      style={{color: "#ffffff", fontWeight: "600", fontSize: "0.9rem"}}>
+                  <div className="geo-percentage-container">
+                    <div className="geo-percentage">
                       {percentage}%
                     </div>
                     {/* Botón de descarga */}
                     <button
                       onClick={(e) => {
-                        e.stopPropagation(); // Evitar que se expanda/contraiga el dropdown
+                        e.stopPropagation();
                         downloadLocationBitacorasExcel(location.name);
                       }}
                       disabled={loadingLocationDownload[location.name]}
-                      style={{
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                        border: "none",
-                        borderRadius: "6px",
-                        width: "24px",
-                        height: "24px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: loadingLocationDownload[location.name] ? "not-allowed" : "pointer",
-                        transition: "all 0.2s ease",
-                        opacity: loadingLocationDownload[location.name] ? 0.6 : 1,
-                      }}
+                      className="download-btn"
                       title="Descargar bitácoras en Excel">
                       <i
                         className={
                           loadingLocationDownload[location.name]
                             ? "fa fa-spinner fa-spin"
-                            : "fa fa-download"
-                        }
-                        style={{
-                          fontSize: "10px",
-                          color: "white",
-                        }}></i>
+                            : "fa fa-file-excel"
+                        }></i>
                     </button>
                     <div className="expand-icon">
-                      <i
-                        className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}
-                        style={{
-                          fontSize: "12px",
-                          color: "#64748b",
-                          transition: "transform 0.2s ease",
-                        }}></i>
+                      <i className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}></i>
                     </div>
                   </div>
                 </div>
 
                 {/* Contenido expandible con las bitácoras */}
                 {isExpanded && (
-                  <div
-                    className="location-bitacoras-list"
-                    style={{
-                      paddingLeft: "40px",
-                      paddingRight: "8px",
-                      paddingTop: "8px",
-                      paddingBottom: "8px",
-                      backgroundColor: "rgba(148, 163, 184, 0.05)",
-                      borderRadius: "8px",
-                      margin: "8px 0",
-                      animation: "slideDown 0.3s ease",
-                    }}>
+                  <div className="location-bitacoras-list">
                     {isLoading ? (
-                      <div className="text-center py-2">
-                        <i className="fa fa-spinner fa-spin me-2" style={{fontSize: "12px"}}></i>
-                        <span style={{fontSize: "12px", color: "#94a3b8"}}>
-                          Cargando bitácoras...
-                        </span>
+                      <div className="d-flex flex-column gap-2 py-3">
+                        {[...Array(3)].map((_, i) => (
+                          <Skeleton key={i} height="35px" />
+                        ))}
                       </div>
                     ) : bitacoras && bitacoras.length > 0 ? (
                       <div>
-                        <div className="bitacoras-header" style={{marginBottom: "12px"}}>
-                          <span style={{fontSize: "11px", color: "#64748b", fontWeight: "600"}}>
-                            Bitácoras ({bitacoras.length}):
-                          </span>
+                        <div className="bitacoras-header">
+                          <i className="fa fa-list-ul"></i>
+                          Bitácoras ({bitacoras.length})
                         </div>
-                        <div
-                          className="bitacoras-table-container"
-                          style={{
-                            maxHeight: "400px",
-                            overflowY: "auto",
-                            overflowX: "auto",
-                            border: "1px solid rgba(148, 163, 184, 0.2)",
-                            borderRadius: "8px",
-                            backgroundColor: "#f8fafc",
-                          }}>
-                          <table
-                            style={{
-                              width: "100%",
-                              borderCollapse: "collapse",
-                              fontSize: "10px",
-                              minWidth: "800px",
-                            }}>
-                            <thead style={{backgroundColor: "#e2e8f0", position: "sticky", top: 0}}>
+                        <div className="bitacoras-table-container custom-scrollbar">
+                          <table>
+                            <thead>
                               <tr>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  No. Bitácora
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Fecha de Creación
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Cliente
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Tipo Monitoreo
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Línea de transporte
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Operador
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Origen
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Destino
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Estado
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Usuario
-                                </th>
+                                <th>ID</th>
+                                <th>Fecha</th>
+                                <th>Cliente</th>
+                                <th>Monitoreo</th>
+                                <th>Línea</th>
+                                <th>Operador</th>
+                                <th>Origen</th>
+                                <th>Destino</th>
+                                <th>Estado</th>
                               </tr>
                             </thead>
                             <tbody>
                               {bitacoras.map((bitacora, bitIndex) => (
-                                <tr
-                                  key={bitIndex}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigate(`/bitacora/${bitacora._id}`);
-                                  }}
-                                  style={{
-                                    cursor: "pointer",
-                                    transition: "background-color 0.2s ease",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = "#e0f2fe";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                  }}>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#1f2937",
-                                      fontWeight: "600",
-                                    }}>
-                                    #{bitacora.bitacora_id}
+                                <tr key={bitIndex} onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/bitacora/${bitacora._id}`);
+                                }}>
+                                  <td className="bitacora-id">
+                                    <span className="bitacora-id-chip">#{bitacora.bitacora_id}</span>
                                   </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {
-                                      day: "2-digit",
-                                      month: "2-digit",
-                                      year: "numeric",
-                                    })}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.cliente}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.tipoMonitoreo}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.lineaTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.operadorTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.origen || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.destino || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                    }}>
-                                    <span
-                                      style={{
-                                        padding: "2px 6px",
-                                        borderRadius: "12px",
-                                        fontSize: "9px",
-                                        fontWeight: "600",
-                                        textTransform: "uppercase",
-                                        backgroundColor:
-                                          bitacora.estado === "nueva"
-                                            ? "#dbeafe"
-                                            : bitacora.estado === "validada"
-                                            ? "#fef3c7"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#d1fae5"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#fee2e2"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#e0e7ff"
-                                            : "#f3f4f6",
-                                        color:
-                                          bitacora.estado === "nueva"
-                                            ? "#1e40af"
-                                            : bitacora.estado === "validada"
-                                            ? "#d97706"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#059669"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#dc2626"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#7c3aed"
-                                            : "#6b7280",
-                                      }}>
+                                  <td>{new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {day: "2-digit", month: "2-digit", year: "numeric"})}</td>
+                                  <td>{bitacora.cliente}</td>
+                                  <td>{bitacora.tipoMonitoreo}</td>
+                                  <td>{bitacora.lineaTransporte || "N/A"}</td>
+                                  <td>{bitacora.operadorTransporte || "N/A"}</td>
+                                  <td title={bitacora.origen}>{bitacora.origen || "N/A"}</td>
+                                  <td title={bitacora.destino}>{bitacora.destino || "N/A"}</td>
+                                  <td>
+                                    <span className={`status-badge ${bitacora.estado}`}>
                                       {bitacora.estado}
                                     </span>
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "100px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.usuario}
                                   </td>
                                 </tr>
                               ))}
@@ -1558,121 +1463,35 @@ const DashboardPage = () => {
                           </table>
                         </div>
 
-                        {/* Controles de paginación */}
-                        {locationPagination[location.name] &&
-                          locationPagination[location.name].totalPages > 1 && (
-                            <div
-                              style={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                padding: "8px 12px",
-                                borderTop: "1px solid #e5e7eb",
-                                fontSize: "11px",
-                                backgroundColor: "#f9fafb",
-                              }}>
-                              <div style={{display: "flex", alignItems: "center", gap: "12px"}}>
-                                <span style={{color: "#6b7280"}}>
-                                  Página {locationPagination[location.name].currentPage} de{" "}
-                                  {locationPagination[location.name].totalPages} (
-                                  {locationPagination[location.name].totalCount} total)
-                                </span>
-                                <div style={{display: "flex", alignItems: "center", gap: "4px"}}>
-                                  <span style={{color: "#6b7280", fontSize: "10px"}}>Mostrar:</span>
-                                  <select
-                                    value={locationPageLimits[location.name] || 10}
-                                    onChange={(e) =>
-                                      handleLocationPageLimitChange(
-                                        location.name,
-                                        parseInt(e.target.value)
-                                      )
-                                    }
-                                    style={{
-                                      fontSize: "10px",
-                                      padding: "2px 4px",
-                                      border: "1px solid #d1d5db",
-                                      borderRadius: "3px",
-                                      backgroundColor: "#fff",
-                                      color: "#374151",
-                                    }}>
-                                    <option value={10}>10</option>
-                                    <option value={25}>25</option>
-                                    <option value={50}>50</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <div style={{display: "flex", gap: "4px"}}>
-                                <button
-                                  onClick={() =>
-                                    handleLocationPagination(
-                                      location.name,
-                                      locationPagination[location.name].currentPage - 1
-                                    )
-                                  }
-                                  disabled={
-                                    !locationPagination[location.name].hasPrevPage || isLoading
-                                  }
-                                  style={{
-                                    background:
-                                      locationPagination[location.name].hasPrevPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      locationPagination[location.name].hasPrevPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      locationPagination[location.name].hasPrevPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-left"></i>
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleLocationPagination(
-                                      location.name,
-                                      locationPagination[location.name].currentPage + 1
-                                    )
-                                  }
-                                  disabled={
-                                    !locationPagination[location.name].hasNextPage || isLoading
-                                  }
-                                  style={{
-                                    background:
-                                      locationPagination[location.name].hasNextPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      locationPagination[location.name].hasNextPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      locationPagination[location.name].hasNextPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-right"></i>
-                                </button>
-                              </div>
+                        {locationPagination[location.name] && locationPagination[location.name].totalPages > 1 && (
+                          <div className="pagination-controls">
+                            <span className="pagination-info">
+                              Pág. {locationPagination[location.name].currentPage} de {locationPagination[location.name].totalPages}
+                            </span>
+                            <div className="btn-group">
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleLocationPagination(location.name, locationPagination[location.name].currentPage - 1);
+                                }}
+                                disabled={!locationPagination[location.name].hasPrevPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-left"></i>
+                              </button>
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleLocationPagination(location.name, locationPagination[location.name].currentPage + 1);
+                                }}
+                                disabled={!locationPagination[location.name].hasNextPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-right"></i>
+                              </button>
                             </div>
-                          )}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-center py-2">
@@ -1969,6 +1788,15 @@ const DashboardPage = () => {
   };
 
   const renderGeographicBarChart = () => {
+    if (loadingGeo) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="30px" />
+          ))}
+        </div>
+      );
+    }
     const geographicData = dashboardStats.geographicData || [];
 
     if (!geographicData || geographicData.length === 0) {
@@ -1976,7 +1804,18 @@ const DashboardPage = () => {
     }
 
     return (
-      <div className="geographic-bar-chart">
+      <div className="geographic-bar-chart position-relative">
+        {loadingGeo && (
+          <div 
+            className="position-absolute top-0 start-0 w-100 h-100 d-flex justify-content-center align-items-center" 
+            style={{ 
+              background: "rgba(255,255,255,0.7)", 
+              zIndex: 10,
+              borderRadius: "12px"
+            }}>
+            <i className="fa fa-spinner fa-spin text-primary"></i>
+          </div>
+        )}
         <div className="d-flex align-items-center justify-content-between mb-3">
           <div className="d-flex align-items-center gap-2">
             <span
@@ -1992,9 +1831,9 @@ const DashboardPage = () => {
           <select
             value={geoType}
             onChange={(e) => {
-              setGeoType(e.target.value);
-              setAppliedGeoType(e.target.value);
-              setApplyFiltersTrigger((prev) => prev + 1);
+              const nextGeo = e.target.value;
+              setGeoType(nextGeo);
+              fetchGeographicData(nextGeo);
             }}
             className={`filter-select geo-type-select ${geoType} form-select form-select-sm`}
             style={{
@@ -2015,76 +1854,25 @@ const DashboardPage = () => {
           </select>
         </div>
 
-        <div
-          className="horizontal-bar-chart-container"
-          style={{
-            maxHeight: "300px",
-            overflowY: "auto",
-            paddingRight: "8px", // Espacio para evitar que se corten los números
-            marginRight: "-8px", // Compensar el padding
-          }}>
+        <div className="horizontal-bar-chart-container">
           {geographicData.map((location, index) => {
             const maxCount = Math.max(...geographicData.map((loc) => loc.count));
-            const barWidth = maxCount > 0 ? (location.count / maxCount) * 180 : 0; // Reducido de 200 a 180
+            const barWidth = maxCount > 0 ? (location.count / maxCount) * 100 : 0;
             const color = appliedGeoType === "origen" ? "#10b981" : "#f59e0b";
 
             return (
-              <div
-                key={index}
-                className="horizontal-bar-item"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  marginBottom: "12px",
-                  padding: "8px 12px 8px 0", // Más padding a la derecha
-                  backgroundColor: "transparent", // Quitar fondo blanco
-                }}>
-                <div
-                  className="bar-label"
-                  style={{
-                    width: "120px",
-                    fontSize: "12px",
-                    fontWeight: "500",
-                    color: "#ffffff",
-                    marginRight: "12px",
-                    textAlign: "right",
-                    flexShrink: 0, // No permitir que se encoja
-                  }}>
-                  {location.name}
-                </div>
-                <div
-                  className="bar-container"
-                  style={{
-                    flex: 1,
-                    height: "20px",
-                    backgroundColor: "rgba(59, 130, 246, 0.08)", // Azul muy opaco
-                    borderRadius: "10px",
-                    position: "relative",
-                    marginRight: "12px",
-                    minWidth: "100px", // Ancho mínimo para evitar colapso
-                  }}>
+              <div key={index} className="horizontal-bar-item">
+                <div className="bar-label">{location.name}</div>
+                <div className="bar-container">
                   <div
                     className="bar-fill"
                     style={{
-                      width: `${barWidth}px`,
-                      height: "100%",
+                      width: `${barWidth}%`,
                       backgroundColor: color,
-                      borderRadius: "10px",
-                      transition: "width 0.3s ease",
-                      minWidth: location.count > 0 ? "4px" : "0px",
+                      boxShadow: `0 0 8px ${color}40`
                     }}></div>
                 </div>
-                <div
-                  className="bar-value"
-                  style={{
-                    fontSize: "11px",
-                    fontWeight: "bold",
-                    color: color,
-                    minWidth: "50px", // Aumentado de 40px a 50px
-                    textAlign: "right",
-                    flexShrink: 0, // No permitir que se encoja
-                    paddingLeft: "8px", // Espacio adicional
-                  }}>
+                <div className="bar-value" style={{ color: color }}>
                   {formatNumber(location.count)}
                 </div>
               </div>
@@ -2096,6 +1884,15 @@ const DashboardPage = () => {
   };
 
   const renderTopClients = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-2 p-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="40px" />
+          ))}
+        </div>
+      );
+    }
     const {topClients} = dashboardStats;
     const totalClients =
       topClients && topClients.length > 0
@@ -2103,7 +1900,7 @@ const DashboardPage = () => {
         : 0;
 
     return (
-      <div className="top-performers" style={{maxHeight: "400px", overflowY: "auto"}}>
+      <div className="top-performers custom-scrollbar">
         {topClients && topClients.length > 0 ? (
           topClients.map((client, index) => {
             const percentage =
@@ -2114,369 +1911,87 @@ const DashboardPage = () => {
 
             return (
               <div key={index} className="client-dropdown-item">
-                {/* Header del cliente - clickeable para expandir */}
                 <div
                   className="performer-item"
                   onClick={() => toggleClientDropdown(client.nombre)}
-                  style={{cursor: "pointer", transition: "all 0.2s ease"}}>
-                  <div className="performer-rank small">#{index + 1}</div>
+                >
+                  <div className="performer-rank">#{index + 1}</div>
                   <div className="performer-info">
-                    <div className="performer-name small">{client.nombre}</div>
-                    <div className="performer-stats small">
+                    <div className="performer-name">{client.nombre}</div>
+                    <div className="performer-stats">
                       {formatNumber(client.count)} bitácoras
                     </div>
                   </div>
-                  <div
-                    className="performer-score-container"
-                    style={{display: "flex", alignItems: "center", gap: "8px"}}>
-                    <div className="performer-score small">{percentage}%</div>
-                    {/* Botón de descarga */}
+                  <div className="performer-score-container">
+                    <div className="performer-score">{percentage}%</div>
                     <button
+                      className="download-btn"
                       onClick={(e) => {
-                        e.stopPropagation(); // Evitar que se expanda/contraiga el dropdown
+                        e.stopPropagation();
                         downloadClientBitacorasExcel(client.nombre);
                       }}
                       disabled={loadingClientDownload[client.nombre]}
-                      style={{
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                        border: "none",
-                        borderRadius: "6px",
-                        width: "24px",
-                        height: "24px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: loadingClientDownload[client.nombre] ? "not-allowed" : "pointer",
-                        transition: "all 0.2s ease",
-                        opacity: loadingClientDownload[client.nombre] ? 0.6 : 1,
-                      }}
-                      title="Descargar bitácoras en Excel">
+                      title="Descargar bitácoras en Excel"
+                    >
                       <i
                         className={
                           loadingClientDownload[client.nombre]
                             ? "fa fa-spinner fa-spin"
-                            : "fa fa-download"
+                            : "fa fa-file-excel"
                         }
-                        style={{
-                          fontSize: "10px",
-                          color: "white",
-                        }}></i>
+                      ></i>
                     </button>
                     <div className="expand-icon">
-                      <i
-                        className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}
-                        style={{
-                          fontSize: "12px",
-                          color: "#64748b",
-                          transition: "transform 0.2s ease",
-                        }}></i>
+                      <i className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}></i>
                     </div>
                   </div>
                 </div>
 
-                {/* Contenido expandible con las bitácoras */}
                 {isExpanded && (
-                  <div
-                    className="client-bitacoras-list"
-                    style={{
-                      paddingLeft: "40px",
-                      paddingRight: "8px",
-                      paddingTop: "8px",
-                      paddingBottom: "8px",
-                      backgroundColor: "rgba(148, 163, 184, 0.05)",
-                      borderRadius: "8px",
-                      margin: "8px 0",
-                      animation: "slideDown 0.3s ease",
-                    }}>
+                  <div className="client-bitacoras-list">
                     {isLoading ? (
-                      <div className="text-center py-2">
-                        <i className="fa fa-spinner fa-spin me-2" style={{fontSize: "12px"}}></i>
-                        <span style={{fontSize: "12px", color: "#94a3b8"}}>
-                          Cargando bitácoras...
-                        </span>
+                      <div className="d-flex flex-column gap-2 py-3 px-3">
+                        {[...Array(3)].map((_, i) => (
+                          <Skeleton key={i} height="35px" />
+                        ))}
                       </div>
                     ) : bitacoras && bitacoras.length > 0 ? (
                       <div>
-                        <div className="bitacoras-header" style={{marginBottom: "12px"}}>
-                          <span style={{fontSize: "11px", color: "#64748b", fontWeight: "600"}}>
-                            Bitácoras ({bitacoras.length}):
-                          </span>
+                        <div className="bitacoras-header">
+                          <i className="fa fa-list-ul"></i>
+                          Bitácoras ({bitacoras.length})
                         </div>
-                        <div
-                          className="bitacoras-table-container"
-                          style={{
-                            maxHeight: "400px",
-                            overflowY: "auto",
-                            overflowX: "auto",
-                            border: "1px solid rgba(148, 163, 184, 0.2)",
-                            borderRadius: "8px",
-                            backgroundColor: "#f8fafc",
-                          }}>
-                          <table
-                            style={{
-                              width: "100%",
-                              borderCollapse: "collapse",
-                              fontSize: "10px",
-                              minWidth: "800px",
-                            }}>
-                            <thead style={{backgroundColor: "#e2e8f0", position: "sticky", top: 0}}>
+                        <div className="bitacoras-table-container custom-scrollbar">
+                          <table>
+                            <thead>
                               <tr>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  No. Bitácora
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Fecha de Creación
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Cliente
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Tipo Monitoreo
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Línea de transporte
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Operador
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Origen
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Destino
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Estado
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Usuario
-                                </th>
+                                <th>ID</th>
+                                <th>Fecha</th>
+                                <th>Monitoreo</th>
+                                <th>Línea</th>
+                                <th>Origen</th>
+                                <th>Destino</th>
+                                <th>Estado</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {bitacoras.map((bitacora, bitIndex) => (
-                                <tr
-                                  key={bitIndex}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigate(`/bitacora/${bitacora._id}`);
-                                  }}
-                                  style={{
-                                    cursor: "pointer",
-                                    transition: "background-color 0.2s ease",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = "#e0f2fe";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                  }}>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#1f2937",
-                                      fontWeight: "600",
-                                    }}>
-                                    #{bitacora.bitacora_id}
+                              {bitacoras.map((bitacora, bIdx) => (
+                                <tr key={bIdx} onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/bitacora/${bitacora._id}`);
+                                }}>
+                                  <td className="bitacora-id">
+                                    <span className="bitacora-id-chip">#{bitacora.bitacora_id}</span>
                                   </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {
-                                      day: "2-digit",
-                                      month: "2-digit",
-                                      year: "numeric",
-                                    })}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.cliente}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.tipoMonitoreo}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.lineaTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.operadorTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.origen || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.destino || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                    }}>
-                                    <span
-                                      style={{
-                                        padding: "2px 6px",
-                                        borderRadius: "12px",
-                                        fontSize: "9px",
-                                        fontWeight: "600",
-                                        textTransform: "uppercase",
-                                        backgroundColor:
-                                          bitacora.estado === "nueva"
-                                            ? "#dbeafe"
-                                            : bitacora.estado === "validada"
-                                            ? "#fef3c7"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#d1fae5"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#fee2e2"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#e0e7ff"
-                                            : "#f3f4f6",
-                                        color:
-                                          bitacora.estado === "nueva"
-                                            ? "#1e40af"
-                                            : bitacora.estado === "validada"
-                                            ? "#d97706"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#059669"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#dc2626"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#7c3aed"
-                                            : "#6b7280",
-                                      }}>
+                                  <td>{new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {day: "2-digit", month: "2-digit", year: "numeric"})}</td>
+                                  <td>{bitacora.tipoMonitoreo}</td>
+                                  <td>{bitacora.lineaTransporte || "N/A"}</td>
+                                  <td title={bitacora.origen}>{bitacora.origen || "N/A"}</td>
+                                  <td title={bitacora.destino}>{bitacora.destino || "N/A"}</td>
+                                  <td>
+                                    <span className={`status-badge ${bitacora.estado}`}>
                                       {bitacora.estado}
                                     </span>
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "100px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.usuario}
                                   </td>
                                 </tr>
                               ))}
@@ -2484,127 +1999,39 @@ const DashboardPage = () => {
                           </table>
                         </div>
 
-                        {/* Controles de paginación */}
-                        {clientPagination[client.nombre] &&
-                          clientPagination[client.nombre].totalPages > 1 && (
-                            <div
-                              style={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                padding: "8px 12px",
-                                borderTop: "1px solid #e5e7eb",
-                                fontSize: "11px",
-                                backgroundColor: "#f9fafb",
-                              }}>
-                              <div style={{display: "flex", alignItems: "center", gap: "12px"}}>
-                                <span style={{color: "#6b7280"}}>
-                                  Página {clientPagination[client.nombre].currentPage} de{" "}
-                                  {clientPagination[client.nombre].totalPages} (
-                                  {clientPagination[client.nombre].totalCount} total)
-                                </span>
-                                <div style={{display: "flex", alignItems: "center", gap: "4px"}}>
-                                  <span style={{color: "#6b7280", fontSize: "10px"}}>Mostrar:</span>
-                                  <select
-                                    value={clientPageLimits[client.nombre] || 10}
-                                    onChange={(e) =>
-                                      handleClientPageLimitChange(
-                                        client.nombre,
-                                        parseInt(e.target.value)
-                                      )
-                                    }
-                                    style={{
-                                      fontSize: "10px",
-                                      padding: "2px 4px",
-                                      border: "1px solid #d1d5db",
-                                      borderRadius: "3px",
-                                      backgroundColor: "#fff",
-                                      color: "#374151",
-                                    }}>
-                                    <option value={10}>10</option>
-                                    <option value={25}>25</option>
-                                    <option value={50}>50</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <div style={{display: "flex", gap: "4px"}}>
-                                <button
-                                  onClick={() =>
-                                    handleClientPagination(
-                                      client.nombre,
-                                      clientPagination[client.nombre].currentPage - 1
-                                    )
-                                  }
-                                  disabled={
-                                    !clientPagination[client.nombre].hasPrevPage || isLoading
-                                  }
-                                  style={{
-                                    background:
-                                      clientPagination[client.nombre].hasPrevPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      clientPagination[client.nombre].hasPrevPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      clientPagination[client.nombre].hasPrevPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-left"></i>
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleClientPagination(
-                                      client.nombre,
-                                      clientPagination[client.nombre].currentPage + 1
-                                    )
-                                  }
-                                  disabled={
-                                    !clientPagination[client.nombre].hasNextPage || isLoading
-                                  }
-                                  style={{
-                                    background:
-                                      clientPagination[client.nombre].hasNextPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      clientPagination[client.nombre].hasNextPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      clientPagination[client.nombre].hasNextPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-right"></i>
-                                </button>
-                              </div>
+                        {clientPagination[client.nombre] && clientPagination[client.nombre].totalPages > 1 && (
+                          <div className="pagination-controls">
+                            <span className="pagination-info">
+                              Pág. {clientPagination[client.nombre].currentPage} de {clientPagination[client.nombre].totalPages}
+                            </span>
+                            <div className="btn-group">
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleClientPagination(client.nombre, clientPagination[client.nombre].currentPage - 1);
+                                }}
+                                disabled={!clientPagination[client.nombre].hasPrevPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-left"></i>
+                              </button>
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleClientPagination(client.nombre, clientPagination[client.nombre].currentPage + 1);
+                                }}
+                                disabled={!clientPagination[client.nombre].hasNextPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-right"></i>
+                              </button>
                             </div>
-                          )}
+                          </div>
+                        )}
                       </div>
                     ) : (
-                      <div className="text-center py-2">
-                        <span style={{fontSize: "12px", color: "#94a3b8"}}>
-                          No hay bitácoras disponibles para este cliente
-                        </span>
+                      <div className="text-center py-3 text-muted" style={{fontSize: "12px"}}>
+                        No se encontraron bitácoras para este cliente.
                       </div>
                     )}
                   </div>
@@ -2613,13 +2040,25 @@ const DashboardPage = () => {
             );
           })
         ) : (
-          <div className="text-center text-muted small">No hay datos disponibles</div>
+          <div className="text-center py-5">
+            <i className="fa fa-users opacity-10 mb-2" style={{fontSize: "2rem"}}></i>
+            <p className="text-muted small">No hay datos de clientes disponibles</p>
+          </div>
         )}
       </div>
     );
   };
 
   const renderTopOperadores = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-2 p-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="40px" />
+          ))}
+        </div>
+      );
+    }
     const {topOperadores} = dashboardStats;
     const totalOperadores =
       topOperadores && topOperadores.length > 0
@@ -2627,7 +2066,7 @@ const DashboardPage = () => {
         : 0;
 
     return (
-      <div className="top-performers" style={{maxHeight: "400px", overflowY: "auto"}}>
+      <div className="top-performers custom-scrollbar">
         {topOperadores && topOperadores.length > 0 ? (
           topOperadores.map((operador, index) => {
             const percentage =
@@ -2637,370 +2076,90 @@ const DashboardPage = () => {
             const isLoading = loadingUserBitacoras[operador.name];
 
             return (
-              <div key={index} className="user-dropdown-item">
-                {/* Header del usuario - clickeable para expandir */}
+              <div key={index} className="client-dropdown-item">
                 <div
                   className="performer-item"
                   onClick={() => toggleUserDropdown(operador.name)}
-                  style={{cursor: "pointer", transition: "all 0.2s ease"}}>
-                  <div className="performer-rank small">#{index + 1}</div>
+                >
+                  <div className="performer-rank">#{index + 1}</div>
                   <div className="performer-info">
-                    <div className="performer-name small">{operador.name}</div>
-                    <div className="performer-stats small">
+                    <div className="performer-name">{operador.name}</div>
+                    <div className="performer-stats">
                       {formatNumber(operador.count)} bitácoras
                     </div>
                   </div>
-                  <div
-                    className="performer-score-container"
-                    style={{display: "flex", alignItems: "center", gap: "8px"}}>
-                    <div className="performer-score small">{percentage}%</div>
-                    {/* Botón de descarga */}
+                  <div className="performer-score-container">
+                    <div className="performer-score">{percentage}%</div>
                     <button
+                      className="download-btn"
                       onClick={(e) => {
-                        e.stopPropagation(); // Evitar que se expanda/contraiga el dropdown
+                        e.stopPropagation();
                         downloadUserBitacorasExcel(operador.name);
                       }}
                       disabled={loadingUserDownload[operador.name]}
-                      style={{
-                        background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
-                        border: "none",
-                        borderRadius: "6px",
-                        width: "24px",
-                        height: "24px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: loadingUserDownload[operador.name] ? "not-allowed" : "pointer",
-                        transition: "all 0.2s ease",
-                        opacity: loadingUserDownload[operador.name] ? 0.6 : 1,
-                      }}
-                      title="Descargar bitácoras en Excel">
+                      title="Descargar bitácoras en Excel"
+                    >
                       <i
                         className={
                           loadingUserDownload[operador.name]
                             ? "fa fa-spinner fa-spin"
-                            : "fa fa-download"
+                            : "fa fa-file-excel"
                         }
-                        style={{
-                          fontSize: "10px",
-                          color: "white",
-                        }}></i>
+                      ></i>
                     </button>
                     <div className="expand-icon">
-                      <i
-                        className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}
-                        style={{
-                          fontSize: "12px",
-                          color: "#64748b",
-                          transition: "transform 0.2s ease",
-                        }}></i>
+                      <i className={`fa fa-chevron-${isExpanded ? "up" : "down"}`}></i>
                     </div>
                   </div>
                 </div>
 
-                {/* Contenido expandible con las bitácoras */}
                 {isExpanded && (
-                  <div
-                    className="user-bitacoras-list"
-                    style={{
-                      paddingLeft: "40px",
-                      paddingRight: "8px",
-                      paddingTop: "8px",
-                      paddingBottom: "8px",
-                      backgroundColor: "rgba(148, 163, 184, 0.05)",
-                      borderRadius: "8px",
-                      margin: "8px 0",
-                      animation: "slideDown 0.3s ease",
-                    }}>
+                  <div className="client-bitacoras-list">
                     {isLoading ? (
-                      <div className="text-center py-2">
-                        <i className="fa fa-spinner fa-spin me-2" style={{fontSize: "12px"}}></i>
-                        <span style={{fontSize: "12px", color: "#94a3b8"}}>
-                          Cargando bitácoras...
-                        </span>
+                      <div className="d-flex flex-column gap-2 py-3 px-3">
+                        {[...Array(3)].map((_, i) => (
+                          <Skeleton key={i} height="35px" />
+                        ))}
                       </div>
                     ) : bitacoras && bitacoras.length > 0 ? (
                       <div>
-                        <div className="bitacoras-header" style={{marginBottom: "12px"}}>
-                          <span style={{fontSize: "11px", color: "#64748b", fontWeight: "600"}}>
-                            Bitácoras ({bitacoras.length}):
-                          </span>
+                        <div className="bitacoras-header">
+                          <i className="fa fa-list-ul"></i>
+                          Bitácoras ({bitacoras.length})
                         </div>
-                        <div
-                          className="bitacoras-table-container"
-                          style={{
-                            maxHeight: "400px",
-                            overflowY: "auto",
-                            overflowX: "auto",
-                            border: "1px solid rgba(148, 163, 184, 0.2)",
-                            borderRadius: "8px",
-                            backgroundColor: "#f8fafc",
-                          }}>
-                          <table
-                            style={{
-                              width: "100%",
-                              borderCollapse: "collapse",
-                              fontSize: "10px",
-                              minWidth: "800px",
-                            }}>
-                            <thead style={{backgroundColor: "#e2e8f0", position: "sticky", top: 0}}>
+                        <div className="bitacoras-table-container custom-scrollbar">
+                          <table>
+                            <thead>
                               <tr>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  No. Bitácora
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Fecha de Creación
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Cliente
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Tipo Monitoreo
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Línea de transporte
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Operador
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Origen
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Destino
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Estado
-                                </th>
-                                <th
-                                  style={{
-                                    padding: "8px 6px",
-                                    borderBottom: "1px solid #cbd5e1",
-                                    fontWeight: "600",
-                                    color: "#374151",
-                                    textAlign: "left",
-                                  }}>
-                                  Usuario
-                                </th>
+                                <th>ID</th>
+                                <th>Fecha</th>
+                                <th>Cliente</th>
+                                <th>Monitoreo</th>
+                                <th>Línea</th>
+                                <th>Origen</th>
+                                <th>Destino</th>
+                                <th>Estado</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {bitacoras.map((bitacora, bitIndex) => (
-                                <tr
-                                  key={bitIndex}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigate(`/bitacora/${bitacora._id}`);
-                                  }}
-                                  style={{
-                                    cursor: "pointer",
-                                    transition: "background-color 0.2s ease",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = "#e0f2fe";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = "transparent";
-                                  }}>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#1f2937",
-                                      fontWeight: "600",
-                                    }}>
-                                    #{bitacora.bitacora_id}
+                              {bitacoras.map((bitacora, bIdx) => (
+                                <tr key={bIdx} onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/bitacora/${bitacora._id}`);
+                                }}>
+                                  <td className="bitacora-id">
+                                    <span className="bitacora-id-chip">#{bitacora.bitacora_id}</span>
                                   </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {
-                                      day: "2-digit",
-                                      month: "2-digit",
-                                      year: "numeric",
-                                    })}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.cliente}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                    }}>
-                                    {bitacora.tipoMonitoreo}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.lineaTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "120px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.operadorTransporte || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.origen || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "150px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.destino || "N/A"}
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                    }}>
-                                    <span
-                                      style={{
-                                        padding: "2px 6px",
-                                        borderRadius: "12px",
-                                        fontSize: "9px",
-                                        fontWeight: "600",
-                                        textTransform: "uppercase",
-                                        backgroundColor:
-                                          bitacora.estado === "nueva"
-                                            ? "#dbeafe"
-                                            : bitacora.estado === "validada"
-                                            ? "#fef3c7"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#d1fae5"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#fee2e2"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#e0e7ff"
-                                            : "#f3f4f6",
-                                        color:
-                                          bitacora.estado === "nueva"
-                                            ? "#1e40af"
-                                            : bitacora.estado === "validada"
-                                            ? "#d97706"
-                                            : bitacora.estado === "iniciada"
-                                            ? "#059669"
-                                            : bitacora.estado === "cerrada"
-                                            ? "#dc2626"
-                                            : bitacora.estado === "finalizada"
-                                            ? "#7c3aed"
-                                            : "#6b7280",
-                                      }}>
+                                  <td>{new Date(bitacora.fechaCreacion).toLocaleDateString("es-ES", {day: "2-digit", month: "2-digit", year: "numeric"})}</td>
+                                  <td>{bitacora.cliente}</td>
+                                  <td>{bitacora.tipoMonitoreo}</td>
+                                  <td>{bitacora.lineaTransporte || "N/A"}</td>
+                                  <td title={bitacora.origen}>{bitacora.origen || "N/A"}</td>
+                                  <td title={bitacora.destino}>{bitacora.destino || "N/A"}</td>
+                                  <td>
+                                    <span className={`status-badge ${bitacora.estado}`}>
                                       {bitacora.estado}
                                     </span>
-                                  </td>
-                                  <td
-                                    style={{
-                                      padding: "8px 6px",
-                                      borderBottom: "1px solid #e5e7eb",
-                                      color: "#374151",
-                                      maxWidth: "100px",
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                    {bitacora.usuario}
                                   </td>
                                 </tr>
                               ))}
@@ -3008,123 +2167,39 @@ const DashboardPage = () => {
                           </table>
                         </div>
 
-                        {/* Controles de paginación */}
-                        {userPagination[operador.name] &&
-                          userPagination[operador.name].totalPages > 1 && (
-                            <div
-                              style={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "center",
-                                padding: "8px 12px",
-                                borderTop: "1px solid #e5e7eb",
-                                fontSize: "11px",
-                                backgroundColor: "#f9fafb",
-                              }}>
-                              <div style={{display: "flex", alignItems: "center", gap: "12px"}}>
-                                <span style={{color: "#6b7280"}}>
-                                  Página {userPagination[operador.name].currentPage} de{" "}
-                                  {userPagination[operador.name].totalPages} (
-                                  {userPagination[operador.name].totalCount} total)
-                                </span>
-                                <div style={{display: "flex", alignItems: "center", gap: "4px"}}>
-                                  <span style={{color: "#6b7280", fontSize: "10px"}}>Mostrar:</span>
-                                  <select
-                                    value={userPageLimits[operador.name] || 10}
-                                    onChange={(e) =>
-                                      handleUserPageLimitChange(
-                                        operador.name,
-                                        parseInt(e.target.value)
-                                      )
-                                    }
-                                    style={{
-                                      fontSize: "10px",
-                                      padding: "2px 4px",
-                                      border: "1px solid #d1d5db",
-                                      borderRadius: "3px",
-                                      backgroundColor: "#fff",
-                                      color: "#374151",
-                                    }}>
-                                    <option value={10}>10</option>
-                                    <option value={25}>25</option>
-                                    <option value={50}>50</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <div style={{display: "flex", gap: "4px"}}>
-                                <button
-                                  onClick={() =>
-                                    handleUserPagination(
-                                      operador.name,
-                                      userPagination[operador.name].currentPage - 1
-                                    )
-                                  }
-                                  disabled={!userPagination[operador.name].hasPrevPage || isLoading}
-                                  style={{
-                                    background:
-                                      userPagination[operador.name].hasPrevPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      userPagination[operador.name].hasPrevPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      userPagination[operador.name].hasPrevPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-left"></i>
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleUserPagination(
-                                      operador.name,
-                                      userPagination[operador.name].currentPage + 1
-                                    )
-                                  }
-                                  disabled={!userPagination[operador.name].hasNextPage || isLoading}
-                                  style={{
-                                    background:
-                                      userPagination[operador.name].hasNextPage && !isLoading
-                                        ? "#f3f4f6"
-                                        : "#e5e7eb",
-                                    border: "1px solid #d1d5db",
-                                    borderRadius: "4px",
-                                    width: "24px",
-                                    height: "24px",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    cursor:
-                                      userPagination[operador.name].hasNextPage && !isLoading
-                                        ? "pointer"
-                                        : "not-allowed",
-                                    fontSize: "10px",
-                                    color:
-                                      userPagination[operador.name].hasNextPage && !isLoading
-                                        ? "#374151"
-                                        : "#9ca3af",
-                                  }}>
-                                  <i className="fa fa-chevron-right"></i>
-                                </button>
-                              </div>
+                        {userPagination[operador.name] && userPagination[operador.name].totalPages > 1 && (
+                          <div className="pagination-controls">
+                            <span className="pagination-info">
+                              Pág. {userPagination[operador.name].currentPage} de {userPagination[operador.name].totalPages}
+                            </span>
+                            <div className="btn-group">
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUserPagination(operador.name, userPagination[operador.name].currentPage - 1);
+                                }}
+                                disabled={!userPagination[operador.name].hasPrevPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-left"></i>
+                              </button>
+                              <button
+                                className="pagination-btn"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUserPagination(operador.name, userPagination[operador.name].currentPage + 1);
+                                }}
+                                disabled={!userPagination[operador.name].hasNextPage || isLoading}
+                              >
+                                <i className="fa fa-chevron-right"></i>
+                              </button>
                             </div>
-                          )}
+                          </div>
+                        )}
                       </div>
                     ) : (
-                      <div className="text-center py-2">
-                        <span style={{fontSize: "12px", color: "#94a3b8"}}>
-                          No hay bitácoras disponibles para este usuario
-                        </span>
+                      <div className="text-center py-3 text-muted" style={{fontSize: "12px"}}>
+                        No se encontraron bitácoras para este operador.
                       </div>
                     )}
                   </div>
@@ -3133,13 +2208,25 @@ const DashboardPage = () => {
             );
           })
         ) : (
-          <div className="text-center text-muted small">No hay datos disponibles</div>
+          <div className="text-center py-5">
+            <i className="fa fa-users opacity-10 mb-2" style={{fontSize: "2rem"}}></i>
+            <p className="text-muted small">No hay datos de operadores disponibles</p>
+          </div>
         )}
       </div>
     );
   };
 
   const renderUsuariosBarChart = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="30px" />
+          ))}
+        </div>
+      );
+    }
     const {topOperadores} = dashboardStats;
 
     if (!topOperadores || topOperadores.length === 0) {
@@ -3149,16 +2236,9 @@ const DashboardPage = () => {
     const maxCount = Math.max(...topOperadores.map((operador) => operador.count));
 
     return (
-      <div
-        className="horizontal-bar-chart-container"
-        style={{
-          maxHeight: "300px",
-          overflowY: "auto",
-          paddingRight: "8px", // Espacio para evitar que se corten los números
-          marginRight: "-8px", // Compensar el padding
-        }}>
+      <div className="horizontal-bar-chart-container">
         {topOperadores.map((operador, index) => {
-          const barWidth = maxCount > 0 ? (operador.count / maxCount) * 180 : 0; // Reducido de 200 a 180
+          const barWidth = maxCount > 0 ? (operador.count / maxCount) * 100 : 0;
           const colors = [
             "#3b82f6",
             "#10b981",
@@ -3174,62 +2254,18 @@ const DashboardPage = () => {
           const color = colors[index % colors.length];
 
           return (
-            <div
-              key={index}
-              className="horizontal-bar-item"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                marginBottom: "12px",
-                padding: "8px 12px 8px 0", // Más padding a la derecha
-                backgroundColor: "transparent", // Quitar fondo blanco
-              }}>
-              <div
-                className="bar-label"
-                style={{
-                  width: "120px",
-                  fontSize: "12px",
-                  fontWeight: "500",
-                  color: "#ffffff",
-                  marginRight: "12px",
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                }}>
-                {operador.name}
-              </div>
-              <div
-                className="bar-container"
-                style={{
-                  flex: 1,
-                  height: "20px",
-                  backgroundColor: "rgba(59, 130, 246, 0.08)", // Azul muy opaco
-                  borderRadius: "10px",
-                  position: "relative",
-                  marginRight: "12px",
-                  minWidth: "100px", // Ancho mínimo para evitar colapso
-                }}>
+            <div key={index} className="horizontal-bar-item">
+              <div className="bar-label">{operador.name}</div>
+              <div className="bar-container">
                 <div
                   className="bar-fill"
                   style={{
-                    width: `${barWidth}px`,
-                    height: "100%",
+                    width: `${barWidth}%`,
                     backgroundColor: color,
-                    borderRadius: "10px",
-                    transition: "width 0.3s ease",
-                    minWidth: operador.count > 0 ? "4px" : "0px",
+                    boxShadow: `0 0 8px ${color}40`
                   }}></div>
               </div>
-              <div
-                className="bar-value"
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "bold",
-                  color: color,
-                  minWidth: "50px", // Aumentado de 40px a 50px
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                  paddingLeft: "8px", // Espacio adicional
-                }}>
+              <div className="bar-value" style={{ color: color }}>
                 {formatNumber(operador.count)}
               </div>
             </div>
@@ -3240,6 +2276,15 @@ const DashboardPage = () => {
   };
 
   const renderTopLineasTransporte = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-2 p-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="40px" />
+          ))}
+        </div>
+      );
+    }
     const {topLineasTransporte} = dashboardStats;
     const totalLineas =
       topLineasTransporte && topLineasTransporte.length > 0
@@ -3247,31 +2292,47 @@ const DashboardPage = () => {
         : 0;
 
     return (
-      <div className="top-performers" style={{maxHeight: "300px", overflowY: "auto"}}>
+      <div className="top-performers custom-scrollbar">
         {topLineasTransporte && topLineasTransporte.length > 0 ? (
           topLineasTransporte.map((linea, index) => {
             const percentage = totalLineas > 0 ? Math.round((linea.count / totalLineas) * 100) : 0;
             return (
-              <div key={index} className="performer-item">
-                <div className="performer-rank small">#{index + 1}</div>
-                <div className="performer-info">
-                  <div className="performer-name small">{linea.nombre}</div>
-                  <div className="performer-stats small">
-                    {formatNumber(linea.count)} transportes
+              <div key={index} className="client-dropdown-item">
+                <div className="performer-item" style={{cursor: "default"}}>
+                  <div className="performer-rank">#{index + 1}</div>
+                  <div className="performer-info">
+                    <div className="performer-name">{linea.nombre}</div>
+                    <div className="performer-stats">
+                      {formatNumber(linea.count)} transportes
+                    </div>
+                  </div>
+                  <div className="performer-score-container">
+                    <div className="performer-score">{percentage}%</div>
                   </div>
                 </div>
-                <div className="performer-score small">{percentage}%</div>
               </div>
             );
           })
         ) : (
-          <div className="text-center text-muted small">No hay datos disponibles</div>
+          <div className="text-center py-4">
+            <i className="fa fa-truck opacity-10 mb-2" style={{fontSize: "1.5rem"}}></i>
+            <p className="text-muted small">No hay datos de líneas disponibles</p>
+          </div>
         )}
       </div>
     );
   };
 
   const renderTopOperadoresTransportes = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-2 p-3">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="40px" />
+          ))}
+        </div>
+      );
+    }
     const {topOperadoresTransportes} = dashboardStats;
     const totalOperadoresTransportes =
       topOperadoresTransportes && topOperadoresTransportes.length > 0
@@ -3279,7 +2340,7 @@ const DashboardPage = () => {
         : 0;
 
     return (
-      <div className="top-performers" style={{maxHeight: "300px", overflowY: "auto"}}>
+      <div className="top-performers custom-scrollbar">
         {topOperadoresTransportes && topOperadoresTransportes.length > 0 ? (
           topOperadoresTransportes.map((operador, index) => {
             const percentage =
@@ -3287,26 +2348,42 @@ const DashboardPage = () => {
                 ? Math.round((operador.count / totalOperadoresTransportes) * 100)
                 : 0;
             return (
-              <div key={index} className="performer-item">
-                <div className="performer-rank small">#{index + 1}</div>
-                <div className="performer-info">
-                  <div className="performer-name small">{operador.nombre}</div>
-                  <div className="performer-stats small">
-                    {formatNumber(operador.count)} transportes
+              <div key={index} className="client-dropdown-item">
+                <div className="performer-item" style={{cursor: "default"}}>
+                  <div className="performer-rank">#{index + 1}</div>
+                  <div className="performer-info">
+                    <div className="performer-name">{operador.nombre}</div>
+                    <div className="performer-stats">
+                      {formatNumber(operador.count)} transportes
+                    </div>
+                  </div>
+                  <div className="performer-score-container">
+                    <div className="performer-score">{percentage}%</div>
                   </div>
                 </div>
-                <div className="performer-score small">{percentage}%</div>
               </div>
             );
           })
         ) : (
-          <div className="text-center text-muted small">No hay datos disponibles</div>
+          <div className="text-center py-4">
+            <i className="fa fa-id-card opacity-10 mb-2" style={{fontSize: "1.5rem"}}></i>
+            <p className="text-muted small">No hay datos de operadores disponibles</p>
+          </div>
         )}
       </div>
     );
   };
 
   const renderLineasTransporteBarChart = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="30px" />
+          ))}
+        </div>
+      );
+    }
     const {topLineasTransporte} = dashboardStats;
 
     if (!topLineasTransporte || topLineasTransporte.length === 0) {
@@ -3320,16 +2397,9 @@ const DashboardPage = () => {
     const maxCount = Math.max(...topLineasTransporte.map((linea) => linea.count));
 
     return (
-      <div
-        className="horizontal-bar-chart-container"
-        style={{
-          maxHeight: "300px",
-          overflowY: "auto",
-          paddingRight: "8px", // Espacio para evitar que se corten los números
-          marginRight: "-8px", // Compensar el padding
-        }}>
+      <div className="horizontal-bar-chart-container">
         {topLineasTransporte.map((linea, index) => {
-          const barWidth = maxCount > 0 ? (linea.count / maxCount) * 180 : 0; // Reducido de 200 a 180
+          const barWidth = maxCount > 0 ? (linea.count / maxCount) * 100 : 0;
           const colors = [
             "#3b82f6",
             "#10b981",
@@ -3345,62 +2415,18 @@ const DashboardPage = () => {
           const color = colors[index % colors.length];
 
           return (
-            <div
-              key={index}
-              className="horizontal-bar-item"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                marginBottom: "12px",
-                padding: "8px 12px 8px 0", // Más padding a la derecha
-                backgroundColor: "transparent", // Quitar fondo blanco
-              }}>
-              <div
-                className="bar-label"
-                style={{
-                  width: "120px",
-                  fontSize: "12px",
-                  fontWeight: "500",
-                  color: "#ffffff",
-                  marginRight: "12px",
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                }}>
-                {linea.nombre}
-              </div>
-              <div
-                className="bar-container"
-                style={{
-                  flex: 1,
-                  height: "20px",
-                  backgroundColor: "rgba(59, 130, 246, 0.08)", // Azul muy opaco
-                  borderRadius: "10px",
-                  position: "relative",
-                  marginRight: "12px",
-                  minWidth: "100px", // Ancho mínimo para evitar colapso
-                }}>
+            <div key={index} className="horizontal-bar-item">
+              <div className="bar-label">{linea.nombre}</div>
+              <div className="bar-container">
                 <div
                   className="bar-fill"
                   style={{
-                    width: `${barWidth}px`,
-                    height: "100%",
+                    width: `${barWidth}%`,
                     backgroundColor: color,
-                    borderRadius: "10px",
-                    transition: "width 0.3s ease",
-                    minWidth: linea.count > 0 ? "4px" : "0px",
+                    boxShadow: `0 0 8px ${color}40`
                   }}></div>
               </div>
-              <div
-                className="bar-value"
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "bold",
-                  color: color,
-                  minWidth: "50px", // Aumentado de 40px a 50px
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                  paddingLeft: "8px", // Espacio adicional
-                }}>
+              <div className="bar-value" style={{ color: color }}>
                 {formatNumber(linea.count)}
               </div>
             </div>
@@ -3411,6 +2437,15 @@ const DashboardPage = () => {
   };
 
   const renderOperadoresTransportesBarChart = () => {
+    if (loadingRankings) {
+      return (
+        <div className="d-flex flex-column gap-3 py-4">
+          {[...Array(5)].map((_, i) => (
+            <Skeleton key={i} height="30px" />
+          ))}
+        </div>
+      );
+    }
     const {topOperadoresTransportes} = dashboardStats;
 
     if (!topOperadoresTransportes || topOperadoresTransportes.length === 0) {
@@ -3424,16 +2459,9 @@ const DashboardPage = () => {
     const maxCount = Math.max(...topOperadoresTransportes.map((operador) => operador.count));
 
     return (
-      <div
-        className="horizontal-bar-chart-container"
-        style={{
-          maxHeight: "300px",
-          overflowY: "auto",
-          paddingRight: "8px", // Espacio para evitar que se corten los números
-          marginRight: "-8px", // Compensar el padding
-        }}>
+      <div className="horizontal-bar-chart-container">
         {topOperadoresTransportes.map((operador, index) => {
-          const barWidth = maxCount > 0 ? (operador.count / maxCount) * 180 : 0; // Reducido de 200 a 180
+          const barWidth = maxCount > 0 ? (operador.count / maxCount) * 100 : 0;
           const colors = [
             "#3b82f6",
             "#10b981",
@@ -3449,62 +2477,18 @@ const DashboardPage = () => {
           const color = colors[index % colors.length];
 
           return (
-            <div
-              key={index}
-              className="horizontal-bar-item"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                marginBottom: "12px",
-                padding: "8px 12px 8px 0", // Más padding a la derecha
-                backgroundColor: "transparent", // Quitar fondo blanco
-              }}>
-              <div
-                className="bar-label"
-                style={{
-                  width: "120px",
-                  fontSize: "12px",
-                  fontWeight: "500",
-                  color: "#ffffff",
-                  marginRight: "12px",
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                }}>
-                {operador.nombre}
-              </div>
-              <div
-                className="bar-container"
-                style={{
-                  flex: 1,
-                  height: "20px",
-                  backgroundColor: "rgba(59, 130, 246, 0.08)", // Azul muy opaco
-                  borderRadius: "10px",
-                  position: "relative",
-                  marginRight: "12px",
-                  minWidth: "100px", // Ancho mínimo para evitar colapso
-                }}>
+            <div key={index} className="horizontal-bar-item">
+              <div className="bar-label">{operador.nombre}</div>
+              <div className="bar-container">
                 <div
                   className="bar-fill"
                   style={{
-                    width: `${barWidth}px`,
-                    height: "100%",
+                    width: `${barWidth}%`,
                     backgroundColor: color,
-                    borderRadius: "10px",
-                    transition: "width 0.3s ease",
-                    minWidth: operador.count > 0 ? "4px" : "0px",
+                    boxShadow: `0 0 8px ${color}40`
                   }}></div>
               </div>
-              <div
-                className="bar-value"
-                style={{
-                  fontSize: "11px",
-                  fontWeight: "bold",
-                  color: color,
-                  minWidth: "50px", // Aumentado de 40px a 50px
-                  textAlign: "right",
-                  flexShrink: 0, // No permitir que se encoja
-                  paddingLeft: "8px", // Espacio adicional
-                }}>
+              <div className="bar-value" style={{ color: color }}>
                 {formatNumber(operador.count)}
               </div>
             </div>
@@ -3514,7 +2498,9 @@ const DashboardPage = () => {
     );
   };
 
-  if (loading) {
+  const isInitialLoading = loading && dashboardStats.monthlyData.length === 0;
+
+  if (isInitialLoading) {
     return (
       <section id="dashboard">
         <div className="w-100 d-flex h-100 mt-0">
@@ -3546,172 +2532,88 @@ const DashboardPage = () => {
           <PageHeader
             title="Dashboard General"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
-              <div className="filter-card border-0 p-0 bg-transparent">
-                <div className="filter-header d-flex justify-content-end align-items-center mb-2">
-                  <div className="d-flex align-items-center gap-2">
-                    {loading && (
-                      <span className="badge bg-warning">
-                        <i className="fa fa-spinner fa-spin me-1"></i>
-                        Cargando...
-                      </span>
-                    )}
-                    {(appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0] ||
-                      appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all") && (
-                      <span className="badge bg-primary">
-                        <i className="fa fa-filter me-1"></i>
-                        Filtros Activos
-                      </span>
-                    )}
-                  </div>
+              <FilterBar>
+                <div>
+                  <DatePicker
+                    label="Fecha Desde"
+                    value={fechaDesde}
+                    onChange={(v) => commitFilters({nextFechaDesde: v ?? ""})}
+                    placeholder="Sin fecha"
+                  />
                 </div>
-                <div className="filter-content">
-                  <div className="row g-2 g-md-3 align-items-end">
-                    {/* Filtros de fecha primero */}
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-section">
-                        <label className="form-label small mb-1">Fecha Desde:</label>
-                        <input
-                          type="date"
-                          value={fechaDesde}
-                          onChange={(e) => setFechaDesde(e.target.value)}
-                          className="filter-select form-control form-control-sm"
-                        />
-                      </div>
-                    </div>
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-section">
-                        <label className="form-label small mb-1">Fecha Hasta:</label>
-                        <input
-                          type="date"
-                          value={fechaHasta}
-                          onChange={(e) => setFechaHasta(e.target.value)}
-                          className="filter-select form-control form-control-sm"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Filtro de cliente después */}
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-section">
-                        <label className="form-label small mb-1">Cliente:</label>
-                        <select
-                          value={clientFilter}
-                          onChange={(e) => {
-                            const newClientFilter = e.target.value;
-                            setClientFilter(newClientFilter);
-
-                            // Reset transport line filter when client changes
-                            if (newClientFilter !== clientFilter) {
-                              setLineaTransporteFilter("all");
-                              setOperadorFilter("all");
-                            }
-                          }}
-                          className="filter-select form-select form-select-sm">
-                          <option value="all">Todos los clientes</option>
-                          {availableClients && availableClients.length > 0
-                            ? availableClients
-                                .filter((client) => client && client.razon_social)
-                                .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
-                                .map((client) => (
-                                  <option key={client._id} value={client.razon_social}>
-                                    {client.razon_social}
-                                  </option>
-                                ))
-                            : null}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Filtros de línea de transporte y operador */}
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-section">
-                        <label className="form-label small mb-1">
-                          Línea Transporte:
-                          {loadingLineasTransporte && (
-                            <i className="fa fa-spinner fa-spin ms-1"></i>
-                          )}
-                        </label>
-                        <select
-                          value={lineaTransporteFilter}
-                          onChange={(e) => {
-                            const newLineaTransporteFilter = e.target.value;
-                            setLineaTransporteFilter(newLineaTransporteFilter);
-
-                            // Reset operator filter when transport line changes
-                            if (newLineaTransporteFilter !== lineaTransporteFilter) {
-                              setOperadorFilter("all");
-                            }
-                          }}
-                          className="filter-select form-select form-select-sm"
-                          disabled={loadingLineasTransporte || clientFilter === "all"}>
-                          <option value="all">
-                            {clientFilter === "all"
-                              ? "Selecciona un cliente primero"
-                              : "Todas las líneas"}
-                          </option>
-                          {availableLineasTransporte && availableLineasTransporte.length > 0
-                            ? availableLineasTransporte
-                                .filter((linea) => linea && linea.nombre)
-                                .sort((a, b) => a.nombre.localeCompare(b.nombre))
-                                .map((linea) => (
-                                  <option key={linea._id} value={linea.nombre}>
-                                    {linea.nombre}
-                                  </option>
-                                ))
-                            : null}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-section">
-                        <label className="form-label small mb-1">
-                          Operador:
-                          {loadingOperadores && <i className="fa fa-spinner fa-spin ms-1"></i>}
-                        </label>
-                        <select
-                          value={operadorFilter}
-                          onChange={(e) => setOperadorFilter(e.target.value)}
-                          className="filter-select form-select form-select-sm"
-                          disabled={loadingOperadores || lineaTransporteFilter === "all"}>
-                          <option value="all">
-                            {lineaTransporteFilter === "all"
-                              ? "Selecciona una línea de transporte primero"
-                              : "Todos los operadores"}
-                          </option>
-                          {availableOperadores && availableOperadores.length > 0
-                            ? availableOperadores
-                                .filter((operador) => operador && operador.nombre)
-                                .sort((a, b) => a.nombre.localeCompare(b.nombre))
-                                .map((operador) => (
-                                  <option key={operador._id} value={operador.nombre}>
-                                    {operador.nombre}
-                                  </option>
-                                ))
-                            : null}
-                        </select>
-                      </div>
-                    </div>
-                    <div className="col-12 col-sm-6 col-lg-2">
-                      <div className="filter-actions d-flex justify-content-end gap-2">
-                        <button
-                          className="filter-btn btn btn-outline-primary btn-sm"
-                          onClick={applyFilters}>
-                          <i className="fa fa-check me-1"></i>
-                        </button>
-                        <button
-                          className="filter-btn btn btn-outline-secondary btn-sm"
-                          onClick={resetFilters}>
-                          <i className="fa fa-refresh me-1"></i>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                <div>
+                  <DatePicker
+                    label="Fecha Hasta"
+                    value={fechaHasta}
+                    onChange={(v) => commitFilters({nextFechaHasta: v ?? ""})}
+                    placeholder="Sin fecha"
+                  />
                 </div>
-              </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    placeholder="Todos los clientes"
+                    value={clientFilter === "all" ? null : clientFilter}
+                    onChange={(v) =>
+                      commitFilters({
+                        nextClientFilter: v ?? "all",
+                        nextLineaTransporteFilter: "all",
+                        nextOperadorFilter: "all",
+                      })
+                    }
+                    options={(availableClients || [])
+                      .filter((c) => c?.razon_social)
+                      .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                      .map((c) => ({value: c.razon_social, label: c.razon_social}))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Línea Transporte"
+                    placeholder={
+                      clientFilter === "all"
+                        ? "Selecciona un cliente primero"
+                        : loadingLineasTransporte
+                          ? "Cargando..."
+                          : "Todas las líneas"
+                    }
+                    value={lineaTransporteFilter === "all" ? null : lineaTransporteFilter}
+                    onChange={(v) =>
+                      commitFilters({
+                        nextLineaTransporteFilter: v ?? "all",
+                        nextOperadorFilter: "all",
+                      })
+                    }
+                    disabled={loadingLineasTransporte || clientFilter === "all"}
+                    options={(availableLineasTransporte || [])
+                      .filter((l) => l?.nombre)
+                      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+                      .map((l) => ({value: l.nombre, label: l.nombre}))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Operador"
+                    placeholder={
+                      lineaTransporteFilter === "all"
+                        ? "Selecciona una línea primero"
+                        : loadingOperadores
+                          ? "Cargando..."
+                          : "Todos los operadores"
+                    }
+                    value={operadorFilter === "all" ? null : operadorFilter}
+                    onChange={(v) => commitFilters({nextOperadorFilter: v ?? "all"})}
+                    disabled={loadingOperadores || lineaTransporteFilter === "all"}
+                    options={(availableOperadores || [])
+                      .filter((o) => o?.nombre)
+                      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+                      .map((o) => ({value: o.nombre, label: o.nombre}))}
+                  />
+                </div>
+              </FilterBar>
             }
           />
 
@@ -3719,43 +2621,48 @@ const DashboardPage = () => {
 
             {/* Estadísticas principales con totales y porcentajes integrados */}
             <div className="row mb-3 mb-md-4 g-2 g-md-3">
-              {(appliedClientFilter !== "all" ||
-                appliedLineaTransporteFilter !== "all" ||
-                appliedOperadorFilter !== "all" ||
-                appliedFechaDesde ||
-                appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                <div className="col-12 mb-2">
-                  <div className="alert alert-info py-2" style={{fontSize: "12px"}}>
-                    <i className="fa fa-info-circle me-2"></i>
-                    <strong>Estadísticas filtradas:</strong>{" "}
-                    {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                    {appliedLineaTransporteFilter !== "all" &&
-                      `Línea: ${appliedLineaTransporteFilter} | `}
-                    {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                    {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                    {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                      `Hasta: ${appliedFechaHasta}`}
+              {hasActiveFilters && (
+                <div className="col-12 mb-3">
+                  <div 
+                    className="d-flex align-items-center gap-2 px-3 py-2" 
+                    style={{
+                      backgroundColor: "#eff6ff", 
+                      borderRadius: "8px", 
+                      border: "1px solid #dbeafe",
+                      color: "#1e40af",
+                      fontSize: "0.75rem"
+                    }}
+                  >
+                    <i className="fa fa-info-circle" style={{opacity: 0.8}}></i>
+                    <span>
+                      <strong style={{fontWeight: "700"}}>Vista filtrada:</strong>{" "}
+                      {appliedClientFilter !== "all" && <span className="me-2">Cliente: <span style={{fontWeight: "600"}}>{appliedClientFilter}</span></span>}
+                      {appliedLineaTransporteFilter !== "all" && <span className="me-2">Línea: <span style={{fontWeight: "600"}}>{appliedLineaTransporteFilter}</span></span>}
+                      {appliedOperadorFilter !== "all" && <span className="me-2">Operador: <span style={{fontWeight: "600"}}>{appliedOperadorFilter}</span></span>}
+                      {appliedFechaDesde !== lastYearStr && <span className="me-2">Desde: <span style={{fontWeight: "600"}}>{appliedFechaDesde}</span></span>}
+                      {appliedFechaHasta !== todayStr && <span>Hasta: <span style={{fontWeight: "600"}}>{appliedFechaHasta}</span></span>}
+                    </span>
                   </div>
                 </div>
               )}
               {/* Total Bitácoras */}
               <div className="col-6 col-lg mb-2 mb-lg-0">
                 <div className="stat-card h-100">
-                  <div
-                    className="stat-icon"
-                    style={{backgroundColor: "#6b7280 !important", color: "#fff"}}>
+                  <div className="stat-icon total">
                     <i className="fa fa-book"></i>
                   </div>
                   <div className="stat-content">
-                    <div className="stat-value fs-4 fs-md-3">
-                      {formatNumber(dashboardStats.totalBitacoras || 0)}
+                    <div className="stat-value">
+                      {loadingSummary ? (
+                        <Skeleton width="60px" height="24px" />
+                      ) : (
+                        formatNumber(dashboardStats.totalBitacoras || 0)
+                      )}
                     </div>
-                    <div className="stat-label small">Total Bitácoras</div>
-                    <div
-                      className="stat-percentage small"
-                      style={{color: "#6b7280", fontWeight: "600"}}>
-                      100%
-                    </div>
+                    <div className="stat-label">Total Bitácoras</div>
+                  </div>
+                  <div className="stat-percentage" style={{color: "#64748b"}}>
+                    100%
                   </div>
                 </div>
               </div>
@@ -3767,21 +2674,29 @@ const DashboardPage = () => {
                     <i className="fa fa-plus-circle"></i>
                   </div>
                   <div className="stat-content">
-                    <div className="stat-value fs-4 fs-md-3">
-                      {formatNumber(dashboardStats.nuevasBitacoras || 0)}
+                    <div className="stat-value">
+                      {loadingSummary ? (
+                        <Skeleton width="60px" height="24px" />
+                      ) : (
+                        formatNumber(dashboardStats.nuevasBitacoras || 0)
+                      )}
                     </div>
-                    <div className="stat-label small">Nuevas</div>
-                    <div
-                      className="stat-percentage small"
-                      style={{color: "#10b981", fontWeight: "600"}}>
-                      {dashboardStats.totalBitacoras > 0 &&
-                      dashboardStats.nuevasBitacoras !== undefined
-                        ? Math.round(
-                            (dashboardStats.nuevasBitacoras / dashboardStats.totalBitacoras) * 100
-                          )
-                        : 0}
-                      %
-                    </div>
+                    <div className="stat-label">Nuevas</div>
+                  </div>
+                  <div className="stat-percentage" style={{color: "#059669"}}>
+                    {loadingSummary ? (
+                      <Skeleton width="30px" height="14px" />
+                    ) : (
+                      <>
+                        {dashboardStats.totalBitacoras > 0 &&
+                        dashboardStats.nuevasBitacoras !== undefined
+                          ? Math.round(
+                              (dashboardStats.nuevasBitacoras / dashboardStats.totalBitacoras) * 100
+                            )
+                          : 0}
+                        %
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3793,22 +2708,30 @@ const DashboardPage = () => {
                     <i className="fa fa-clock"></i>
                   </div>
                   <div className="stat-content">
-                    <div className="stat-value fs-4 fs-md-3">
-                      {formatNumber(dashboardStats.enProcesoBitacoras || 0)}
+                    <div className="stat-value">
+                      {loadingSummary ? (
+                        <Skeleton width="60px" height="24px" />
+                      ) : (
+                        formatNumber(dashboardStats.enProcesoBitacoras || 0)
+                      )}
                     </div>
-                    <div className="stat-label small">En proceso</div>
-                    <div
-                      className="stat-percentage small"
-                      style={{color: "#3b82f6", fontWeight: "600"}}>
-                      {dashboardStats.totalBitacoras > 0 &&
-                      dashboardStats.enProcesoBitacoras !== undefined
-                        ? Math.round(
-                            (dashboardStats.enProcesoBitacoras / dashboardStats.totalBitacoras) *
-                              100
-                          )
-                        : 0}
-                      %
-                    </div>
+                    <div className="stat-label">En proceso</div>
+                  </div>
+                  <div className="stat-percentage" style={{color: "#2563eb"}}>
+                    {loadingSummary ? (
+                      <Skeleton width="30px" height="14px" />
+                    ) : (
+                      <>
+                        {dashboardStats.totalBitacoras > 0 &&
+                        dashboardStats.enProcesoBitacoras !== undefined
+                          ? Math.round(
+                              (dashboardStats.enProcesoBitacoras / dashboardStats.totalBitacoras) *
+                                100
+                            )
+                          : 0}
+                        %
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3820,21 +2743,29 @@ const DashboardPage = () => {
                     <i className="fa fa-lock"></i>
                   </div>
                   <div className="stat-content">
-                    <div className="stat-value fs-4 fs-md-3">
-                      {formatNumber(dashboardStats.cerradasBitacoras || 0)}
+                    <div className="stat-value">
+                      {loadingSummary ? (
+                        <Skeleton width="60px" height="24px" />
+                      ) : (
+                        formatNumber(dashboardStats.cerradasBitacoras || 0)
+                      )}
                     </div>
-                    <div className="stat-label small">Cerradas</div>
-                    <div
-                      className="stat-percentage small"
-                      style={{color: "#ef4444", fontWeight: "600"}}>
-                      {dashboardStats.totalBitacoras > 0 &&
-                      dashboardStats.cerradasBitacoras !== undefined
-                        ? Math.round(
-                            (dashboardStats.cerradasBitacoras / dashboardStats.totalBitacoras) * 100
-                          )
-                        : 0}
-                      %
-                    </div>
+                    <div className="stat-label">Cerradas</div>
+                  </div>
+                  <div className="stat-percentage" style={{color: "#dc2626"}}>
+                    {loadingSummary ? (
+                      <Skeleton width="30px" height="14px" />
+                    ) : (
+                      <>
+                        {dashboardStats.totalBitacoras > 0 &&
+                        dashboardStats.cerradasBitacoras !== undefined
+                          ? Math.round(
+                              (dashboardStats.cerradasBitacoras / dashboardStats.totalBitacoras) * 100
+                            )
+                          : 0}
+                        %
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3846,18 +2777,26 @@ const DashboardPage = () => {
                     <i className="fa fa-exclamation-triangle"></i>
                   </div>
                   <div className="stat-content">
-                    <div className="stat-value fs-4 fs-md-3">
-                      {formatNumber(getTotalAnomalias())}
+                    <div className="stat-value">
+                      {loadingSummary ? (
+                        <Skeleton width="60px" height="24px" />
+                      ) : (
+                        formatNumber(getTotalAnomalias())
+                      )}
                     </div>
-                    <div className="stat-label small">Con Anomalías</div>
-                    <div
-                      className="stat-percentage small"
-                      style={{color: "#f59e0b", fontWeight: "600"}}>
-                      {dashboardStats.totalBitacoras > 0
-                        ? Math.round((getTotalAnomalias() / dashboardStats.totalBitacoras) * 100)
-                        : 0}
-                      %
-                    </div>
+                    <div className="stat-label">Con Anomalías</div>
+                  </div>
+                  <div className="stat-percentage" style={{color: "#d97706"}}>
+                    {loadingSummary ? (
+                      <Skeleton width="30px" height="14px" />
+                    ) : (
+                      <>
+                        {dashboardStats.totalBitacoras > 0
+                          ? Math.round((getTotalAnomalias() / dashboardStats.totalBitacoras) * 100)
+                          : 0}
+                        %
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3870,11 +2809,7 @@ const DashboardPage = () => {
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Tendencia Mensual</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -3883,24 +2818,31 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
-                    <div className="overflow-auto">{renderMonthlyTrendChart()}</div>
+                    {renderMonthlyTrendChart()}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Eventos y Rendimiento */}
+            <div className="row mb-3 mb-md-4">
+              <div className="col-md-6 mb-3 mb-md-0">
+                <div className="chart-card compact">
+                  <div className="chart-header">
+                    <h6 className="mb-0">Distribución de Eventos</h6>
+                  </div>
+                  <div className="chart-body">
+                    {renderEventDistributionChart()}
+                  </div>
+                </div>
+              </div>
+              <div className="col-md-6">
+                <div className="chart-card compact">
+                  <div className="chart-header">
+                    <h6 className="mb-0">Eficiencia de Operadores</h6>
+                  </div>
+                  <div className="chart-body">
+                    {renderPerformanceChart()}
                   </div>
                 </div>
               </div>
@@ -3909,15 +2851,11 @@ const DashboardPage = () => {
             {/* Lista descendente de clientes */}
             <div className="row mb-3 mb-md-4">
               <div className="col-12">
-                <div className="chart-card">
+                <div className="chart-card compact">
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Lista de Clientes</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -3926,23 +2864,6 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
                     <div className="overflow-auto">{renderTopClients()}</div>
                   </div>
                 </div>
@@ -3952,9 +2873,17 @@ const DashboardPage = () => {
             {/* Tipos de monitoreo */}
             <div className="row mb-3 mb-md-4">
               <div className="col-12">
-                <div className="chart-card">
-                  <div className="chart-header">
-                    <h6 className="mb-0">Tipos de Monitoreo</h6>
+                <div className="chart-card compact">
+                  <div className="chart-header d-flex justify-content-between align-items-center">
+                    <div className="d-flex align-items-center gap-2">
+                      <h6 className="mb-0">Tipos de Monitoreo</h6>
+                      {hasActiveFilters && (
+                        <span className="badge bg-info" style={{fontSize: "10px"}}>
+                          <i className="fa fa-filter me-1"></i>
+                          Filtrado
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="chart-body">
                     <div className="overflow-auto">{renderTiposMonitoreoChart()}</div>
@@ -3970,11 +2899,7 @@ const DashboardPage = () => {
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Lista de Líneas de Transporte</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -4003,23 +2928,6 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
                     {lineasViewMode === "chart"
                       ? renderLineasTransporteBarChart()
                       : renderTopLineasTransporte()}
@@ -4035,11 +2943,7 @@ const DashboardPage = () => {
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Lista de Operadores</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -4072,23 +2976,6 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
                     {operadoresTransportesViewMode === "chart"
                       ? renderOperadoresTransportesBarChart()
                       : renderTopOperadoresTransportes()}
@@ -4100,15 +2987,11 @@ const DashboardPage = () => {
             {/* Análisis geográfico */}
             <div className="row mb-3 mb-md-4">
               <div className="col-12">
-                <div className="chart-card">
+                <div className="chart-card compact">
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Análisis Geográfico</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -4137,23 +3020,6 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
                     <div className="overflow-auto">
                       {geograficoViewMode === "chart"
                         ? renderGeographicChart()
@@ -4167,15 +3033,11 @@ const DashboardPage = () => {
             {/* Lista de Usuarios */}
             <div className="row mb-3 mb-md-4">
               <div className="col-12">
-                <div className="chart-card">
+                <div className="chart-card compact">
                   <div className="chart-header d-flex justify-content-between align-items-center">
                     <div className="d-flex align-items-center gap-2">
                       <h6 className="mb-0">Lista de Usuarios</h6>
-                      {(appliedClientFilter !== "all" ||
-                        appliedLineaTransporteFilter !== "all" ||
-                        appliedOperadorFilter !== "all" ||
-                        appliedFechaDesde ||
-                        appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
+                      {hasActiveFilters && (
                         <span className="badge bg-info" style={{fontSize: "10px"}}>
                           <i className="fa fa-filter me-1"></i>
                           Filtrado
@@ -4204,23 +3066,6 @@ const DashboardPage = () => {
                     </div>
                   </div>
                   <div className="chart-body">
-                    {(appliedClientFilter !== "all" ||
-                      appliedLineaTransporteFilter !== "all" ||
-                      appliedOperadorFilter !== "all" ||
-                      appliedFechaDesde ||
-                      appliedFechaHasta !== new Date().toISOString().split("T")[0]) && (
-                      <div className="alert alert-info py-2 mb-3" style={{fontSize: "12px"}}>
-                        <i className="fa fa-info-circle me-2"></i>
-                        <strong>Filtros activos:</strong>{" "}
-                        {appliedClientFilter !== "all" && `Cliente: ${appliedClientFilter} | `}
-                        {appliedLineaTransporteFilter !== "all" &&
-                          `Línea: ${appliedLineaTransporteFilter} | `}
-                        {appliedOperadorFilter !== "all" && `Operador: ${appliedOperadorFilter} | `}
-                        {appliedFechaDesde && `Desde: ${appliedFechaDesde} | `}
-                        {appliedFechaHasta !== new Date().toISOString().split("T")[0] &&
-                          `Hasta: ${appliedFechaHasta}`}
-                      </div>
-                    )}
                     {usuariosViewMode === "chart"
                       ? renderUsuariosBarChart()
                       : renderTopOperadores()}

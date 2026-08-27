@@ -13,7 +13,7 @@ import Sidebar from "../Sidebar";
 import FilterBar from "../FilterBar";
 import DataTable from "../DataTable";
 import DateTimeRangePicker from "../DateTimeRangePicker";
-import MultiSelect from "../MultiSelect";
+import { MultiSelect } from "../Select";
 import { useAuth } from "../../context/AuthContext";
 import { useSidebar } from "../../context/SidebarContext";
 
@@ -110,8 +110,7 @@ const ControlPatiosDashboard = () => {
     const now = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(now.getMonth() - 1);
-    // Leave end empty so the API always returns up-to-now
-    return { start: toDateTimeLocal(oneMonthAgo), end: "" };
+    return { start: toDateTimeLocal(oneMonthAgo), end: toDateTimeLocal(now) };
   });
 
   // Keep a ref always up-to-date with latest filters so fetchDashboardData closure is never stale
@@ -154,6 +153,17 @@ const ControlPatiosDashboard = () => {
 
   // Server already filters by plate, line and date range — use data.movements directly
   const filteredMovements = useMemo(() => data.movements, [data.movements]);
+
+  const hasActiveFilters = useMemo(() => {
+    const now = new Date();
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(now.getMonth() - 1);
+    const defaultStart = toDateTimeLocal(oneMonthAgo);
+    const defaultEnd = toDateTimeLocal(now);
+
+    return selectedPlates.length > 0 || selectedLineas.length > 0 || 
+           periodRange.start !== defaultStart || periodRange.end !== defaultEnd;
+  }, [selectedPlates, selectedLineas, periodRange]);
 
   const barChartData = useMemo(() => {
     return filteredMovements
@@ -324,7 +334,7 @@ const ControlPatiosDashboard = () => {
     const now = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(now.getMonth() - 1);
-    setPeriodRange({ start: toDateTimeLocal(oneMonthAgo), end: "" });
+    setPeriodRange({ start: toDateTimeLocal(oneMonthAgo), end: toDateTimeLocal(now) });
     setSelectedPlates([]);
     setSelectedLineas([]);
   };
@@ -352,7 +362,7 @@ const ControlPatiosDashboard = () => {
   if (!user || !roleData) return <div className="p-4">Cargando dashboard...</div>;
 
   return (
-    <div className="d-flex h-100 bg-light" style={{ minHeight: "100vh" }}>
+    <div id="controlPatiosDashboardPage" className="d-flex h-100 bg-light" style={{ minHeight: "100vh" }}>
       <div className="sidebar-wrapper"><Sidebar /></div>
       
       <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -360,80 +370,120 @@ const ControlPatiosDashboard = () => {
         <PageHeader
           title="Control de Patios"
           onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+          hasActiveFilters={hasActiveFilters}
+          onClearFilters={handleClearFilters}
           filters={
-            <FilterBar onClear={handleClearFilters}>
-              <MultiSelect
-                label="Placas camión"
-                options={data.distinctPlates || []}
-                value={selectedPlates}
-                onChange={setSelectedPlates}
-              />
-              
-              <MultiSelect 
-                label="Líneas"
-                options={data.distinctLineas || []}
-                value={selectedLineas}
-                onChange={setSelectedLineas}
-              />
+            <div className="reporte-patios-panel mb-0">
+              <div className="reporte-patios-grid">
+                <div className="reporte-patios-field">
+                  <MultiSelect
+                    label="Placas camión"
+                    options={data.distinctPlates || []}
+                    value={selectedPlates}
+                    onChange={setSelectedPlates}
+                  />
+                </div>
+                
+                <div className="reporte-patios-field">
+                  <MultiSelect 
+                    label="Líneas"
+                    options={data.distinctLineas || []}
+                    value={selectedLineas}
+                    onChange={setSelectedLineas}
+                  />
+                </div>
 
-              <DateTimeRangePicker 
-                label="Periodo"
-                startValue={periodRange.start}
-                endValue={periodRange.end}
-                onStartChange={(val) => setPeriodRange(prev => ({ ...prev, start: val }))}
-                onEndChange={(val) => setPeriodRange(prev => ({ ...prev, end: val }))}
-              />
-            </FilterBar>
+                <div className="reporte-patios-field" style={{ gridColumn: 'span 2' }}>
+                  <DateTimeRangePicker 
+                    label="Periodo"
+                    startValue={periodRange.start}
+                    endValue={periodRange.end}
+                    onStartChange={(val) => setPeriodRange(prev => ({ ...prev, start: val }))}
+                    onEndChange={(val) => setPeriodRange(prev => ({ ...prev, end: val }))}
+                  />
+                </div>
+              </div>
+            </div>
           }
         >
           <div className="d-flex gap-2">
-            <button className="btn btn-outline-success btn-sm px-3" onClick={exportToExcel} disabled={filteredMovements.length === 0}>
-              <i className="fa fa-file-excel me-2"></i>Exportar Excel
+            <button className="btn-icon btn-icon--success" onClick={exportToExcel} title="Exportar Excel" disabled={filteredMovements.length === 0}>
+              <i className="fa fa-file-excel"></i>
             </button>
-            <button className="btn btn-danger btn-sm px-3" onClick={exportToPDF} disabled={filteredMovements.length === 0}>
-              <i className="fa fa-file-pdf me-2"></i>Exportar PDF
+            <button className="btn-icon btn-icon--danger" onClick={exportToPDF} title="Exportar PDF" disabled={filteredMovements.length === 0}>
+              <i className="fa fa-file-pdf"></i>
             </button>
           </div>
         </PageHeader>
 
         <div className="px-3 mt-4">
-          <div className="row g-3 mb-4 text-center">
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Camiones en patio</div>
-                <div className="kpi-value fw-bold text-primary">{data.tractoresEnPatio}</div>
-              </div>
-            </div>
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Remolques en patio</div>
-                <div className="kpi-value fw-bold text-secondary">{data.remolquesEnPatio}</div>
-              </div>
-            </div>
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Con cambio remolque</div>
-                <div className="kpi-value fw-bold text-warning">{data.conCambioRemolque}</div>
-              </div>
-            </div>
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Sin cambio remolque</div>
-                <div className="kpi-value fw-bold text-success">{data.sinCambioRemolque}</div>
-              </div>
-            </div>
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Mayor estadía</div>
-                <div className="kpi-value fw-bold text-info" style={{ fontSize: "0.8rem" }}>
-                  {data.longestStay ? `${data.longestStay.plate}: ${formatDuration(data.longestStay.seconds)}` : "—"}
+          <div className="row g-3 mb-4">
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--duration">
+                  <i className="fa fa-truck"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value">{data.tractoresEnPatio}</div>
+                  <div className="metric-card__label">Camiones</div>
                 </div>
               </div>
             </div>
-            <div className="col-6 col-md-2">
-              <div className="card kpi-card border-0 shadow-sm">
-                <div className="kpi-label">Anomalías activas</div>
-                <div className="kpi-value fw-bold text-danger">{data.anomaliesCount}</div>
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--events">
+                  <i className="fa fa-trailer"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value">{data.remolquesEnPatio}</div>
+                  <div className="metric-card__label">Remolques</div>
+                </div>
+              </div>
+            </div>
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--alerts">
+                  <i className="fa fa-exchange-alt"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value">{data.conCambioRemolque}</div>
+                  <div className="metric-card__label">Con Cambio</div>
+                </div>
+              </div>
+            </div>
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--events">
+                  <i className="fa fa-check-circle"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value">{data.sinCambioRemolque}</div>
+                  <div className="metric-card__label">Sin Cambio</div>
+                </div>
+              </div>
+            </div>
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--duration">
+                  <i className="fa fa-clock"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value" style={{fontSize: '0.85rem'}}>
+                    {data.longestStay ? `${data.longestStay.plate}: ${formatDuration(data.longestStay.seconds)}` : "—"}
+                  </div>
+                  <div className="metric-card__label">Mayor Estadía</div>
+                </div>
+              </div>
+            </div>
+            <div className="col-md-2 col-6">
+              <div className="metric-card h-100">
+                <div className="metric-card__icon metric-card__icon--alerts">
+                  <i className="fa fa-shield-halved"></i>
+                </div>
+                <div className="metric-card__body">
+                  <div className="metric-card__value">{data.anomaliesCount}</div>
+                  <div className="metric-card__label">Anomalías</div>
+                </div>
               </div>
             </div>
           </div>
@@ -551,37 +601,6 @@ const ControlPatiosDashboard = () => {
           </div>
         </div>
       </div>
-      <style>{`
-        .kpi-card {
-          height: 70px;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          align-items: center;
-          border-radius: 10px;
-          background: #fff;
-          transition: transform 0.2s;
-        }
-        .kpi-card:hover { transform: translateY(-2px); }
-        .kpi-label {
-          font-size: 0.65rem;
-          text-transform: uppercase;
-          letter-spacing: 0.8px;
-          color: #6c757d;
-          font-weight: 700;
-          margin-bottom: 2px;
-        }
-        .kpi-value {
-          font-size: 1.15rem;
-          line-height: 1;
-        }
-        @media (max-width: 768px) {
-          .kpi-card { height: 60px; }
-          .kpi-value { font-size: 1rem; }
-          .filter-bar__inputs { flex-direction: column; gap: 10px; }
-          .page-header h1 { font-size: 1.25rem; }
-        }
-      `}</style>
     </div>
   );
 };

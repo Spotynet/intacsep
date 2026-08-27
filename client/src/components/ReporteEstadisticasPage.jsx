@@ -1,9 +1,12 @@
-import {useEffect, useState} from "react";
+import {useEffect, useState, useMemo} from "react";
 import jsPDF from "jspdf";
 import {useNavigate} from "react-router-dom";
 import Sidebar from "./Sidebar";
 import PageHeader from "./PageHeader";
 import FilterBar from "./FilterBar";
+import DataTable from "./DataTable";
+import {Select} from "./Select";
+import DatePicker from "./DatePicker";
 import {useAuth} from "../context/AuthContext";
 import {useSidebar} from "../context/SidebarContext";
 import {fetchClients, fetchOrigenes, fetchDestinos, fetchLineasTransporte, fetchOperadores} from "../utils/api";
@@ -104,8 +107,11 @@ const ReporteEstadisticasPage = () => {
   const [servicios, setServicios] = useState([]);
 
   const today = new Date();
+  const lastMonth = new Date();
+  lastMonth.setDate(today.getDate() - 30);
+
   const [filters, setFilters] = useState({
-    startDate:     toLocalDateStr(new Date(today.getFullYear(), today.getMonth(), 1)),
+    startDate:     toLocalDateStr(lastMonth),
     endDate:       toLocalDateStr(today),
     cliente:       "",
     origenFilter:  "",
@@ -114,6 +120,35 @@ const ReporteEstadisticasPage = () => {
     operadorFilter: "",
     statusFilter:  "",
   });
+
+  const hasActiveFilters = useMemo(() => {
+    const today = new Date();
+    const lastMonth = new Date();
+    lastMonth.setDate(today.getDate() - 30);
+    const defaultStart = toLocalDateStr(lastMonth);
+    const defaultEnd = toLocalDateStr(today);
+
+    return !!(filters.cliente || filters.origenFilter || filters.destinoFilter || 
+           filters.lineaFilter || filters.operadorFilter || filters.statusFilter ||
+           filters.startDate !== defaultStart || filters.endDate !== defaultEnd);
+  }, [filters]);
+
+  const handleClearFilters = () => {
+    const today = new Date();
+    const lastMonth = new Date();
+    lastMonth.setDate(today.getDate() - 30);
+    
+    setFilters({
+      startDate: toLocalDateStr(lastMonth),
+      endDate: toLocalDateStr(today),
+      cliente: "",
+      origenFilter: "",
+      destinoFilter: "",
+      lineaFilter: "",
+      operadorFilter: "",
+      statusFilter: "",
+    });
+  };
 
   // ── Auth & permissions ───────────────────────────────────────────────────
   useEffect(() => {
@@ -499,6 +534,141 @@ const ReporteEstadisticasPage = () => {
   ).length;
   const pct = (n) => (total > 0 ? `${Math.round((n / total) * 100)}%` : "—");
 
+  const clientOptions = useMemo(() => 
+    clients.map(c => ({ value: c.razon_social, label: c.razon_social }))
+  , [clients]);
+
+  const origenOptions = useMemo(() => 
+    origenes.map(o => ({ value: o.nombre, label: o.nombre }))
+  , [origenes]);
+
+  const destinoOptions = useMemo(() => 
+    destinos.map(d => ({ value: d.nombre, label: d.nombre }))
+  , [destinos]);
+
+  const lineaOptions = useMemo(() => 
+    lineas.map(l => ({ value: l.nombre, label: l.nombre }))
+  , [lineas]);
+
+  const operadorOptions = useMemo(() => 
+    operadores.map(op => ({ value: op.nombre, label: op.nombre }))
+  , [operadores]);
+
+  const columns = useMemo(() => [
+    {
+      key: "bitacora_id",
+      header: "Bitácora",
+      width: "90px",
+      sortable: true,
+      render: (s) => {
+        const statusIcon = getBitacoraStatusIcon(s.desfaseCitaCargaMs, s.desfaseHoraSalidaMs, s.desfaseCitaEntregaMs);
+        return (
+          <span className="reporte-est-id-wrap">
+            <i className={`fas ${statusIcon.icon} reporte-est-id-status ${statusIcon.className}`} title={statusIcon.title}></i>
+            <span className="reporte-est-id">#{s.bitacora_id}</span>
+          </span>
+        );
+      }
+    },
+    { key: "carrierMove", header: "Carrier", width: "90px" },
+    { key: "cliente", header: "Cliente", width: "120px" },
+    { key: "origen_nombre", header: "Origen", width: "120px" },
+    { key: "destino_nombre", header: "Destino", width: "120px" },
+    { key: "lineaTransporte", header: "Línea", width: "120px" },
+    {
+      key: "status",
+      header: "Estatus",
+      width: "100px",
+      render: (s) => (
+        <span className={`reporte-est-badge reporte-est-badge--${(s.status || "").replace(/\s+/g, "-").replace(/[()]/g, "")}`}>
+          {s.status || "—"}
+        </span>
+      )
+    },
+    { 
+      key: "citaCarga", 
+      header: "Cita Carga", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.citaCarga)}</span> 
+    },
+    { 
+      key: "planEmbarqueAt", 
+      header: "Pres. Origen", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.planEmbarqueAt)}</span> 
+    },
+    {
+      key: "desfaseCitaCargaMs",
+      header: "Punt. Cita",
+      width: "100px",
+      render: (s) => (
+        <span className={`text-nowrap ${desvioClass(s.desfaseCitaCargaMs)}`}>
+          {s.desfaseCitaCargaMs !== null ? formatMs(s.desfaseCitaCargaMs) : "N/A"}
+        </span>
+      )
+    },
+    { 
+      key: "validacionAt", 
+      header: "Validación", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.validacionAt)}</span> 
+    },
+    {
+      key: "tiempoPresenciaValidacionMs",
+      header: "T. Carga",
+      width: "100px",
+      render: (s) => (
+        <span className="text-nowrap">
+          {s.tiempoPresenciaValidacionMs !== null ? formatMsAbs(s.tiempoPresenciaValidacionMs) : "N/A"}
+        </span>
+      )
+    },
+    { 
+      key: "horaSalida", 
+      header: "H. Salida", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.horaSalida)}</span> 
+    },
+    { 
+      key: "inicioRecorridoAt", 
+      header: "Inicio Rec.", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.inicioRecorridoAt)}</span> 
+    },
+    {
+      key: "desfaseHoraSalidaMs",
+      header: "Punt. Salida",
+      width: "100px",
+      render: (s) => (
+        <span className={`text-nowrap ${desvioClass(s.desfaseHoraSalidaMs)}`}>
+          {s.desfaseHoraSalidaMs !== null ? formatMs(s.desfaseHoraSalidaMs) : "N/A"}
+        </span>
+      )
+    },
+    { 
+      key: "citaEntrega", 
+      header: "Cita Entr.", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.citaEntrega)}</span> 
+    },
+    { 
+      key: "arriboDestinoAt", 
+      header: "Arribo Dest.", 
+      width: "130px", 
+      render: (s) => <span className="text-nowrap">{formatDateTime(s.arriboDestinoAt)}</span> 
+    },
+    {
+      key: "desfaseCitaEntregaMs",
+      header: "Punt. Entr.",
+      width: "100px",
+      render: (s) => (
+        <span className={`text-nowrap ${desvioClass(s.desfaseCitaEntregaMs)}`}>
+          {s.desfaseCitaEntregaMs !== null ? formatMs(s.desfaseCitaEntregaMs) : "N/A"}
+        </span>
+      )
+    }
+  ], []);
+
   if (!roleData) return null;
 
   return (
@@ -512,300 +682,188 @@ const ReporteEstadisticasPage = () => {
           <PageHeader
             title="Dashboard — Reporte de puntualidad"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
-            defaultFiltersOpen={true}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
             filters={
-              <div className="reporte-est-panel mb-0">
-                <div className="reporte-est-grid">
-                  {/* Fecha inicio */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Fecha inicio</label>
-                    <input
-                      type="date"
-                      className="reporte-est-field__control form-control"
-                      value={filters.startDate}
-                      onChange={(e) => handleFilterChange("startDate", e.target.value)}
-                    />
-                  </div>
-
-                  {/* Fecha fin */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Fecha fin</label>
-                    <input
-                      type="date"
-                      className="reporte-est-field__control form-control"
-                      value={filters.endDate}
-                      onChange={(e) => handleFilterChange("endDate", e.target.value)}
-                    />
-                  </div>
-
-                  {/* Cliente */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Cliente</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.cliente}
-                      onChange={(e) => handleFilterChange("cliente", e.target.value)}>
-                      <option value="">Todos los clientes</option>
-                      {clients.map((c) => (
-                        <option key={c._id} value={c.razon_social}>{c.razon_social}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Origen */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Origen</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.origenFilter}
-                      disabled={!filters.cliente}
-                      onChange={(e) => handleFilterChange("origenFilter", e.target.value)}>
-                      <option value="">Todos los orígenes</option>
-                      {origenes.map((o) => (
-                        <option key={o._id} value={o.nombre}>{o.nombre}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Destino */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Destino</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.destinoFilter}
-                      disabled={!filters.cliente}
-                      onChange={(e) => handleFilterChange("destinoFilter", e.target.value)}>
-                      <option value="">Todos los destinos</option>
-                      {destinos.map((d) => (
-                        <option key={d._id} value={d.nombre}>{d.nombre}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Status */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Estatus</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.statusFilter}
-                      onChange={(e) => handleFilterChange("statusFilter", e.target.value)}>
-                      {STATUS_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Linea */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Línea de transporte</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.lineaFilter}
-                      disabled={!filters.cliente}
-                      onChange={(e) => handleFilterChange("lineaFilter", e.target.value)}>
-                      <option value="">Todas las líneas</option>
-                      {lineas.map((l) => (
-                        <option key={l._id} value={l.nombre}>{l.nombre}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Operador */}
-                  <div className="reporte-est-field">
-                    <label className="reporte-est-field__label">Operador</label>
-                    <select
-                      className="reporte-est-field__control form-select"
-                      value={filters.operadorFilter}
-                      disabled={!filters.cliente}
-                      onChange={(e) => handleFilterChange("operadorFilter", e.target.value)}>
-                      <option value="">Todos los operadores</option>
-                      {operadores.map((op) => (
-                        <option key={op._id} value={op.nombre}>{op.nombre}</option>
-                      ))}
-                    </select>
-                  </div>
-
+              <FilterBar onClear={handleClearFilters}>
+                <div>
+                  <DatePicker
+                    label="Fecha inicio"
+                    value={filters.startDate}
+                    onChange={(v) => handleFilterChange("startDate", v)}
+                  />
                 </div>
-
-                <div className="reporte-est-actions-row">
-                  <div className="reporte-est-actions">
-                    <button
-                      type="button"
-                      className="btn btn-primary reporte-est-search-btn"
-                      onClick={handleSearch}
-                      title="Buscar"
-                      aria-label="Buscar"
-                      disabled={loading || !filters.startDate || !filters.endDate}>
-                      {loading ? (
-                        <>
-                          <span className="spinner-border spinner-border-sm" />
-                          <span>Buscar</span>
-                        </>
-                      ) : (
-                        <>
-                          <i className="fas fa-search" />
-                          <span>Buscar</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-success btn-sm reporte-est-export-btn"
-                      title="Exportar PDF"
-                      aria-label="Exportar PDF"
-                      onClick={handlePrintPDF}
-                      disabled={!searched || loading}>
-                      <i className="fas fa-file-pdf"></i>
-                      <span>Exportar</span>
-                    </button>
-                  </div>
+                <div>
+                  <DatePicker
+                    label="Fecha fin"
+                    value={filters.endDate}
+                    onChange={(v) => handleFilterChange("endDate", v)}
+                  />
                 </div>
-              </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    options={clientOptions}
+                    value={filters.cliente}
+                    onChange={(v) => handleFilterChange("cliente", v)}
+                    placeholder="Seleccionar cliente..."
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Origen"
+                    options={origenOptions}
+                    value={filters.origenFilter}
+                    onChange={(v) => handleFilterChange("origenFilter", v)}
+                    placeholder="Todos los orígenes"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Destino"
+                    options={destinoOptions}
+                    value={filters.destinoFilter}
+                    onChange={(v) => handleFilterChange("destinoFilter", v)}
+                    placeholder="Todos los destinos"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Estatus"
+                    options={STATUS_OPTIONS}
+                    value={filters.statusFilter}
+                    onChange={(v) => handleFilterChange("statusFilter", v)}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Línea de transporte"
+                    options={lineaOptions}
+                    value={filters.lineaFilter}
+                    onChange={(v) => handleFilterChange("lineaFilter", v)}
+                    placeholder="Todas las líneas"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Operador"
+                    options={operadorOptions}
+                    value={filters.operadorFilter}
+                    onChange={(v) => handleFilterChange("operadorFilter", v)}
+                    placeholder="Todos los operadores"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+              </FilterBar>
             }
+            filterActions={<>
+              <button
+                type="button"
+                className="new-btn"
+                onClick={handleSearch}
+                disabled={loading || !filters.startDate || !filters.endDate}>
+                <i className={`fas fa-${loading ? "spinner fa-spin" : "search"} me-1`}></i>
+                {loading ? "Procesando..." : "Buscar"}
+              </button>
+              <button
+                type="button"
+                className="header-action-btn header-action-btn--green"
+                onClick={handlePrintPDF}
+                disabled={!searched || loading}>
+                <i className="fas fa-file-pdf"></i>
+                <span>PDF</span>
+              </button>
+            </>}
           />
 
           {roleData?.reporte_estadisticas?.read && (
-          <div className="settings-content mt-4">
-
-            {/* ── Prompt inicial: aún no se ha buscado ─────────────────── */}
-            {!searched && !loading && (
-              <div className="reporte-est-empty">
-                <i className="fas fa-magnifying-glass" />
-                <p>Selecciona un rango de fechas y los filtros que necesites, luego presiona <strong>Buscar</strong> para generar el reporte de puntualidad.</p>
-              </div>
-            )}
-
-            {/* ── KPI Cards ─────────────────────────────────────────── */}
-            {searched && !loading && (
-              <>
-                <div className="reporte-est-kpis">
-                  <div className="reporte-est-kpi">
-                    <span className="reporte-est-kpi__value">{total}</span>
-                    <span className="reporte-est-kpi__label">Total servicios</span>
-                  </div>
-                  <div className="reporte-est-kpi reporte-est-kpi--warn">
-                    <span className="reporte-est-kpi__value">{conDesfaseCita}</span>
-                    <span className="reporte-est-kpi__sub">{pct(conDesfaseCita)}</span>
-                    <span className="reporte-est-kpi__label">Desfase cita de carga</span>
-                  </div>
-                  <div className="reporte-est-kpi reporte-est-kpi--warn">
-                    <span className="reporte-est-kpi__value">{conDesfaseSalida}</span>
-                    <span className="reporte-est-kpi__sub">{pct(conDesfaseSalida)}</span>
-                    <span className="reporte-est-kpi__label">Desfase hora de salida</span>
-                  </div>
-                  <div className="reporte-est-kpi reporte-est-kpi--warn">
-                    <span className="reporte-est-kpi__value">{conDesfaseEntrega}</span>
-                    <span className="reporte-est-kpi__sub">{pct(conDesfaseEntrega)}</span>
-                    <span className="reporte-est-kpi__label">Desfase cita de entrega</span>
-                  </div>
-                  <div className="reporte-est-kpi reporte-est-kpi--info">
-                    <span className="reporte-est-kpi__value">{sinRetraso}</span>
-                    <span className="reporte-est-kpi__sub">{pct(sinRetraso)}</span>
-                    <span className="reporte-est-kpi__label">Servicios sin retraso</span>
+            <div className="settings-content pt-3 px-4">
+              {!searched && !loading ? (
+                <div className="reporte-est-empty fade-in mt-5">
+                  <div className="text-center py-5">
+                    <i className="fa fa-chart-column fa-4x mb-3 text-muted opacity-25"></i>
+                    <h5 className="fw-bold text-dark">Generar Reporte de Puntualidad</h5>
+                    <p className="text-muted mx-auto" style={{maxWidth: '500px'}}>
+                      Selecciona un rango de fechas y aplica los filtros necesarios para analizar los tiempos de carga, salida y entrega de tus servicios.
+                    </p>
                   </div>
                 </div>
-
-                {/* ── Data Table ──────────────────────────────────── */}
-                {total === 0 ? (
-                  <div className="reporte-est-empty">
-                    <i className="fas fa-inbox" />
-                    <p>No se encontraron servicios en el rango seleccionado.</p>
+              ) : (
+                <>
+                  <div className="row g-3 mb-4">
+                    <div className="col-md">
+                      <div className="metric-card">
+                        <div className="metric-card__icon" style={{background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0'}}>
+                          <i className="fa fa-truck-loading"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{total}</div>
+                          <div className="metric-card__label">Total servicios</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--alerts" style={{background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a'}}>
+                          <i className="fa fa-clock"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{conDesfaseCita} <span className="fs-7 opacity-75 ms-1">({pct(conDesfaseCita)})</span></div>
+                          <div className="metric-card__label">Desfase Cita</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--alerts" style={{background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a'}}>
+                          <i className="fa fa-truck-arrow-right"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{conDesfaseSalida} <span className="fs-7 opacity-75 ms-1">({pct(conDesfaseSalida)})</span></div>
+                          <div className="metric-card__label">Desfase Salida</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--alerts" style={{background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a'}}>
+                          <i className="fa fa-truck-fast"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{conDesfaseEntrega} <span className="fs-7 opacity-75 ms-1">({pct(conDesfaseEntrega)})</span></div>
+                          <div className="metric-card__label">Desfase Entrega</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="col-md">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--events" style={{background: '#f0f9ff', color: '#0369a1', border: '1px solid #bae6fd'}}>
+                          <i className="fa fa-check-double"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{sinRetraso} <span className="fs-7 opacity-75 ms-1">({pct(sinRetraso)})</span></div>
+                          <div className="metric-card__label">Sin Retraso</div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <div className="reporte-est-table-wrap">
-                    <table className="reporte-est-table table table-sm">
-                      <thead>
-                        <tr>
-                          <th>Bitácora</th>
-                          <th>Carrier Move</th>
-                          <th>Cliente</th>
-                          <th>Origen</th>
-                          <th>Destino</th>
-                          <th>Línea de transporte</th>
-                          <th>Estatus</th>
-                          <th>Cita de Carga</th>
-                          <th>Presencia de origen</th>
-                          <th title="Cita de Carga vs. evento Presencia en origen">Puntualidad Cita</th>
-                          <th>Validación</th>
-                          <th title="Presencia en origen vs. evento Validación">Tiempo de carga</th>
-                          <th>Hora de Salida</th>
-                          <th>Inicio de recorrido</th>
-                          <th title="Hora de Salida vs. evento Inicio de recorrido">Puntualidad Salida</th>
-                          <th>Cita de Entrega</th>
-                          <th>Arribo a destino</th>
-                          <th title="Cita de Entrega vs. evento Arribo a destino">Puntualidad Entrega</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {servicios.map((s) => {
-                          const statusIcon = getBitacoraStatusIcon(s.desfaseCitaCargaMs, s.desfaseHoraSalidaMs, s.desfaseCitaEntregaMs);
-                          return (
-                          <tr key={s.bitacora_id}>
-                            <td>
-                              <span className="reporte-est-id-wrap">
-                                <i className={`fas ${statusIcon.icon} reporte-est-id-status ${statusIcon.className}`} title={statusIcon.title}></i>
-                                <span className="reporte-est-id">#{s.bitacora_id}</span>
-                              </span>
-                            </td>
-                            <td>{s.carrierMove || "—"}</td>
-                            <td>{s.cliente || "—"}</td>
-                            <td>{s.origen_nombre || "—"}</td>
-                            <td>{s.destino_nombre || "—"}</td>
-                            <td>{s.lineaTransporte || "—"}</td>
-                            <td>
-                              <span className={`reporte-est-badge reporte-est-badge--${(s.status || "").replace(/\s+/g, "-").replace(/[()]/g, "")}`}>
-                                {s.status || "—"}
-                              </span>
-                            </td>
-                            <td className="text-nowrap">{formatDateTime(s.citaCarga)}</td>
-                            <td className="text-nowrap">{formatDateTime(s.planEmbarqueAt)}</td>
 
-                            <td className={`text-nowrap ${desvioClass(s.desfaseCitaCargaMs)}`}>
-                              {s.desfaseCitaCargaMs !== null ? (
-                                <span title={`Plan: ${formatDateTime(s.citaCarga)} → Evento: ${formatDateTime(s.planEmbarqueAt)}`}>
-                                  {formatMs(s.desfaseCitaCargaMs)}
-                                </span>
-                              ) : "N/A"}
-                            </td>
-                            <td className="text-nowrap">{formatDateTime(s.validacionAt)}</td>
-                            <td className="text-nowrap">
-                              {s.tiempoPresenciaValidacionMs !== null ? (
-                                <span title={`Presencia de origen: ${formatDateTime(s.planEmbarqueAt)} → Validación: ${formatDateTime(s.validacionAt)}`}>
-                                  {formatMsAbs(s.tiempoPresenciaValidacionMs)}
-                                </span>
-                              ) : "N/A"}
-                            </td>
-
-                            <td className="text-nowrap">{formatDateTime(s.horaSalida)}</td>
-                            <td className="text-nowrap">{formatDateTime(s.inicioRecorridoAt)}</td>
-
-                            <td className={`text-nowrap ${desvioClass(s.desfaseHoraSalidaMs)}`}>
-                              {s.desfaseHoraSalidaMs !== null ? (
-                                <span title={`Plan: ${formatDateTime(s.horaSalida)} → Evento: ${formatDateTime(s.inicioRecorridoAt)}`}>
-                                  {formatMs(s.desfaseHoraSalidaMs)}
-                                </span>
-                              ) : "N/A"}
-                            </td>
-                            <td className="text-nowrap">{formatDateTime(s.citaEntrega)}</td>
-                            <td className="text-nowrap">{formatDateTime(s.arriboDestinoAt)}</td>
-                            <td className={`text-nowrap ${desvioClass(s.desfaseCitaEntregaMs)}`}>
-                              {s.desfaseCitaEntregaMs !== null ? (
-                                <span title={`Plan: ${formatDateTime(s.citaEntrega)} → Evento: ${formatDateTime(s.arriboDestinoAt)}`}>
-                                  {formatMs(s.desfaseCitaEntregaMs)}
-                                </span>
-                              ) : "N/A"}
-                            </td>
-                          </tr>
-                        );
-                        })}
-                      </tbody>
-                    </table>
+                  <div className="bits-table-shell">
+                    <DataTable
+                      data={servicios}
+                      columns={columns}
+                      loading={loading}
+                      maxHeight="100%"
+                      emptyMessage="No se encontraron servicios en el rango seleccionado."
+                      rowKey="bitacora_id"
+                    />
                   </div>
-                )}
-              </>
-            )}
-
-          </div>
+                </>
+              )}
+            </div>
           )}
         </div>
       </div>

@@ -184,6 +184,14 @@ const decrementOperadorSequence = async () => {
   return sequence.seq;
 };
 
+// Normalize gpsUnits array: coerce wialonId to String, drop entries with invalid IDs
+const normalizeGpsUnits = (gpsUnits) => {
+  if (!Array.isArray(gpsUnits)) return [];
+  return gpsUnits
+    .filter((u) => u && u.wialonId != null && String(u.wialonId).trim() !== "")
+    .map((u) => ({ ...u, wialonId: String(u.wialonId).trim() }));
+};
+
 dotenv.config();
 
 const transporter = nodemailer.createTransport({
@@ -268,6 +276,7 @@ app.use((req, res, next) => {
     req.path === "/request-reset-password" ||
     req.path === "/reset-password" ||
     req.path.startsWith("/inbound/") ||
+    req.path.startsWith("/wialon/") ||
     (req.method === "GET" && req.path == "/")
   ) {
     return next();
@@ -442,8 +451,8 @@ app.post("/reset-password", async (req, res) => {
 app.post("/protected", (req, res) => {
   const { user } = req.session;
 
-  if (!user) return res.send("Access Denied").status(401);
-  res.json({ user: user }).status(200);
+  if (!user) return res.status(401).send("Access Denied");
+  res.status(200).json({ user: user });
 });
 
 app.post("/refresh_token", async (req, res) => {
@@ -2044,12 +2053,8 @@ app.get("/bitacora/:id", async (req, res) => {
 
             const hasRegistroData = !!(t.registro && (t.registro.coordenadas || t.registro.ubicacion));
 
-            // If gpsData exists but without data, backfill from registro
-            if (t.gpsData.length > 0 && !t.gpsData[0].data && hasRegistroData) {
-              t.gpsData[0].data = buildDataFromRegistro(t.registro);
-            }
-
-            // If gpsData missing, create from registro when available
+            // Migration aid: if gpsData missing but registro has data, create gpsData[0] from gpsUnits[0] + registro
+            // This handles old documents created before gpsData was populated by the client
             if (t.gpsData.length === 0 && hasRegistroData) {
               const firstUnit = t.gpsUnits[0] || {};
               t.gpsData.push({
@@ -2100,34 +2105,23 @@ app.patch("/bitacora/:id/event", async (req, res) => {
     // Create a new event, normalizing gpsData for each transporte
     const normalizedTransportes = (transportes || []).map((t) => {
       const registro = t.registro || {};
-      const hasRegistro = !!(registro.coordenadas || registro.ubicacion);
-      const gpsUnits = Array.isArray(t.gpsUnits) ? t.gpsUnits : [];
+      const gpsUnits = normalizeGpsUnits(t.gpsUnits);
       let gpsData = Array.isArray(t.gpsData) ? t.gpsData : [];
 
-      // Ensure first gpsData has a data object when registro has values
-      if (hasRegistro) {
-        if (gpsData.length === 0) {
-          const firstUnit = gpsUnits[0] || {};
-          gpsData = [{
-            wialonId: firstUnit.wialonId || undefined,
-            name: firstUnit.name || undefined,
-            data: {
-              duracion: registro.duracion || "",
-              velocidad: registro.velocidad || "",
-              coordenadas: registro.coordenadas || "",
-              ultimo_posicionamiento: registro.ultimo_posicionamiento || "",
-              ubicacion: registro.ubicacion || "",
-            }
-          }];
-        } else if (!gpsData[0].data) {
-          gpsData[0].data = {
+      // Migration aid: if client didn't send gpsData (old client), create from gpsUnits[0] + registro
+      if (gpsData.length === 0 && (registro.coordenadas || registro.ubicacion)) {
+        const firstUnit = gpsUnits[0] || {};
+        gpsData = [{
+          wialonId: firstUnit.wialonId || undefined,
+          name: firstUnit.name || undefined,
+          data: {
             duracion: registro.duracion || "",
             velocidad: registro.velocidad || "",
             coordenadas: registro.coordenadas || "",
             ultimo_posicionamiento: registro.ultimo_posicionamiento || "",
             ubicacion: registro.ubicacion || "",
-          };
-        }
+          }
+        }];
       }
 
       return { ...t, gpsUnits, gpsData };
@@ -2271,7 +2265,7 @@ app.patch("/bitacora/:id", async (req, res) => {
           (t._originalId && existingById.get(t._originalId));
         const { _originalId, ...rest } = t;
         // Use existing internalId (immutable), or incoming one, or let schema default generate one
-        return { ...rest, internalId: existing?.internalId || t.internalId || undefined };
+        return { ...rest, gpsUnits: normalizeGpsUnits(rest.gpsUnits), internalId: existing?.internalId || t.internalId || undefined };
       });
 
       // Build old-id → resolved transporte map for evento copy repair
@@ -2457,7 +2451,7 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
       lineaTransporte,
       operador,
       telefono,
-      gpsUnits: gpsUnits || [], // Incluir gpsUnits, por defecto array vacío
+      gpsUnits: normalizeGpsUnits(gpsUnits),
     };
 
     // Add the new Transporte to the bitacora's transportes array
@@ -2987,7 +2981,17 @@ app.post("/integrations/:id/vehicles", async (req, res) => {
       return res.status(400).json({ message: "Vehicles must be an array" });
     }
 
-    const operations = vehicles.map((v) => ({
+    // Validate and sanitize wialonUnitId — must be a numeric string or absent
+    const sanitizedVehicles = vehicles.map((v) => {
+      const clean = { ...v };
+      if (clean.wialonUnitId != null) {
+        const s = String(clean.wialonUnitId).trim();
+        clean.wialonUnitId = /^\d+$/.test(s) ? s : undefined;
+      }
+      return clean;
+    });
+
+    const operations = sanitizedVehicles.map((v) => ({
       updateOne: {
         filter: { integrationId, imei: v.imei },
         update: { $set: { ...v, integrationId } },
@@ -3079,6 +3083,118 @@ app.post("/integrations/:id/flush-wialon", async (req, res) => {
   }
 });
 
+// GET status of Wialon push pipeline for an integration
+app.get("/integrations/:id/wialon-status", async (req, res) => {
+  try {
+    const integrationId = req.params.id;
+    const stats = await InboundMessage.aggregate([
+      { $match: { integrationId: new mongoose.Types.ObjectId(integrationId) } },
+      { $group: {
+        _id: "$wialonStatus",
+        count: { $sum: 1 },
+        lastAt: { $max: "$createdAt" },
+        lastError: { $last: "$wialonError" }
+      }}
+    ]);
+    
+    const pendingCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "pending" });
+    const failedCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "failed" });
+    const pushedCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "pushed" });
+    
+    res.json({
+      pending: pendingCount,
+      failed: failedCount,
+      pushed: pushedCount,
+      details: stats
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET units from Wialon for an integration (to help with sync/mapping)
+app.get("/integrations/:id/wialon-units", async (req, res) => {
+  try {
+    const integration = await Integration.findById(req.params.id);
+    if (!integration) return res.status(404).json({ message: "Integration not found" });
+
+    const token = integration.wialonToken || process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ message: "No Wialon token configured" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) throw new Error(`Login error: ${loginData.error}`);
+    const sid = loginData.eid;
+
+    try {
+      const data = await wialonApiCall("core/search_items", {
+        spec: { itemsType: "avl_unit", propName: "sys_name", propValueMask: "*", sortType: "sys_name" },
+        force: 1,
+        flags: 0x1 | 0x100, // basic + custom props
+        from: 0, to: 1000
+      }, sid);
+
+      res.json(data.items || []);
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Sync local vehicle mappings status with Wialon
+app.post("/integrations/:id/sync-status", async (req, res) => {
+  try {
+    const integrationId = req.params.id;
+    const integration = await Integration.findById(integrationId);
+    if (!integration) return res.status(404).json({ message: "Integration not found" });
+
+    const token = integration.wialonToken || process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ message: "No Wialon token configured" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) throw new Error(`Login error: ${loginData.error}`);
+    const sid = loginData.eid;
+
+    try {
+      // 1. Get all units from Wialon
+      const data = await wialonApiCall("core/search_items", {
+        spec: { itemsType: "avl_unit", propName: "sys_name", propValueMask: "*", sortType: "sys_name" },
+        force: 1,
+        flags: 0x1,
+        from: 0, to: 1000
+      }, sid);
+      
+      const wialonUnitIds = new Set((data.items || []).map(u => String(u.id)));
+      
+      // 2. Update local mappings
+      const mappings = await VehicleMapping.find({ integrationId });
+      let updatedCount = 0;
+      
+      for (const m of mappings) {
+        let newStatus = m.status;
+        if (m.wialonUnitId && !wialonUnitIds.has(m.wialonUnitId)) {
+          newStatus = "pending"; // Lost link
+        } else if (m.wialonUnitId && wialonUnitIds.has(m.wialonUnitId)) {
+          newStatus = "linkedToWialon";
+        }
+        
+        if (newStatus !== m.status) {
+          m.status = newStatus;
+          await m.save();
+          updatedCount++;
+        }
+      }
+      
+      res.json({ success: true, updated: updatedCount, total: mappings.length });
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Legacy endpoint maintained for compatibility if needed
 app.post("/integrations/:id/import-to-wialon", async (req, res) => {
   try {
@@ -3087,6 +3203,690 @@ app.post("/integrations/:id/import-to-wialon", async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// ── Wialon API Proxy (avoids JS SDK execute limitations) ──
+const WIALON_BASE = "https://hst-api.wialon.com/wialon/ajax.html";
+
+async function wialonApiCall(svc, params, sid = null) {
+  const url = new URL(WIALON_BASE);
+  url.searchParams.append("svc", svc);
+  if (sid) url.searchParams.append("sid", sid);
+
+  const formData = new URLSearchParams();
+  formData.append("params", JSON.stringify(params));
+
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    body: formData,
+  });
+  return response.json();
+}
+
+// GET /wialon/notifications - fetch notification rules from all resources
+// Data flag 0x0400 = Resource.dataFlag.notifications — field is 'unf' (dict keyed by notif id)
+app.get("/wialon/notifications", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const searchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_resource",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        flags: 0x0400 | 0x0800 | 0x1000 | 0x01,
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    if (searchData.error || !searchData.items) {
+      await wialonApiCall("core/logout", {}, sid);
+      return res.status(500).json({ error: `Search error: ${searchData.error || "no items"}` });
+    }
+
+    // Fetch all units to build id→name lookup
+    const unitSearchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_unit",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        flags: 0x1,
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    const unitNameMap = {};
+    if (!unitSearchData.error && unitSearchData.items) {
+      for (const u of unitSearchData.items) {
+        unitNameMap[u.id] = u.nm || `Unit ${u.id}`;
+      }
+    }
+
+    // Build geofence ID -> Name map from all resources
+    const geofenceMap = {};
+    for (const resItem of searchData.items) {
+      if (resItem.zl && typeof resItem.zl === "object") {
+        for (const [zid, z] of Object.entries(resItem.zl)) {
+          geofenceMap[zid] = z.n || `Geozona ${zid}`;
+        }
+      }
+    }
+
+    const allNotifications = [];
+    for (const resItem of searchData.items) {
+      const unf = resItem.unf;
+      if (!unf || typeof unf !== "object") continue;
+
+      for (const [nid, n] of Object.entries(unf)) {
+        if (!n || n.error) continue;
+        const unitIds = n.un || [];
+        const unitNames = unitIds.map((id) => unitNameMap[id] || `ID: ${id}`);
+        const rawActions = n.act || [];
+        const actionLabels = rawActions
+          .map((a) => {
+            if (typeof a === "string") return NOTIFICATION_ACTION_LABELS[a] || a;
+            if (a && a.t) return NOTIFICATION_ACTION_LABELS[a.t] || a.t;
+            return null;
+          })
+          .filter(Boolean);
+
+        // Build detailed action descriptions
+        const actionDescriptions = rawActions.map(a => {
+          const type = typeof a === "string" ? a : (a.t || "");
+          const p = a.p || {};
+          
+          switch(type) {
+            case "notify_email":
+            case "email":
+              return `Enviar email a: ${p.email || p.email_to || "N/A"}`;
+            case "notify_popup":
+              return "Mostrar notificación en ventana emergente";
+            case "notify_mobile":
+            case "mobile_apps":
+              return "Enviar notificación a aplicación móvil";
+            case "notify_sms":
+            case "sms":
+              return `Enviar SMS a: ${p.phones || p.sms_to || "N/A"}`;
+            case "notify_command":
+            case "exec_command":
+              return `Ejecutar comando: ${p.c || p.command_name || "N/A"}`;
+            case "notify_http":
+              return `Petición HTTP a: ${p.u || p.url || "URL"}`;
+            case "notify_event":
+              return "Registrar evento en la unidad";
+            case "notify_telegram":
+              return "Enviar mensaje a Telegram";
+            case "notify_whatsapp":
+              return "Enviar mensaje a WhatsApp";
+            case "message":
+              // In Wialon, 'message' action often means "Online notification" if no specific message text is provided
+              if (typeof a === "string" || !p.message) {
+                return "Mostrar notificación en ventana emergente";
+              }
+              return `Mensaje: ${p.message}`;
+            default:
+              // For unknown types, capitalize and replace underscores
+              const label = NOTIFICATION_ACTION_LABELS[type];
+              if (label) return label;
+              return type.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+          }
+        });
+
+        // Build human-readable description
+        let description = n.d || ""; // Some versions might provide a direct description
+        
+        // 1. Try to build description from trigger parameters (Geozones, Speed, etc.)
+        if (!description && n.p) {
+          // Geozones can be part of many trigger types (speed, stationary, etc.)
+          if (Array.isArray(n.p.geos) && n.p.geos.length > 0) {
+            const names = n.p.geos.map((id) => geofenceMap[id] || `ID: ${id}`);
+            const checkType = n.p.type === 0 ? "Fuera de" : "Dentro de";
+            description = `${checkType}: ${names.join(", ")}`;
+          }
+          
+          // Append specific trigger details
+          if (n.trg === "speed") {
+            const speedInfo = `Velocidad: ${n.p.min || 0} a ${n.p.max || "∞"} km/h`;
+            description = description ? `${description} (${speedInfo})` : speedInfo;
+          } else if (n.trg === "sensor_value") {
+            const sensorInfo = `Sensor: ${n.p.s || "N/A"} (${n.p.min || 0} a ${n.p.max || "∞"})`;
+            description = description ? `${description} (${sensorInfo})` : sensorInfo;
+          } else if (n.trg === "alarm") {
+            description = description ? `${description} (Alarma)` : "Alarma / Botón de pánico";
+          } else if (n.trg === "digital_input") {
+            const diInfo = `Entrada digital: ${n.p.in || "N/A"}`;
+            description = description ? `${description} (${diInfo})` : diInfo;
+          } else if (n.trg === "outage") {
+            description = "Pérdida de conexión";
+          }
+        }
+        
+        // 2. Fallback priority: Name (n.n) is usually the "ESTADIA..." text you expect.
+        // We only use Text (n.txt) if Name is missing and Text isn't the generic template.
+        if (!description || description === "—") {
+          const isGenericText = !n.txt || n.txt === "%UNIT% %NOTIFICATION%";
+          description = n.n || (!isGenericText ? n.txt : "—");
+        }
+
+        allNotifications.push({
+          _key: `${resItem.id}_${nid}`,
+          id: parseInt(nid),
+          resourceId: resItem.id,
+          name: n.n || "Sin nombre",
+          triggerType: n.trg || "unknown",
+          text: n.txt || "",
+          description: description || "—",
+          units: unitIds,
+          unitNames,
+          enabled: !(n.fl & 0x2),
+          alarmCount: n.ac || 0,
+          createdAt: n.ct,
+          resourceName: resItem.nm || "—",
+          actions: rawActions,
+          actionLabels,
+          actionDescriptions,
+          raw: n,
+        });
+      }
+    }
+
+    // Cross-reference: find active bitácoras using any of the notification unit IDs
+    // Use both String and Number variants in $in to handle mixed-type historical data
+    const allUnitIdsRaw = [...new Set(allNotifications.flatMap((n) => n.units).map(String))];
+    const allUnitIdsNum = allUnitIdsRaw.map(Number).filter((n) => !Number.isNaN(n));
+    const allUnitIds = [...allUnitIdsRaw, ...allUnitIdsNum];
+    const unitActivityMap = {};
+    if (allUnitIds.length > 0) {
+      const col = mongoose.connection.db.collection("bitacoras");
+      const activeBits = await col
+        .find(
+          {
+            deleted: false,
+            status: { $nin: ["cerrada", "cerrada (e)", "finalizada"] },
+            "transportes.gpsUnits.wialonId": { $in: allUnitIds },
+          },
+          {
+            projection: {
+              _id: 1,
+              bitacora_id: 1,
+              cliente: 1,
+              status: 1,
+              "transportes.id": 1,
+              "transportes.gpsUnits.wialonId": 1,
+              "transportes.gpsUnits.name": 1,
+            },
+          }
+        )
+        .toArray();
+
+      for (const bit of activeBits) {
+        for (const t of bit.transportes || []) {
+          for (const g of t.gpsUnits || []) {
+            const wid = String(g.wialonId);
+            if (!unitActivityMap[wid]) unitActivityMap[wid] = [];
+            unitActivityMap[wid].push({
+              _id: bit._id?.toString?.() || String(bit._id),
+              bitacora_id: bit.bitacora_id,
+              cliente: bit.cliente,
+              status: bit.status,
+              transporteId: t.id,
+              unitName: g.name || null,
+              wialonId: wid,
+            });
+          }
+        }
+      }
+    }
+
+    // Attach activeBitacoras to each notification
+    for (const n of allNotifications) {
+      const matches = [];
+      for (const uid of n.units) {
+        const hits = unitActivityMap[String(uid)];
+        if (hits) matches.push(...hits);
+      }
+      // Deduplicate by bitacora_id + transporteId
+      const seen = new Set();
+      n.activeBitacoras = matches.filter((m) => {
+        const k = `${m.bitacora_id}_${m.transporteId}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json({ notifications: allNotifications });
+  } catch (err) {
+    console.error("Wialon notifications proxy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Notification Action Labels Map ──
+const NOTIFICATION_ACTION_LABELS = {
+  "notify_popup": "Popup",
+  "notify_email": "Email",
+  "notify_sms": "SMS",
+  "notify_command": "Comando",
+  "notify_http": "HTTP",
+  "notify_event": "Evento",
+  "notify_mobile": "Móvil",
+  "notify_telegram": "Telegram",
+  "notify_whatsapp": "WhatsApp",
+  "exec_command": "Ejecutar comando",
+  "message": "Notificación en línea",
+  "mobile_apps": "Notificación móvil",
+  "email": "Email",
+  "sms": "SMS",
+};
+
+// POST /wialon/notifications/:resourceId/:notifId/toggle - enable/disable a notification
+app.post("/wialon/notifications/:resourceId/:notifId/toggle", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN" });
+
+    const { resourceId, notifId } = req.params;
+    const { enabled } = req.body;
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const result = await wialonApiCall(
+      "resource/update_notification",
+      {
+        itemId: parseInt(resourceId),
+        id: parseInt(notifId),
+        callMode: "update",
+        e: enabled ? 1 : 0,
+      },
+      sid
+    );
+
+    await wialonApiCall("core/logout", {}, sid);
+
+    if (result.error) {
+      return res.status(500).json({ error: `Toggle error: ${result.error}` });
+    }
+
+    res.json({ success: true, enabled: !!enabled });
+  } catch (err) {
+    console.error("Wialon notification toggle error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /wialon/notifications/toggle-bulk - batch toggle notifications
+app.post("/wialon/notifications/toggle-bulk", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN" });
+
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "items array is required" });
+    }
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    let updated = 0;
+    for (const item of items) {
+      const result = await wialonApiCall(
+        "resource/update_notification",
+        {
+          itemId: parseInt(item.resourceId),
+          id: parseInt(item.notifId),
+          callMode: "update",
+          e: item.enabled ? 1 : 0,
+        },
+        sid
+      );
+      if (!result.error) updated++;
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json({ success: true, updated });
+  } catch (err) {
+    console.error("Wialon notification bulk toggle error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /wialon/notifications/:resourceId/:notifId/log - fetch historical trigger log for a specific notification
+app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const { resourceId, notifId } = req.params;
+    const { from, to } = req.query;
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    // Default to last 30 days if from/to not provided
+    const now = Math.floor(Date.now() / 1000);
+    const thirtyDaysAgo = now - (30 * 24 * 3600);
+    
+    const timeFrom = from ? parseInt(from) : thirtyDaysAgo;
+    const timeTo = to ? parseInt(to) : now;
+
+    // 1. Get the notification name by searching for it in the resource
+    console.log(`[WialonLog] Searching for notification ${notifId} in resource ${resourceId}`);
+    const searchRes = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_resource",
+          propName: "sys_id",
+          propValueMask: String(resourceId),
+          sortType: "sys_name"
+        },
+        force: 1,
+        flags: 0x0400 | 0x01,
+        from: 0,
+        to: 1
+      },
+      sid
+    );
+
+    let notifName = "";
+    if (searchRes.items && searchRes.items.length > 0 && searchRes.items[0].unf) {
+      const notif = searchRes.items[0].unf[notifId];
+      if (notif) {
+        notifName = notif.n;
+        console.log(`[WialonLog] Found notification name: ${notifName}`);
+      }
+    }
+
+    // 2. Get the notification log (Primary method)
+    console.log(`[WialonLog] Fetching log for resource ${resourceId}, notif ${notifId} from ${timeFrom} to ${timeTo}`);
+    let logEntries = [];
+    const logData = await wialonApiCall(
+      "resource/get_notifications_log",
+      {
+        itemId: parseInt(resourceId),
+        col: [parseInt(notifId)],
+        from: timeFrom,
+        to: timeTo,
+      },
+      sid
+    );
+
+    if (logData && !logData.error) {
+      console.log(`[WialonLog] Received logData keys: ${Object.keys(logData || {})}`);
+      if (logData[notifId] && Array.isArray(logData[notifId].log)) {
+        logEntries = logData[notifId].log;
+      } else {
+        // Fallback: search for any key that has a log array
+        const firstKey = Object.keys(logData).find(k => logData[k] && Array.isArray(logData[k].log));
+        if (firstKey) {
+          console.log(`[WialonLog] Using fallback key ${firstKey}`);
+          logEntries = logData[firstKey].log;
+        }
+      }
+    } else {
+      console.warn(`[WialonLog] resource/get_notifications_log failed or returned error: ${logData?.error || "unknown"}`);
+      
+      // 3. Fallback to resource messages if primary method failed and we have a name
+      if (notifName) {
+        console.log(`[WialonLog] Falling back to messages/load_interval for resource ${resourceId}`);
+        const messagesData = await wialonApiCall(
+          "messages/load_interval",
+          {
+            itemId: parseInt(resourceId),
+            timeFrom: timeFrom,
+            timeTo: timeTo,
+            flags: 0,
+            flagsMask: 0,
+            loadCount: 5000
+          },
+          sid
+        );
+
+        if (messagesData && Array.isArray(messagesData.messages)) {
+          console.log(`[WialonLog] Found ${messagesData.messages.length} total messages in resource`);
+          // Filter by notification name
+          const filtered = messagesData.messages.filter(m => 
+            m.p && m.p.notification && m.p.notification.includes(notifName)
+          );
+          console.log(`[WialonLog] Found ${filtered.length} matching messages for "${notifName}"`);
+          
+          logEntries = filtered.map(m => ({
+            t: m.t,
+            u: 0, // Resource messages might not have unit ID in 'u' field, but it's in 'p.unit'
+            txt: `[Trigger] ${m.p.notification} for unit ${m.p.unit || "Unknown"}`,
+            tm: m.t,
+            // Add custom fields that we can map later
+            unit_name: m.p.unit,
+            raw_msg: m
+          }));
+        }
+      }
+    }
+    
+    console.log(`[WialonLog] Total log entries found: ${logEntries.length}`);
+
+    // 4. Build unit name lookup if we have entries and need names
+    const unitNameMap = {};
+    const unitsToFetch = [...new Set(logEntries.map(e => e.u).filter(u => u > 0))];
+    
+    if (unitsToFetch.length > 0 || logEntries.some(e => !e.unit_name)) {
+      console.log(`[WialonLog] Fetching unit list for name resolution`);
+        // Fetch unit names
+        const unitSearchData = await wialonApiCall(
+          "core/search_items",
+          {
+            spec: {
+              itemsType: "avl_unit",
+              propName: "sys_name",
+              propValueMask: "*",
+              sortType: "sys_name",
+            },
+            force: 1,
+            flags: 0x1,
+            from: 0,
+            to: 1000,
+          },
+          sid
+        );
+
+        if (unitSearchData && Array.isArray(unitSearchData.items)) {
+          console.log(`[WialonLog] Found ${unitSearchData.items.length} units in search`);
+          unitSearchData.items.forEach(u => {
+          unitNameMap[u.id] = u.nm || `Unit ${u.id}`;
+        });
+      }
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+
+
+    // 5. Map logs to a cleaner format
+    const logs = logEntries.map(entry => ({
+      timestamp: entry.t,
+      unitId: entry.u || (entry.raw_msg?.p?.unit_id),
+      unitName: entry.unit_name || unitNameMap[entry.u] || `ID: ${entry.u}`,
+      text: entry.txt || "",
+      lng: entry.p?.x || entry.raw_msg?.p?.lon || entry.raw_msg?.pos?.x,
+      lat: entry.p?.y || entry.raw_msg?.p?.lat || entry.raw_msg?.pos?.y,
+      serverTime: entry.tm || entry.t
+    }));
+
+
+    // Sort by timestamp descending
+    logs.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.json({ logs });
+  } catch (err) {
+    console.error("Wialon notification log error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /wialon/units - fetch all Wialon avl_unit items as [{id, name}]
+app.get("/wialon/units", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const searchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_unit",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        flags: 0x1, // base flags — just id + name
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    await wialonApiCall("core/logout", {}, sid);
+
+    if (searchData.error || !searchData.items) {
+      return res.status(500).json({ error: `Search error: ${searchData.error || "no items"}` });
+    }
+
+    const units = searchData.items.map((u) => ({ id: u.id, name: u.nm || `Unit ${u.id}` }));
+    res.json(units);
+  } catch (err) {
+    console.error("Wialon units proxy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /wialon/geofences - fetch geofence/zone data from all resources
+app.get("/wialon/geofences", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const searchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_resource",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        flags: 0x1000,
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    const allZones = [];
+    if (!searchData.error && searchData.items) {
+      for (const resItem of searchData.items) {
+        const zData = await wialonApiCall(
+          "resource/get_zone_data",
+          { itemId: resItem.id, col: [], flags: 0x1f },
+          sid
+        );
+
+        if (!zData.error && zData) {
+          const arr = Array.isArray(zData) ? zData : [zData];
+          for (const zoneData of arr) {
+            const zones = zoneData?.d ? [zoneData] : Object.values(zoneData || {});
+            for (const z of zones) {
+              if (!z?.p || !z.p.length) continue;
+              allZones.push({
+                name: z.n || "Zona",
+                type: z.t,
+                points: z.p,
+                color: z.c ? "#" + ((z.c >>> 0).toString(16).padStart(8, "0").slice(2)) : null,
+                width: z.w,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json({ zones: allZones });
+  } catch (err) {
+    console.error("Wialon geofences proxy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /wialon/proxy - generic Wialon API proxy for any service call
+// Body: { svc, params } — uses server's own WIALON_API_TOKEN
+app.post("/wialon/proxy", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    const { svc, params } = req.body;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+    if (!svc) return res.status(400).json({ error: "Missing svc parameter" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const result = await wialonApiCall(svc, params || {}, sid);
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json(result);
+  } catch (err) {
+    console.error("Wialon proxy error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -4724,735 +5524,458 @@ app.get("/bitacoras/download-location/:locationName", async (req, res) => {
 });
 
 // Dashboard Stats (for main dashboard)
-app.get('/dashboard/stats', async (req, res) => {
-  try {
-    // Get user from session (already verified by middleware)
-    const user = req.session.user;
-    if (!user) {
-      return res.status(401).json({ message: 'User not found' });
+/**
+ * Reusable helper to build bitacora filters based on dashboard query params and user role.
+ */
+async function buildBitacoraFilter(user, role, query) {
+  const {
+    timeFilter = 'all',
+    yearFilter = new Date().getFullYear(),
+    clientFilter = 'all',
+    fechaDesde = '',
+    fechaHasta = '',
+    lineaTransporte = 'all',
+    operador = 'all'
+  } = query;
+
+  // Build time filter
+  let timeFilterQuery = {};
+  if (timeFilter !== 'all') {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    switch (timeFilter) {
+      case 'today':
+        timeFilterQuery = { createdAt: { $gte: startOfDay } };
+        break;
+      case 'week':
+        const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
+        timeFilterQuery = { createdAt: { $gte: startOfWeek } };
+        break;
+      case 'month':
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        timeFilterQuery = { createdAt: { $gte: startOfMonth } };
+        break;
+      case 'quarter':
+        const currentQuarter = Math.floor(now.getMonth() / 3);
+        const startOfQuarter = new Date(now.getFullYear(), currentQuarter * 3, 1);
+        timeFilterQuery = { createdAt: { $gte: startOfQuarter } };
+        break;
+      case 'year':
+        const startOfYear = new Date(now.getFullYear(), 0, 1);
+        timeFilterQuery = { createdAt: { $gte: startOfYear } };
+        break;
     }
+  }
 
-    // Get role permissions
-    const role = await Role.findOne({ name: user.role });
-    if (!role) {
-      return res.status(401).json({ message: 'Role not found' });
-    }
+  // Build filters based on user permissions
+  let bitacoraFilter = { deleted: { $ne: true } }; // Exclude deleted bitacoras
 
-    // Get filter parameters
-    const {
-      timeFilter = 'all',
-      yearFilter = new Date().getFullYear(),
-      clientFilter = 'all',
-      fechaDesde = '',
-      fechaHasta = '',
-      lineaTransporte = 'all',
-      operador = 'all'
-    } = req.query;
-
-    // Build time filter
-    let timeFilterQuery = {};
-    if (timeFilter !== 'all') {
-      const now = new Date();
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-      switch (timeFilter) {
-        case 'today':
-          timeFilterQuery = { createdAt: { $gte: startOfDay } };
-          break;
-        case 'week':
-          const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
-          timeFilterQuery = { createdAt: { $gte: startOfWeek } };
-          break;
-        case 'month':
-          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-          timeFilterQuery = { createdAt: { $gte: startOfMonth } };
-          break;
-        case 'quarter':
-          const currentQuarter = Math.floor(now.getMonth() / 3);
-          const startOfQuarter = new Date(now.getFullYear(), currentQuarter * 3, 1);
-          timeFilterQuery = { createdAt: { $gte: startOfQuarter } };
-          break;
-        case 'year':
-          const startOfYear = new Date(now.getFullYear(), 0, 1);
-          timeFilterQuery = { createdAt: { $gte: startOfYear } };
-          break;
+  // Apply client permissions based on role
+  if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
+    const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
+    if (clientFilter !== 'all') {
+      if (!allowedClientNames.includes(clientFilter)) {
+        throw new Error('Access denied to this client');
       }
-    }
-
-    // Build filters based on user permissions
-    let bitacoraFilter = { deleted: { $ne: true } }; // Exclude deleted bitacoras
-
-    // Apply client permissions based on role
-    if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
-      // User can only access specific clients
-      const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
-
-      if (clientFilter !== 'all') {
-        // If a specific client is selected, verify it's in the allowed list
-        if (!allowedClientNames.includes(clientFilter)) {
-          return res.status(403).json({ message: 'Access denied to this client' });
-        }
-        bitacoraFilter.cliente = clientFilter;
-      } else {
-        // If no specific client is selected, filter by all allowed clients
-        bitacoraFilter.cliente = { $in: allowedClientNames };
-      }
+      bitacoraFilter.cliente = clientFilter;
     } else {
-      // User has access to all clients
-      if (clientFilter !== 'all') {
-        bitacoraFilter.cliente = clientFilter;
-      }
+      bitacoraFilter.cliente = { $in: allowedClientNames };
     }
-
-    // Add date range filter (priority over timeFilter and yearFilter)
-    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-      const startDate = new Date(fechaDesde);
-      const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
-
-      if (!isNaN(startDate) && !isNaN(endDate)) {
-        bitacoraFilter.createdAt = {
-          $gte: startDate,
-          $lte: endDate
-        };
-      }
+  } else {
+    if (clientFilter !== 'all') {
+      bitacoraFilter.cliente = clientFilter;
     }
+  }
 
-    // Add transport line filter
-    if (lineaTransporte !== 'all') {
-      // If we already have filters, we need to combine them properly
-      if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-        // Create a new $and filter to combine existing filters with transport line filter
-        const existingFilters = {};
-        if (bitacoraFilter.$or) {
-          existingFilters.$or = bitacoraFilter.$or;
-          delete bitacoraFilter.$or;
-        }
-        if (bitacoraFilter.$and) {
-          existingFilters.$and = bitacoraFilter.$and;
-          delete bitacoraFilter.$and;
-        }
+  // Add date range filter
+  if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
+    const startDate = new Date(fechaDesde);
+    const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
+    if (!isNaN(startDate) && !isNaN(endDate)) {
+      bitacoraFilter.createdAt = { $gte: startDate, $lte: endDate };
+    }
+  } else if (yearFilter && yearFilter !== 'all') {
+    const startOfYear = new Date(parseInt(yearFilter), 0, 1);
+    const endOfYear = new Date(parseInt(yearFilter), 11, 31, 23, 59, 59);
+    bitacoraFilter.createdAt = { $gte: startOfYear, $lte: endOfYear };
+  } else if (Object.keys(timeFilterQuery).length > 0) {
+    bitacoraFilter = { ...bitacoraFilter, ...timeFilterQuery };
+  }
 
-        // Add other existing filters
-        Object.keys(bitacoraFilter).forEach(key => {
-          if (key !== 'cliente' && key !== 'createdAt') {
-            existingFilters[key] = bitacoraFilter[key];
-            delete bitacoraFilter[key];
-          }
-        });
+  // Add transport line filter
+  if (lineaTransporte !== 'all') {
+    const lineFilter = {
+      $or: [
+        { linea_transporte: lineaTransporte },
+        { 'transportes.lineaTransporte': lineaTransporte }
+      ]
+    };
+    if (bitacoraFilter.$and) {
+      bitacoraFilter.$and.push(lineFilter);
+    } else if (Object.keys(bitacoraFilter).some(k => k.startsWith('$'))) {
+      const existing = { ...bitacoraFilter };
+      Object.keys(bitacoraFilter).forEach(k => delete bitacoraFilter[k]);
+      bitacoraFilter.$and = [existing, lineFilter];
+    } else {
+      Object.assign(bitacoraFilter, lineFilter);
+    }
+  }
 
-        bitacoraFilter.$and = [
-          existingFilters,
-          {
-            $or: [
-              { linea_transporte: lineaTransporte },
-              { 'transportes.lineaTransporte': lineaTransporte }
-            ]
-          }
-        ];
+  // Add operator filter
+  if (operador !== 'all') {
+    const opFilter = {
+      $or: [
+        { operador: operador },
+        { 'transportes.operador': operador }
+      ]
+    };
+    if (bitacoraFilter.$and) {
+      bitacoraFilter.$and.push(opFilter);
+    } else {
+      // Handle potential existing $or from line filter
+      const currentKeys = Object.keys(bitacoraFilter);
+      if (currentKeys.includes('$or')) {
+        const existingOr = { $or: bitacoraFilter.$or };
+        delete bitacoraFilter.$or;
+        bitacoraFilter.$and = [existingOr, opFilter];
       } else {
-        bitacoraFilter.$or = [
-          { linea_transporte: lineaTransporte },
-          { 'transportes.lineaTransporte': lineaTransporte }
-        ];
+        Object.assign(bitacoraFilter, opFilter);
       }
     }
+  }
 
-    // Add operator filter
-    if (operador !== 'all') {
-      // If we already have filters, we need to combine them properly
-      if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-        // Create a new $and filter to combine existing filters with operator filter
-        const existingFilters = {};
-        if (bitacoraFilter.$or) {
-          existingFilters.$or = bitacoraFilter.$or;
-          delete bitacoraFilter.$or;
-        }
-        if (bitacoraFilter.$and) {
-          existingFilters.$and = bitacoraFilter.$and;
-          delete bitacoraFilter.$and;
-        }
-
-        // Add other existing filters
-        Object.keys(bitacoraFilter).forEach(key => {
-          if (key !== 'cliente' && key !== 'createdAt') {
-            existingFilters[key] = bitacoraFilter[key];
-            delete bitacoraFilter[key];
-          }
-        });
-
-        bitacoraFilter.$and = [
-          existingFilters,
-          {
-            $or: [
-              { operador: operador },
-              { 'transportes.operador': operador }
-            ]
-          }
-        ];
-      } else {
-        bitacoraFilter.$or = [
-          { operador: operador },
-          { 'transportes.operador': operador }
-        ];
-      }
-    }
-
-    if (!role.bitacoras?.read_all) {
-      // If user can't read all bitacoras, filter by their name
-      const userFullName = `${user.firstName} ${user.lastName}`;
-      // Only override operator filter if no specific operator is selected
-      if (operador === 'all') {
-        // If we already have filters, we need to combine them properly
-        if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-          // Create a new $and filter to combine existing filters with user permission filter
-          const existingFilters = {};
-          if (bitacoraFilter.$or) {
-            existingFilters.$or = bitacoraFilter.$or;
-            delete bitacoraFilter.$or;
-          }
-          if (bitacoraFilter.$and) {
-            existingFilters.$and = bitacoraFilter.$and;
-            delete bitacoraFilter.$and;
-          }
-
-          // Add other existing filters
-          Object.keys(bitacoraFilter).forEach(key => {
-            if (key !== 'cliente' && key !== 'createdAt') {
-              existingFilters[key] = bitacoraFilter[key];
-              delete bitacoraFilter[key];
-            }
-          });
-
-          bitacoraFilter.$and = [
-            existingFilters,
-            {
-              $or: [
-                { operador: userFullName },
-                { 'transportes.operador': userFullName }
-              ]
-            }
-          ];
-        } else {
-          bitacoraFilter.$or = [
-            { operador: userFullName },
-            { 'transportes.operador': userFullName }
-          ];
-        }
-      }
-    }
-
-    // Add time/year filters - only if no date range filter is applied
-    if (!fechaDesde || !fechaHasta) {
-      if (yearFilter && yearFilter !== 'all') {
-        // Si hay un año específico, usar solo ese año (ignorar otros filtros de tiempo)
-        const startOfYear = new Date(parseInt(yearFilter), 0, 1);
-        const endOfYear = new Date(parseInt(yearFilter), 11, 31, 23, 59, 59);
-        bitacoraFilter.createdAt = {
-          $gte: startOfYear,
-          $lte: endOfYear
-        };
-      } else if (Object.keys(timeFilterQuery).length > 0) {
-        // Solo usar filtros de tiempo si no hay año específico
-        bitacoraFilter = { ...bitacoraFilter, ...timeFilterQuery };
-      }
-    }
-
-
-
-    // Get bitacora statistics
-    // For total cards, use January 2024 as default start date if no date filters are provided
-    let totalCardsFilter = { ...bitacoraFilter };
-    if (!fechaDesde || !fechaHasta || fechaDesde.trim() === '' || fechaHasta.trim() === '') {
-      // Default to January 2024 for total cards when no date filters are provided
-      const defaultStartDate = new Date('2024-01-01');
-      const defaultEndDate = new Date(); // Current date
-
-      totalCardsFilter.createdAt = {
-        $gte: defaultStartDate,
-        $lte: defaultEndDate
+  // Personal bitacoras only if no read_all
+  if (!role.bitacoras?.read_all) {
+    const userFullName = `${user.firstName} ${user.lastName}`;
+    if (operador === 'all') {
+      const personalFilter = {
+        $or: [
+          { operador: userFullName },
+          { 'transportes.operador': userFullName }
+        ]
       };
-    }
-
-    let totalBitacoras = await Bitacora.countDocuments(totalCardsFilter);
-    const nuevasBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: 'nueva' });
-    const enProcesoBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: { $in: ['validada', 'iniciada'] } });
-    const cerradasBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: { $in: ['cerrada', 'finalizada'] } });
-
-    // Get user and client counts (only if user has permission)
-    let totalUsers = 0;
-    let totalClients = 0;
-
-    if (role.usuarios?.read) {
-      totalUsers = await User.countDocuments();
-    }
-
-    if (role.clientes?.read) {
-      totalClients = await Client.countDocuments();
-    }
-
-    // Get recent activity (last 10 auditoria records)
-    let recentActivity = [];
-    try {
-      recentActivity = await Auditoria.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .populate('bitacora_id', 'bitacora_id')
-        .lean();
-    } catch (error) {
-      console.error('Error fetching recent activity:', error);
-    }
-
-    const formattedActivity = recentActivity.map(activity => ({
-      description: `${activity.tipo} - ${activity.seccion}`,
-      icon: getActivityIcon(activity.tipo),
-      color: getActivityColor(activity.tipo),
-      timestamp: activity.createdAt
-    }));
-
-    // Get monthly data for the specified year or last 12 months
-    let monthlyData = [];
-    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-
-    try {
-      // Create a base filter that excludes date filters (we'll apply them month by month)
-      let monthlyFilter = { ...bitacoraFilter };
-
-      // Remove date filters from monthly filter since we'll apply them month by month
-      if (monthlyFilter.createdAt) {
-        delete monthlyFilter.createdAt;
-      }
-
-      // Check if date range filters are applied
-      if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-        const startDate = new Date(fechaDesde);
-        const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
-
-        if (!isNaN(startDate) && !isNaN(endDate)) {
-          // Generate monthly data only for the date range specified
-          let currentDate = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-          const endDateMonth = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
-
-          while (currentDate <= endDateMonth) {
-            const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-            const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
-
-            // Make sure we don't go beyond the specified range
-            const monthStart = startOfMonth < startDate ? startDate : startOfMonth;
-            const monthEnd = endOfMonth > endDate ? endDate : endOfMonth;
-
-            const monthCount = await Bitacora.countDocuments({
-              ...monthlyFilter,
-              createdAt: { $gte: monthStart, $lte: monthEnd }
-            });
-
-            monthlyData.push({
-              month: months[currentDate.getMonth()],
-              value: monthCount
-            });
-
-            // Move to next month
-            currentDate.setMonth(currentDate.getMonth() + 1);
-          }
-        }
-      } else if (yearFilter && yearFilter !== 'all') {
-        // Si hay un año específico seleccionado, mostrar los 12 meses de ese año
-        const selectedYear = parseInt(yearFilter);
-
-        for (let i = 0; i < 12; i++) {
-          const startOfMonth = new Date(selectedYear, i, 1);
-          const endOfMonth = new Date(selectedYear, i + 1, 0, 23, 59, 59, 999);
-
-          const monthCount = await Bitacora.countDocuments({
-            ...monthlyFilter,
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          monthlyData.push({
-            month: months[i],
-            value: monthCount
-          });
-        }
+      if (bitacoraFilter.$and) {
+        bitacoraFilter.$and.push(personalFilter);
+      } else if (bitacoraFilter.$or) {
+        const existingOr = { $or: bitacoraFilter.$or };
+        delete bitacoraFilter.$or;
+        bitacoraFilter.$and = [existingOr, personalFilter];
       } else {
-        // Si no hay año específico, mostrar los últimos 12 meses
-        for (let i = 11; i >= 0; i--) {
-          const date = new Date();
-          date.setMonth(date.getMonth() - i);
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-
-          const monthCount = await Bitacora.countDocuments({
-            ...monthlyFilter,
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          monthlyData.push({
-            month: months[date.getMonth()],
-            value: monthCount
-          });
-        }
-      }
-
-    } catch (error) {
-      console.error('Error generating monthly data:', error);
-      monthlyData = [];
-    }
-
-    // Ensure consistency between totalBitacoras and monthly data sum
-    // When date filters are applied, the total should match the sum of monthly data
-    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-      const monthlySum = monthlyData.reduce((sum, month) => sum + month.value, 0);
-      if (monthlySum !== totalBitacoras) {
-        console.log(`⚠️ Inconsistency detected: totalBitacoras=${totalBitacoras}, monthlySum=${monthlySum}`);
-        // Use the monthly sum as the source of truth for totalBitacoras when date filters are applied
-        totalBitacoras = monthlySum;
+        Object.assign(bitacoraFilter, personalFilter);
       }
     }
-    // Note: When no date filters are applied, totalBitacoras uses January 2024 default,
-    // while monthly data shows last 12 months, so they may differ intentionally
+  }
 
-    // Get status trends data
-    const statusTrends = [
-      {
-        status: 'Activas',
-        color: '#10b981',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  return bitacoraFilter;
+}
 
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: { $nin: ['cerrada', 'finalizada'] },
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
+app.get('/dashboard/summary', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
 
-          return { month, value: count };
-        }))
-      },
-      {
-        status: 'Completadas',
-        color: '#3b82f6',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    
+    // For summary cards, we often want a wider range if no dates provided
+    let summaryFilter = { ...filter };
+    if (!req.query.fechaDesde && !req.query.fechaHasta) {
+      const defaultStartDate = new Date('2024-01-01');
+      summaryFilter.createdAt = { $gte: defaultStartDate, $lte: new Date() };
+    }
 
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: { $in: ['cerrada', 'finalizada'] },
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          return { month, value: count };
-        }))
-      },
-      {
-        status: 'Pendientes',
-        color: '#f59e0b',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: 'nueva',
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          return { month, value: count };
-        }))
-      }
-    ];
-
-    // Get event distribution
-    const eventDistribution = await Bitacora.aggregate([
-      { $match: bitacoraFilter },
-      { $unwind: '$eventos' },
-      { $group: { _id: '$eventos.tipo', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
+    const [
+      total,
+      nuevas,
+      enProceso,
+      cerradas,
+      anomalias,
+      totalUsers,
+      totalClients,
+      recentActivity
+    ] = await Promise.all([
+      Bitacora.countDocuments(summaryFilter),
+      Bitacora.countDocuments({ ...summaryFilter, status: 'nueva' }),
+      Bitacora.countDocuments({ ...summaryFilter, status: { $in: ['validada', 'iniciada'] } }),
+      Bitacora.countDocuments({ ...summaryFilter, status: { $in: ['cerrada', 'finalizada'] } }),
+      // Anomaly detection logic (needs to be consistent with main stats)
+      getCachedAnomalyEventTypes().then(async (eventTypes) => {
+        const anomalyNames = eventTypes.map(et => et.evento);
+        return Bitacora.countDocuments({
+          ...summaryFilter,
+          'eventos.nombre': { $in: anomalyNames }
+        });
+      }),
+      role.usuarios?.read ? User.countDocuments() : Promise.resolve(0),
+      role.clientes?.read ? Client.countDocuments() : Promise.resolve(0),
+      Auditoria.find().sort({ createdAt: -1 }).limit(10).populate('bitacora_id', 'bitacora_id').lean()
     ]);
 
-    const eventColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'];
-    const formattedEventDistribution = eventDistribution.map((event, index) => ({
+    res.json({
+      totalBitacoras: total,
+      nuevasBitacoras: nuevas,
+      enProcesoBitacoras: enProceso,
+      cerradasBitacoras: cerradas,
+      totalBitacorasConAnomalias: anomalias,
+      totalUsers,
+      totalClients,
+      recentActivity: recentActivity.map(activity => ({
+        description: `${activity.tipo} - ${activity.seccion}`,
+        icon: getActivityIcon(activity.tipo),
+        color: getActivityColor(activity.tipo),
+        timestamp: activity.createdAt
+      }))
+    });
+  } catch (err) {
+    console.error('[GET /dashboard/summary] Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch summary' });
+  }
+});
+    app.get('/dashboard/trends', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+    // We want the last 12 months by default if no date filter
+    const now = new Date();
+    const twelveMonthsAgo = new Date();
+    twelveMonthsAgo.setMonth(now.getMonth() - 11);
+    twelveMonthsAgo.setDate(1);
+    twelveMonthsAgo.setHours(0, 0, 0, 0);
+
+    const trendFilter = { ...filter };
+    if (!req.query.fechaDesde && !req.query.fechaHasta && !req.query.yearFilter) {
+      trendFilter.createdAt = { $gte: twelveMonthsAgo };
+    }
+
+    const aggregation = await Bitacora.aggregate([
+      { $match: trendFilter },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            status: "$status"
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } }
+    ]);
+
+    // Process aggregation results into the format expected by frontend
+    const monthlyDataMap = {};
+    const statusDataMap = {
+      Activas: {},
+      Completadas: {},
+      Pendientes: {}
+    };
+
+    aggregation.forEach(item => {
+      const { year, month, status } = item._id;
+      const key = `${year}-${month}`;
+      
+      // Monthly total
+      monthlyDataMap[key] = (monthlyDataMap[key] || 0) + item.count;
+
+      // Status trends
+      if (status === 'nueva') {
+        statusDataMap.Pendientes[key] = (statusDataMap.Pendientes[key] || 0) + item.count;
+      }
+      if (['cerrada', 'finalizada'].includes(status)) {
+        statusDataMap.Completadas[key] = (statusDataMap.Completadas[key] || 0) + item.count;
+      } else {
+        statusDataMap.Activas[key] = (statusDataMap.Activas[key] || 0) + item.count;
+      }
+    });
+
+    // Fill in gaps for the last 12 months (or the filtered range)
+    const monthlyData = [];
+    const statusTrends = [
+      { status: 'Activas', color: '#10b981', data: [] },
+      { status: 'Completadas', color: '#3b82f6', data: [] },
+      { status: 'Pendientes', color: '#f59e0b', data: [] }
+    ];
+
+    // Determine range
+    let start, end;
+    if (req.query.fechaDesde && req.query.fechaHasta) {
+      start = new Date(req.query.fechaDesde);
+      end = new Date(req.query.fechaHasta);
+    } else if (req.query.yearFilter && req.query.yearFilter !== 'all') {
+      const y = parseInt(req.query.yearFilter);
+      start = new Date(y, 0, 1);
+      end = new Date(y, 11, 31);
+    } else {
+      start = twelveMonthsAgo;
+      end = now;
+    }
+
+    let curr = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (curr <= end) {
+      const y = curr.getFullYear();
+      const m = curr.getMonth() + 1;
+      const key = `${y}-${m}`;
+      const label = months[curr.getMonth()];
+
+      monthlyData.push({
+        month: label,
+        year: y,
+        value: monthlyDataMap[key] || 0
+      });
+
+      statusTrends[0].data.push({ month: label, value: statusDataMap.Activas[key] || 0 });
+      statusTrends[1].data.push({ month: label, value: statusDataMap.Completadas[key] || 0 });
+      statusTrends[2].data.push({ month: label, value: statusDataMap.Pendientes[key] || 0 });
+
+      curr.setMonth(curr.getMonth() + 1);
+    }
+
+    res.json({ monthlyData, statusTrends });
+  } catch (err) {
+    console.error('[GET /dashboard/trends] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch trends' });
+  }
+});
+
+app.get('/dashboard/rankings', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+
+    const rankings = await Bitacora.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          topClients: [
+            { $group: { _id: '$cliente', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          topOperadores: [
+            { $group: { _id: '$operador', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { name: '$_id', count: 1 } }
+          ],
+          topLineasTransporte: [
+            { $unwind: '$transportes' },
+            { $group: { _id: '$transportes.lineaTransporte', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          topOperadoresTransportes: [
+            { $unwind: '$transportes' },
+            { $group: { _id: '$transportes.operador', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          tiposMonitoreo: [
+            { $group: { _id: '$monitoreo', count: { $sum: 1 } } },
+            { $project: { nombre: '$_id', count: 1 } }
+          ]
+        }
+      }
+    ]);
+
+    const result = rankings[0];
+    const monitoringColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    result.tiposMonitoreo = (result.tiposMonitoreo || []).map((tipo, index) => ({
+      ...tipo,
+      nombre: tipo.nombre || 'N/A',
+      color: monitoringColors[index % monitoringColors.length]
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error('[GET /dashboard/rankings] Error:', err);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+app.get('/dashboard/event-stats', async (req, res) => {
+  try {
+    const user = req.session.user;
+    const role = await Role.findOne({ name: user.role });
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    const eventTypes = await getCachedAnomalyEventTypes();
+    const anomalyNames = eventTypes.map(et => et.evento);
+
+    const stats = await Bitacora.aggregate([
+      { $match: filter },
+      { $unwind: '$eventos' },
+      {
+        $facet: {
+          distribution: [
+            { $group: { _id: '$eventos.tipo', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 }
+          ],
+          allEvents: [
+            { $group: { _id: '$eventos.nombre', count: { $sum: 1 } } }
+          ]
+        }
+      }
+    ]);
+
+    const eventColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    const formattedDistribution = stats[0].distribution.map((event, index) => ({
       name: event._id || 'Sin especificar',
       count: event.count,
       color: eventColors[index % eventColors.length]
     }));
 
-    // Get event categories statistics for pie chart (excluding "General")
-    let eventCategoriesStats = [];
-    try {
-      // First, let's get all event types to understand the mapping
-      const eventTypes = await EventType.find({ categoria: { $in: ['ENA', 'ONC', 'DR', 'FM'] } });
-      console.log('Available event types:', eventTypes);
-
-      // Get event names for each category
-      const eventNamesByCategory = {};
-      eventTypes.forEach(eventType => {
-        if (!eventNamesByCategory[eventType.categoria]) {
-          eventNamesByCategory[eventType.categoria] = [];
-        }
-        eventNamesByCategory[eventType.categoria].push(eventType.evento);
-      });
-
-      console.log('Event names by category:', eventNamesByCategory);
-
-      // First, let's see how many bitacoras match our filter for event categories
-      const matchingBitacorasForCategories = await Bitacora.find(bitacoraFilter).limit(5);
-      console.log('Matching bitacoras for event categories (first 5):', matchingBitacorasForCategories.map(b => ({
-        _id: b._id,
-        bitacora_id: b.bitacora_id,
-        operador: b.operador,
-        eventos: b.eventos?.length || 0,
-        eventNames: b.eventos?.map(e => e.nombre) || []
-      })));
-
-      // Now aggregate by event names that belong to our categories
-      eventCategoriesStats = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$eventos' },
-        {
-          $match: {
-            'eventos.nombre': {
-              $in: eventTypes.map(et => et.evento)
-            }
-          }
-        },
-        {
-          $lookup: {
-            from: 'eventtypes',
-            localField: 'eventos.nombre',
-            foreignField: 'evento',
-            as: 'eventTypeInfo'
-          }
-        },
-        {
-          $group: {
-            _id: { $arrayElemAt: ['$eventTypeInfo.categoria', 0] },
-            count: { $sum: 1 }
-          }
-        },
-        { $sort: { count: -1 } }
-      ]);
-
-      console.log('Raw event categories stats:', eventCategoriesStats);
-
-      // Define colors for each category
-      const categoryColors = {
-        'ENA': '#3b82f6',  // Blue
-        'FM': '#10b981',   // Green
-        'ONC': '#f59e0b',  // Orange
-        'DR': '#ef4444'    // Red
-      };
-
-      // Format the data with colors and ensure all categories are present
-      const allCategories = ['ENA', 'FM', 'ONC', 'DR'];
-      const formattedCategories = allCategories.map(category => {
-        const found = eventCategoriesStats.find(stat => stat._id === category);
-        return {
-          categoria: category,
-          count: found ? found.count : 0,
-          color: categoryColors[category]
-        };
-      });
-
-      eventCategoriesStats = formattedCategories;
-      console.log('Formatted event categories stats:', eventCategoriesStats);
-    } catch (error) {
-      console.log('Error fetching event categories stats:', error);
-      eventCategoriesStats = [];
-    }
-
-    // Get total bitacoras with anomalies count
-    let totalBitacorasConAnomalias = 0;
-    try {
-      const totalBitacorasConAnomaliasResult = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$eventos' },
-        {
-          $lookup: {
-            from: 'eventtypes',
-            localField: 'eventos.nombre',
-            foreignField: 'evento',
-            as: 'eventTypeInfo'
-          }
-        },
-        {
-          $match: {
-            'eventTypeInfo.categoria': { $ne: 'General' }
-          }
-        },
-        // Group by bitacora ID to count unique bitacoras
-        {
-          $group: {
-            _id: '$_id'
-          }
-        },
-        {
-          $count: 'total'
-        }
-      ]);
-
-      totalBitacorasConAnomalias = totalBitacorasConAnomaliasResult.length > 0 ? totalBitacorasConAnomaliasResult[0].total : 0;
-      console.log('Total bitacoras con anomalias:', totalBitacorasConAnomalias);
-    } catch (error) {
-      console.log('Error fetching total bitacoras con anomalias:', error);
-      totalBitacorasConAnomalias = 0;
-    }
-
-    // Get geographic data
-    const geoType = req.query.geoType || 'origen';
-    let geographicData = [];
-    try {
-      console.log('=== DEBUG: Geographic Data Generation ===');
-      console.log('geoType:', geoType);
-      console.log('bitacoraFilter:', JSON.stringify(bitacoraFilter, null, 2));
-      if (geoType === 'destino') {
-        geographicData = await Bitacora.aggregate([
-          { $match: bitacoraFilter },
-          { $group: { _id: '$destino', count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-          // Add fields to handle ObjectId conversion for lookups
-          {
-            $addFields: {
-              destinoForLookup: {
-                $cond: {
-                  if: {
-                    $and: [
-                      { $eq: [{ $type: '$_id' }, 'string'] },
-                      { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
-                    ]
-                  },
-                  then: { $toObjectId: '$_id' },
-                  else: '$_id'
-                }
-              }
-            }
-          },
-          // Lookups with ObjectId conversion
-          {
-            $lookup: {
-              from: 'destinos',
-              localField: 'destinoForLookup',
-              foreignField: '_id',
-              as: 'destinoInfoById'
-            }
-          },
-          {
-            $lookup: {
-              from: 'destinos',
-              localField: '_id',
-              foreignField: 'nombre',
-              as: 'destinoInfoByName'
-            }
-          },
-          // Combine results - prefer _id match over nombre match
-          {
-            $addFields: {
-              destinoInfo: {
-                $cond: {
-                  if: { $gt: [{ $size: '$destinoInfoById' }, 0] },
-                  then: '$destinoInfoById',
-                  else: '$destinoInfoByName'
-                }
-              }
-            }
-          },
-          {
-            $project: {
-              name: {
-                $cond: {
-                  if: { $gt: [{ $size: '$destinoInfo' }, 0] },
-                  then: { $arrayElemAt: ['$destinoInfo.nombre', 0] },
-                  else: '$_id'
-                }
-              },
-              count: 1
-            }
-          }
-        ]);
-      } else {
-        geographicData = await Bitacora.aggregate([
-          { $match: bitacoraFilter },
-          { $group: { _id: '$origen', count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-          // Add fields to handle ObjectId conversion for lookups
-          {
-            $addFields: {
-              origenForLookup: {
-                $cond: {
-                  if: {
-                    $and: [
-                      { $eq: [{ $type: '$_id' }, 'string'] },
-                      { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
-                    ]
-                  },
-                  then: { $toObjectId: '$_id' },
-                  else: '$_id'
-                }
-              }
-            }
-          },
-          // Lookups with ObjectId conversion
-          {
-            $lookup: {
-              from: 'origens',
-              localField: 'origenForLookup',
-              foreignField: '_id',
-              as: 'origenInfoById'
-            }
-          },
-          {
-            $lookup: {
-              from: 'origens',
-              localField: '_id',
-              foreignField: 'nombre',
-              as: 'origenInfoByName'
-            }
-          },
-          // Combine results - prefer _id match over nombre match
-          {
-            $addFields: {
-              origenInfo: {
-                $cond: {
-                  if: { $gt: [{ $size: '$origenInfoById' }, 0] },
-                  then: '$origenInfoById',
-                  else: '$origenInfoByName'
-                }
-              }
-            }
-          },
-          {
-            $project: {
-              name: {
-                $cond: {
-                  if: { $gt: [{ $size: '$origenInfo' }, 0] },
-                  then: { $arrayElemAt: ['$origenInfo.nombre', 0] },
-                  else: '$_id'
-                }
-              },
-              count: 1
-            }
-          }
-        ]);
+    const categoryMap = { ENA: 0, ONC: 0, DR: 0, FM: 0 };
+    const categoryLabels = { ENA: 'Exceso Velocidad', ONC: 'Otras', DR: 'Desvío Ruta', FM: 'Falla Mecánica' };
+    
+    stats[0].allEvents.forEach(e => {
+      const type = eventTypes.find(et => et.evento === e._id);
+      if (type && categoryMap[type.categoria] !== undefined) {
+        categoryMap[type.categoria] += e.count;
       }
+    });
 
-      console.log('Generated geographic data:', geographicData.length, 'items');
-      console.log('Sample geographic data:', geographicData.slice(0, 3));
-    } catch (error) {
-      console.log('Error fetching geographic data:', error);
-    }
+    const formattedCategories = Object.keys(categoryMap).map(cat => ({
+      name: categoryLabels[cat],
+      value: categoryMap[cat],
+      color: cat === 'ENA' ? '#ef4444' : cat === 'ONC' ? '#f59e0b' : cat === 'DR' ? '#3b82f6' : '#10b981'
+    })).filter(c => c.value > 0);
 
-    // Get operator efficiency
-    let operatorEfficiency = [];
-    try {
-      operatorEfficiency = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
+    res.json({
+      eventDistribution: formattedDistribution,
+      eventCategoriesStats: formattedCategories
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+app.get('/dashboard/performance', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+
+    const [efficiency, performance] = await Promise.all([
+      Bitacora.aggregate([
+        { $match: filter },
         {
           $group: {
             _id: '$operador',
@@ -5470,56 +5993,9 @@ app.get('/dashboard/stats', async (req, res) => {
             efficiency: { $multiply: [{ $divide: ['$completed', '$total'] }, 100] }
           }
         }
-      ]);
-    } catch (error) {
-      console.log('Error fetching operator efficiency:', error);
-    }
-
-    // Get tipos de monitoreo data
-    let tiposMonitoreo = [];
-    try {
-      tiposMonitoreo = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$monitoreo', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $lookup: {
-            from: 'monitoreos',
-            localField: '_id',
-            foreignField: 'tipoMonitoreo',
-            as: 'tipoInfo'
-          }
-        },
-        {
-          $project: {
-            nombre: {
-              $cond: {
-                if: { $gt: [{ $size: '$tipoInfo' }, 0] },
-                then: { $arrayElemAt: ['$tipoInfo.tipoMonitoreo', 0] },
-                else: '$_id'
-              }
-            },
-            count: 1,
-            color: { $arrayElemAt: ['$tipoInfo.color', 0] }
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching tipos de monitoreo:', error);
-    }
-
-    // Add colors to tipos de monitoreo if not present
-    const tipoColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'];
-    const formattedTiposMonitoreo = tiposMonitoreo.map((tipo, index) => ({
-      ...tipo,
-      color: tipoColors[index % tipoColors.length]
-    }));
-
-    // Get client performance
-    let clientPerformance = [];
-    try {
-      clientPerformance = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
+      ]),
+      Bitacora.aggregate([
+        { $match: filter },
         {
           $group: {
             _id: '$cliente',
@@ -5530,182 +6006,24 @@ app.get('/dashboard/stats', async (req, res) => {
         { $sort: { completed: -1 } },
         { $limit: 10 },
         {
-          $lookup: {
-            from: 'clients',
-            localField: '_id',
-            foreignField: 'razon_social',
-            as: 'clientInfo'
-          }
-        },
-        {
           $project: {
-            name: {
-              $cond: {
-                if: { $gt: [{ $size: '$clientInfo' }, 0] },
-                then: { $arrayElemAt: ['$clientInfo.razon_social', 0] },
-                else: '$_id'
-              }
-            },
+            name: '$_id',
             completed: 1,
             pending: 1
           }
         }
-      ]);
-    } catch (error) {
-      console.log('Error fetching client performance:', error);
-    }
+      ])
+    ]);
 
-    // Get all clients
-    let topClients = [];
-    try {
-      topClients = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$cliente', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $lookup: {
-            from: 'clients',
-            localField: '_id',
-            foreignField: 'razon_social',
-            as: 'clientInfo'
-          }
-        },
-        {
-          $project: {
-            nombre: {
-              $cond: {
-                if: { $gt: [{ $size: '$clientInfo' }, 0] },
-                then: { $arrayElemAt: ['$clientInfo.razon_social', 0] },
-                else: '$_id'
-              }
-            },
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all clients:', error);
-    }
-
-    // Get all operadores
-    let topOperadores = [];
-    try {
-      topOperadores = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$operador', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            name: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all operadores:', error);
-    }
-
-    // Get all transport lines from transportes array
-    let topLineasTransporte = [];
-    try {
-      topLineasTransporte = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$transportes' },
-        {
-          $addFields: {
-            'transportes.lineaTransporte': {
-              $cond: {
-                if: {
-                  $or: [
-                    { $eq: ['$transportes.lineaTransporte', null] },
-                    { $eq: ['$transportes.lineaTransporte', ''] },
-                    { $eq: ['$transportes.lineaTransporte', undefined] }
-                  ]
-                },
-                then: 'N/A',
-                else: '$transportes.lineaTransporte'
-              }
-            }
-          }
-        },
-        { $group: { _id: '$transportes.lineaTransporte', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            nombre: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all transport lines:', error);
-    }
-
-    // Get all transport operators
-    let topOperadoresTransportes = [];
-    try {
-      topOperadoresTransportes = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$transportes' },
-        {
-          $addFields: {
-            'transportes.operador': {
-              $cond: {
-                if: {
-                  $or: [
-                    { $eq: ['$transportes.operador', null] },
-                    { $eq: ['$transportes.operador', ''] },
-                    { $eq: ['$transportes.operador', undefined] }
-                  ]
-                },
-                then: 'N/A',
-                else: '$transportes.operador'
-              }
-            }
-          }
-        },
-        { $group: { _id: '$transportes.operador', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            nombre: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all transport operators:', error);
-    }
-
-    res.status(200).json({
-      totalBitacoras,
-      nuevasBitacoras,
-      enProcesoBitacoras,
-      cerradasBitacoras,
-      totalBitacorasConAnomalias,
-      totalUsers,
-      totalClients,
-      recentActivity: formattedActivity,
-      monthlyData,
-      statusTrends,
-      eventDistribution: formattedEventDistribution,
-      eventCategoriesStats,
-      geographicData,
-      operatorEfficiency,
-      clientPerformance,
-      tiposMonitoreo: formattedTiposMonitoreo,
-      topClients,
-      topOperadores,
-      topLineasTransporte,
-      topOperadoresTransportes
+    res.json({
+      operatorEfficiency: efficiency,
+      clientPerformance: performance
     });
-
   } catch (err) {
-    console.error('[GET /dashboard/stats] Error:', err);
-    res.status(500).json({ error: 'Failed to fetch dashboard statistics' });
+    console.error('[GET /dashboard/performance] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch performance stats' });
   }
 });
-
 // Process-level cache for anomaly EventTypes (refreshed every 5 min)
 let _anomalyEventTypeCache = null;
 let _anomalyEventTypeCacheTime = 0;
@@ -5720,7 +6038,220 @@ async function getCachedAnomalyEventTypes() {
   return eventTypes;
 }
 
+// Process-level cache for /dashboard/summary-counts (refreshed every 60s)
+let _summaryCountsCache = null;
+let _summaryCountsCacheTime = 0;
+const SUMMARY_COUNTS_CACHE_TTL = 60 * 1000;
+
 // Dashboard Stats for Anomalias Dashboard (without default time filters)
+// Get geographic data independently
+app.get('/dashboard/geographic-stats', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    const role = await Role.findOne({ name: user.role });
+    if (!role) {
+      return res.status(401).json({ message: 'Role not found' });
+    }
+
+    const {
+      clientFilter = 'all',
+      fechaDesde = '',
+      fechaHasta = '',
+      lineaTransporte = 'all',
+      operador = 'all',
+      geoType = 'origen'
+    } = req.query;
+
+    let bitacoraFilter = { deleted: { $ne: true } };
+
+    // Apply client permissions
+    if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
+      const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
+      if (clientFilter !== 'all') {
+        if (!allowedClientNames.includes(clientFilter)) {
+          return res.status(403).json({ message: 'Access denied to this client' });
+        }
+        bitacoraFilter.cliente = clientFilter;
+      } else {
+        bitacoraFilter.cliente = { $in: allowedClientNames };
+      }
+    } else if (clientFilter !== 'all') {
+      bitacoraFilter.cliente = clientFilter;
+    }
+
+    // Date filter
+    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
+      const startDate = new Date(fechaDesde);
+      const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
+      if (!isNaN(startDate) && !isNaN(endDate)) {
+        bitacoraFilter.createdAt = { $gte: startDate, $lte: endDate };
+      }
+    }
+
+    // Transport line and Operator filters (applied similarly to stats endpoint)
+    if (lineaTransporte !== 'all') {
+      bitacoraFilter.lineaTransporte = lineaTransporte;
+    }
+    if (operador !== 'all') {
+      bitacoraFilter.operador = operador;
+    }
+
+    // User permissions (non-read_all)
+    if (!role.bitacoras?.read_all) {
+      const userFullName = `${user.firstName} ${user.lastName}`;
+      const userFilter = {
+        $or: [
+          { operador: userFullName },
+          { 'transportes.operador': userFullName }
+        ]
+      };
+      
+      if (bitacoraFilter.$and) {
+        bitacoraFilter.$and.push(userFilter);
+      } else if (Object.keys(bitacoraFilter).length > 1 || bitacoraFilter.deleted) {
+        const existing = { ...bitacoraFilter };
+        bitacoraFilter = { $and: [existing, userFilter] };
+      } else {
+        Object.assign(bitacoraFilter, userFilter);
+      }
+    }
+
+    let geographicData = [];
+    if (geoType === 'destino') {
+      geographicData = await Bitacora.aggregate([
+        { $match: bitacoraFilter },
+        { $group: { _id: '$destino', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        {
+          $addFields: {
+            destinoForLookup: {
+              $cond: {
+                if: {
+                  $and: [
+                    { $eq: [{ $type: '$_id' }, 'string'] },
+                    { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
+                  ]
+                },
+                then: { $toObjectId: '$_id' },
+                else: '$_id'
+              }
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: 'destinos',
+            localField: 'destinoForLookup',
+            foreignField: '_id',
+            as: 'destinoInfoById'
+          }
+        },
+        {
+          $lookup: {
+            from: 'destinos',
+            localField: '_id',
+            foreignField: 'nombre',
+            as: 'destinoInfoByName'
+          }
+        },
+        {
+          $addFields: {
+            destinoInfo: {
+              $cond: {
+                if: { $gt: [{ $size: '$destinoInfoById' }, 0] },
+                then: '$destinoInfoById',
+                else: '$destinoInfoByName'
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            name: {
+              $cond: {
+                if: { $gt: [{ $size: '$destinoInfo' }, 0] },
+                then: { $arrayElemAt: ['$destinoInfo.nombre', 0] },
+                else: '$_id'
+              }
+            },
+            count: 1
+          }
+        }
+      ]);
+    } else {
+      geographicData = await Bitacora.aggregate([
+        { $match: bitacoraFilter },
+        { $group: { _id: '$origen', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        {
+          $addFields: {
+            origenForLookup: {
+              $cond: {
+                if: {
+                  $and: [
+                    { $eq: [{ $type: '$_id' }, 'string'] },
+                    { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
+                  ]
+                },
+                then: { $toObjectId: '$_id' },
+                else: '$_id'
+              }
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: 'origens',
+            localField: 'origenForLookup',
+            foreignField: '_id',
+            as: 'origenInfoById'
+          }
+        },
+        {
+          $lookup: {
+            from: 'origens',
+            localField: '_id',
+            foreignField: 'nombre',
+            as: 'origenInfoByName'
+          }
+        },
+        {
+          $addFields: {
+            origenInfo: {
+              $cond: {
+                if: { $gt: [{ $size: '$origenInfoById' }, 0] },
+                then: '$origenInfoById',
+                else: '$origenInfoByName'
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            name: {
+              $cond: {
+                if: { $gt: [{ $size: '$origenInfo' }, 0] },
+                then: { $arrayElemAt: ['$origenInfo.nombre', 0] },
+                else: '$_id'
+              }
+            },
+            count: 1
+          }
+        }
+      ]);
+    }
+
+    res.json(geographicData);
+  } catch (error) {
+    console.error('Error fetching geographic stats:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.get('/dashboard/anomalias-stats', async (req, res) => {
   try {
     console.log('=== DEBUG: /dashboard/anomalias-stats ===');
@@ -6032,6 +6563,7 @@ app.get('/dashboard/monthly-trend', async (req, res) => {
 
       monthlyData.push({
         month: months[i],
+        year: parseInt(yearFilter),
         value: monthCount
       });
     }
@@ -6911,10 +7443,7 @@ app.get('/dashboard/bitacoras-anomalias', async (req, res) => {
       // Build structured GPS readings per transporte unit, preserving unit identity
       const gpsTransportes = evento?.transportes || [];
       const gpsReadings = gpsTransportes.map((t) => {
-        const gpsSrc = (t.gpsData && t.gpsData.length > 0) ? t.gpsData
-                     : (t.gpsUnits && t.gpsUnits.length > 0) ? t.gpsUnits
-                     : [];
-        const g = gpsSrc[0]; // most recent reading for this unit
+        const g = (t.gpsData && t.gpsData.length > 0) ? t.gpsData[0] : null;
         const unitName = g?.name || t.gpsUnits?.[0]?.name || t.placa || null;
         const get = (field) => {
           const fromG = g?.data?.[field];
@@ -7865,6 +8394,91 @@ app.get('/dashboard/event-categories-stats', async (req, res) => {
   } catch (error) {
     console.error('[GET /dashboard/event-categories-stats] Error:', error);
     res.status(500).json({ error: 'Failed to fetch event categories statistics' });
+  }
+});
+
+// ── SUMMARY COUNTS ─────────────────────────────────────────────
+// Lightweight endpoint returning 4 KPI counts. Cached 60s in-memory.
+app.get("/dashboard/summary-counts", async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: "User not found" });
+
+    const now = Date.now();
+    if (_summaryCountsCache && now - _summaryCountsCacheTime < SUMMARY_COUNTS_CACHE_TTL) {
+      return res.json(_summaryCountsCache);
+    }
+
+    // 1. Total Bitácoras (not deleted)
+    const totalBitacoras = Bitacora.countDocuments({ deleted: { $ne: true } });
+
+    // 2. En Patio counts (both models)
+    const tractoresEnPatio = ControlPatios.countDocuments({ status: "En patio" });
+    const remolquesEnPatio = RemolqueVisita.countDocuments({ status: "En patio" });
+
+    // 3. Current Alerts — count of Wialon notification rules
+    const currentAlerts = (async () => {
+      const token = process.env.WIALON_API_TOKEN;
+      if (!token) return 0;
+      const loginData = await wialonApiCall("token/login", { token });
+      if (loginData.error) return 0;
+      const sid = loginData.eid;
+      try {
+        const data = await wialonApiCall("core/search_items", {
+          spec: { itemsType: "avl_resource", propName: "*", propValueMask: "*", sortType: "sys_name" },
+          force: 1,
+          flags: 0x0400,
+          from: 0, to: 1000
+        }, sid);
+        if (!data.items) return 0;
+        let count = 0;
+        for (const r of data.items) {
+          if (r.unf) count += Object.keys(r.unf).length;
+        }
+        return count;
+      } finally {
+        wialonApiCall("core/logout", {}, sid).catch(() => {});
+      }
+    })();
+
+    // 4. Active Units — units with position update in last 10 minutes
+    const activeUnits = (async () => {
+      const token = process.env.WIALON_API_TOKEN;
+      if (!token) return 0;
+      const loginData = await wialonApiCall("token/login", { token });
+      if (loginData.error) return 0;
+      const sid = loginData.eid;
+      try {
+        const data = await wialonApiCall("core/search_items", {
+          spec: { itemsType: "avl_unit", propName: "*", propValueMask: "*", sortType: "sys_name" },
+          force: 1,
+          flags: 0x1,
+          from: 0, to: 1000
+        }, sid);
+        console.log(`[SummaryCounts] activeUnits: ${data.totalItemsCount || data.items?.length || 0}`);
+        return data.totalItemsCount || data.items?.length || 0;
+      } finally {
+        wialonApiCall("core/logout", {}, sid).catch(() => {});
+      }
+    })();
+
+    const [totalBitacorasCount, tractoresCount, remolquesCount, alertsCount, unitsCount] =
+      await Promise.all([totalBitacoras, tractoresEnPatio, remolquesEnPatio, currentAlerts, activeUnits]);
+
+    const result = {
+      totalBitacoras: totalBitacorasCount,
+      enPatio: { tractores: tractoresCount, remolques: remolquesCount },
+      currentAlerts: alertsCount,
+      activeUnits: unitsCount
+    };
+
+    _summaryCountsCache = result;
+    _summaryCountsCacheTime = now;
+
+    res.json(result);
+  } catch (err) {
+    console.error("Error in /dashboard/summary-counts:", err);
+    res.status(500).json({ error: "Failed to fetch summary counts" });
   }
 });
 

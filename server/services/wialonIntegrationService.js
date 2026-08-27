@@ -20,12 +20,17 @@ class WialonIntegrationService {
   async _call(svc, params, sid = null) {
     const url = new URL(this.baseUrl);
     url.searchParams.append("svc", svc);
-    url.searchParams.append("params", JSON.stringify(params));
     if (sid) {
       url.searchParams.append("sid", sid);
     }
 
-    const response = await fetch(url.toString(), { method: "POST" });
+    const formData = new URLSearchParams();
+    formData.append("params", JSON.stringify(params));
+
+    const response = await fetch(url.toString(), { 
+      method: "POST",
+      body: formData
+    });
     const data = await response.json();
 
     if (data.error) {
@@ -192,9 +197,58 @@ class WialonIntegrationService {
     return this.activateIntegration(integrationId, mappingIds);
   }
 
-  // -----------------------------------------------------------------------
-  // Phase 2: Batch import_messages
-  // -----------------------------------------------------------------------
+  /**
+   * Fetch notifications (alerts) from Wialon resources.
+   * Notifications are stored in resources (avl_resource).
+   */
+  async fetchNotifications(sid) {
+    // 0x0400 = Notifications flag
+    const params = {
+      spec: {
+        itemsType: "avl_resource",
+        propName: "sys_name",
+        propValueMask: "*",
+        sortType: "sys_name"
+      },
+      force: 1,
+      flags: 0x0400 | 0x01, 
+      from: 0,
+      to: 0
+    };
+    
+    const data = await this._call("core/search_items", params, sid);
+    const alerts = [];
+    
+    if (data.items) {
+      for (const resource of data.items) {
+        if (resource.unf) {
+          Object.values(resource.unf).forEach(notification => {
+            alerts.push({
+              resourceId: resource.id,
+              resourceName: resource.nm,
+              ...notification
+            });
+          });
+        }
+      }
+    }
+    return alerts;
+  }
+
+  /**
+   * Fetch recent events/messages from Wialon for a unit.
+   */
+  async getUnitEvents(unitId, from, to, sid) {
+    const params = {
+      itemId: parseInt(unitId, 10),
+      timeFrom: from,
+      timeTo: to,
+      flags: 0,
+      flags2: 0,
+      mode: 0
+    };
+    return this._call("unit/get_events", params, sid);
+  }
 
   /**
    * Build a Wialon-compatible WLN payload from a list of InboundMessage docs.
@@ -259,15 +313,24 @@ class WialonIntegrationService {
   async _importMessagesForUnit(unitId, wlnContent, sid) {
     const formData = new FormData();
     const eventHash = crypto.randomUUID();
+    
+    const params = { itemId: parseInt(unitId, 10), conversionType: "msgsToUnit" };
+    
+    // Wialon usually allows params and sid in the query string or as part of the form body.
+    // For multipart/form-data, we can try adding them to the form data.
+    formData.append("params", JSON.stringify(params));
     formData.append("eventHash", eventHash);
     formData.append("file", new Blob([wlnContent], { type: "text/plain" }), "messages.wln");
 
-    const params = encodeURIComponent(
-      JSON.stringify({ itemId: parseInt(unitId, 10), conversionType: "msgsToUnit" })
-    );
-    const url = `${this.baseUrl}?svc=exchange/import_messages&params=${params}&sid=${sid}`;
+    const url = new URL(this.baseUrl);
+    url.searchParams.append("svc", "exchange/import_messages");
+    if (sid) url.searchParams.append("sid", sid);
 
-    const response = await fetch(url, { method: "POST", body: formData });
+    const response = await fetch(url.toString(), { 
+      method: "POST", 
+      body: formData 
+    });
+
     const data = await response.json().catch(() => ({}));
     if (data?.error) {
       throw new Error(`Wialon import_messages error ${data.error}: ${this._getErrorText(data.error)}`);
@@ -288,7 +351,12 @@ class WialonIntegrationService {
       return { pushed: 0, failed: 0, skipped: 0, reason: "no-wialon-token" };
     }
 
-    const messages = await InboundMessage.find({ integrationId, wialonStatus: "pending" })
+    const MAX_ATTEMPTS = 5;
+    const messages = await InboundMessage.find({ 
+      integrationId, 
+      wialonStatus: "pending",
+      wialonAttempts: { $lt: MAX_ATTEMPTS }
+    })
       .sort({ createdAt: 1 })
       .limit(BATCH_LIMIT)
       .populate("vehicleMappingId");
@@ -364,7 +432,10 @@ class WialonIntegrationService {
    * Designed to be called on a setInterval.
    */
   async pushAllPending() {
-    const integrationIds = await InboundMessage.distinct("integrationId", { wialonStatus: "pending" });
+    const integrationIds = await InboundMessage.distinct("integrationId", { 
+      wialonStatus: "pending",
+      wialonAttempts: { $lt: 5 }
+    });
     if (integrationIds.length === 0) return { integrations: 0, pushed: 0, failed: 0, skipped: 0 };
 
     let totals = { integrations: 0, pushed: 0, failed: 0, skipped: 0 };

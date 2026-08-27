@@ -1,4 +1,4 @@
-import {useEffect, useRef} from "react";
+import React, {useEffect, useRef} from "react";
 import usePagination from "../hooks/usePagination";
 import {Select} from "./Select";
 
@@ -136,6 +136,9 @@ const DataTable = ({
   highlightId = null,
   rowClassName = null,
   loading = false,
+  renderExpansion = null,
+  expandedRows = [],
+  onExpandedRowsChange = null,
   // ── Server-side mode ────────────────────────────────────────
   // Pass these to take over pagination externally (e.g. API-paginated data).
   serverSide = false,
@@ -202,8 +205,25 @@ const DataTable = ({
     return !!action.show;
   };
 
+  const isExpanded = (row) => {
+    const key = getRowKey(row);
+    return Array.isArray(expandedRows) ? expandedRows.includes(key) : false;
+  };
+
+  const toggleExpand = (row, e) => {
+    if (!renderExpansion) return;
+    // Don't toggle if clicking a button or link
+    if (e.target.closest("button, a")) return;
+
+    const key = getRowKey(row);
+    const newExpanded = isExpanded(row)
+      ? expandedRows.filter((k) => k !== key)
+      : [...expandedRows, key];
+    onExpandedRowsChange?.(newExpanded);
+  };
+
   return (
-    <div className="table-wrapper" style={maxHeight === "100%" ? undefined : {maxHeight, overflowY: "auto"}}>
+    <div className="table-wrapper reusable-datatable" style={maxHeight === "100%" ? undefined : {maxHeight, overflowY: "auto"}}>
       <div className="table-responsive">
           <table className="table">
             <thead
@@ -254,46 +274,62 @@ const DataTable = ({
                 displayData.map((row, rowIndex) => {
                   const key = getRowKey(row);
                   const isHighlighted = highlightId && key === highlightId;
+                  const expanded = isExpanded(row);
                   const extraClass = typeof rowClassName === "function" ? rowClassName(row) : (rowClassName || "");
+                  
                   return (
-                  <tr
-                    key={key}
-                    ref={isHighlighted ? highlightRef : null}
-                    className={[isHighlighted ? "dt-row-highlighted" : "", extraClass].filter(Boolean).join(" ")}
-                  >
-                    {columns.map((col) => (
-                      <td
-                        key={col.key}
-                        className={[col.className, col.cellClassName].filter(Boolean).join(" ")}
-                        data-label={typeof col.header === "string" ? col.header : col.key}>
-                        {col.render
-                          ? col.render(row, {rowIndex, currentPage, itemsPerPage})
-                          : (row[col.key] ?? "")}
-                      </td>
-                    ))}
-                    {hasActions && (
-                      <td className="text-end" data-label="Acciones">
-                        <div className="action-buttons">
-                          {actions.map((action, i) => {
-                            if (!isActionVisible(action, row)) return null;
-                            return (
-                              <button
-                                key={i}
-                                type="button"
-                                className={action.className}
-                                title={action.title}
-                                onClick={() => action.onClick(row)}>
-                                {action.icon && <i className={action.icon}></i>}
-                                {action.label && (
-                                  <span className={action.icon ? "ms-1" : ""}>{action.label}</span>
-                                )}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </td>
-                    )}
-                  </tr>
+                    <React.Fragment key={key}>
+                      <tr
+                        ref={isHighlighted ? highlightRef : null}
+                        className={[
+                          isHighlighted ? "dt-row-highlighted" : "",
+                          expanded ? "dt-row-expanded" : "",
+                          renderExpansion ? "dt-row-expandable" : "",
+                          extraClass
+                        ].filter(Boolean).join(" ")}
+                        onClick={(e) => toggleExpand(row, e)}
+                      >
+                        {columns.map((col) => (
+                          <td
+                            key={col.key}
+                            className={[col.className, col.cellClassName].filter(Boolean).join(" ")}
+                            data-label={typeof col.header === "string" ? col.header : col.key}>
+                            {col.render
+                              ? col.render(row, {rowIndex, currentPage, itemsPerPage, isExpanded: expanded})
+                              : (row[col.key] ?? "")}
+                          </td>
+                        ))}
+                        {hasActions && (
+                          <td className="text-end" data-label="Acciones">
+                            <div className="action-buttons">
+                              {actions.map((action, i) => {
+                                if (!isActionVisible(action, row)) return null;
+                                return (
+                                  <button
+                                    key={i}
+                                    type="button"
+                                    className={action.className}
+                                    title={action.title}
+                                    onClick={() => action.onClick(row)}>
+                                    {action.icon && <i className={action.icon}></i>}
+                                    {action.label && (
+                                      <span className={action.icon ? "ms-1" : ""}>{action.label}</span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                      {expanded && renderExpansion && (
+                        <tr className="dt-expansion-row">
+                          <td colSpan={colCount} className="dt-expansion-cell">
+                            {renderExpansion(row)}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })
               )}

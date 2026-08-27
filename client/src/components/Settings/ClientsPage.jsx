@@ -1,8 +1,8 @@
 import {useState, useEffect, useMemo} from "react";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
-import ClientCard from "./ClientCard";
 import ModalTemplate from "../ModalTemplate";
+import DataTable from "../DataTable";
 import FilterBar from "../FilterBar";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
@@ -15,15 +15,6 @@ const emptyForm = {
 };
 
 const emptyContact = {nombres: "", apellidos: "", telefono: "", email: "", pais: ""};
-
-const Field = ({label, id, value, onChange, type = "text", required = false}) => (
-  <div>
-    <span className="pselect__label">{label}{required && <span className="text-danger ms-1">*</span>}</span>
-    <div className="pdt-field">
-      <input type={type} className="pdt-field__input" id={id} value={value} onChange={onChange} />
-    </div>
-  </div>
-);
 
 const ClientsPage = () => {
   const [clients, setClients]       = useState([]);
@@ -146,29 +137,40 @@ const ClientsPage = () => {
 
   const hasActiveFilters = !!search;
 
-  const clientFields = [
-    {id: "razon_social", label: "Razón Social", required: true},
-    {id: "RFC", label: "RFC"},
-    {id: "calle", label: "Calle"},
-    {id: "num_ext", label: "Núm. Ext."},
-    {id: "num_int", label: "Núm. Int."},
-    {id: "colonia", label: "Colonia"},
-    {id: "alcaldia", label: "Alcaldía"},
-    {id: "ciudad", label: "Ciudad"},
-    {id: "codigo_postal", label: "Código Postal"},
-    {id: "clave_pais", label: "Clave País"},
+  const columns = [
+    {
+      key: "ID_Cliente",
+      header: "ID",
+      width: "60px",
+      className: "text-center fw-bold",
+      render: (row) => String(row.ID_Cliente || "").padStart(4, "0"),
+    },
+    {key: "razon_social", header: "Razón Social"},
+    {key: "RFC", header: "RFC"},
+    {key: "ciudad", header: "Ciudad"},
+    {
+      key: "contacto",
+      header: "Contacto",
+      render: (row) => [row.contacto?.nombres, row.contacto?.apellidos].filter(Boolean).join(" ") || "—",
+    },
   ];
 
-  const contactFields = [
-    {id: "c_nombres", label: "Nombres", required: true},
-    {id: "c_apellidos", label: "Apellidos", required: true},
-    {id: "c_email", label: "Email", type: "email", required: true},
-    {id: "c_telefono", label: "Teléfono"},
-    {id: "c_pais", label: "País"},
+  const actions = [
+    {
+      icon: "fas fa-edit",
+      className: "action-btn btn-primary",
+      title: "Editar",
+      show: roleData?.clientes?.update,
+      onClick: (row) => openEdit(row),
+    },
+    {
+      icon: "fas fa-trash",
+      className: "action-btn btn-danger",
+      title: "Eliminar",
+      show: roleData?.clientes?.delete,
+      onClick: (row) => openDelete(row),
+    },
   ];
-
-  const getFieldValue = (id) =>
-    id.startsWith("c_") ? (formData.contacto[id.slice(2)] || "") : (formData[id] || "");
 
   return (
     <section id="clientsPage" className="settings-page">
@@ -182,7 +184,7 @@ const ClientsPage = () => {
             hasActiveFilters={hasActiveFilters}
             onClearFilters={() => setSearch("")}
             filters={
-              <FilterBar>
+              <FilterBar onClear={() => setSearch("")}>
                 <div>
                   <span className="pselect__label">Buscar</span>
                   <div className="pdt-field">
@@ -190,7 +192,7 @@ const ClientsPage = () => {
                     <input
                       type="text"
                       className="pdt-field__input"
-                      placeholder="Razón social, RFC, ciudad, contacto…"
+                      placeholder="Razón social, RFC, ciudad..."
                       value={search}
                       onChange={(e) => setSearch(e.target.value)}
                     />
@@ -206,41 +208,15 @@ const ClientsPage = () => {
             )}
           </PageHeader>
 
-          <div className="cc-shell">
-            {isLoading ? (
-              <div className="cl-list">
-                {Array.from({length: 6}).map((_, i) => (
-                  <div key={i} className="cl-card cl-card--skeleton">
-                    <div className="cl-card__header">
-                      <div className="cl-card__header-left">
-                        <div className="cc-skeleton cc-skeleton--line" style={{width: 36, height: 20, flexShrink: 0}}></div>
-                        <div style={{display: "flex", flexDirection: "column", gap: 6}}>
-                          <div className="cc-skeleton cc-skeleton--line" style={{width: `${140 + (i * 23) % 80}px`}}></div>
-                          <div className="cc-skeleton cc-skeleton--line" style={{width: 72, height: 10}}></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : filteredClients.length === 0 ? (
-              <div className="cc-empty">
-                <i className="fa fa-building cc-empty__icon"></i>
-                <p className="cc-empty__text">{search ? "Sin resultados para tu búsqueda." : "No hay clientes registrados."}</p>
-              </div>
-            ) : (
-              <div className="cl-list">
-                {filteredClients.map((client) => (
-                  <ClientCard
-                    key={client._id}
-                    client={client}
-                    roleData={roleData}
-                    onEdit={openEdit}
-                    onDelete={openDelete}
-                  />
-                ))}
-              </div>
-            )}
+          <div className="bits-table-shell">
+            <DataTable
+              loading={isLoading}
+              maxHeight="100%"
+              data={filteredClients}
+              columns={columns}
+              actions={actions}
+              emptyMessage="No se encontraron clientes que coincidan con los filtros."
+            />
           </div>
         </div>
       </div>
@@ -252,18 +228,69 @@ const ClientsPage = () => {
           title={isEditing ? "Editar Cliente" : "Nuevo Cliente"}
           onClose={closeModal}
           onSubmit={handleSubmit}>
-          <div className="cc-modal-body">
+          <div className="cc-modal-body" style={{maxHeight: "60vh", overflowY: "auto", paddingRight: "6px"}}>
             <p className="cc-modal-section-label">Datos del cliente</p>
-            <div className="cc-modal-grid">
-              {clientFields.map(({id, label, required}) => (
-                <Field key={id} id={id} label={label} required={required} value={getFieldValue(id)} onChange={handleChange} />
-              ))}
+            <div className="row g-3 mb-4">
+              <div className="col-md-6">
+                <label htmlFor="razon_social" className="form-label">Razón Social *</label>
+                <input type="text" className="form-control" id="razon_social" value={formData.razon_social} onChange={handleChange} required />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="RFC" className="form-label">RFC</label>
+                <input type="text" className="form-control" id="RFC" value={formData.RFC} onChange={handleChange} />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="calle" className="form-label">Calle</label>
+                <input type="text" className="form-control" id="calle" value={formData.calle} onChange={handleChange} />
+              </div>
+              <div className="col-md-3">
+                <label htmlFor="num_ext" className="form-label">Núm. Ext.</label>
+                <input type="text" className="form-control" id="num_ext" value={formData.num_ext} onChange={handleChange} />
+              </div>
+              <div className="col-md-3">
+                <label htmlFor="num_int" className="form-label">Núm. Int.</label>
+                <input type="text" className="form-control" id="num_int" value={formData.num_int} onChange={handleChange} />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="colonia" className="form-label">Colonia</label>
+                <input type="text" className="form-control" id="colonia" value={formData.colonia} onChange={handleChange} />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="alcaldia" className="form-label">Alcaldía</label>
+                <input type="text" className="form-control" id="alcaldia" value={formData.alcaldia} onChange={handleChange} />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="ciudad" className="form-label">Ciudad</label>
+                <input type="text" className="form-control" id="ciudad" value={formData.ciudad} onChange={handleChange} />
+              </div>
+              <div className="col-md-3">
+                <label htmlFor="codigo_postal" className="form-label">C.P.</label>
+                <input type="text" className="form-control" id="codigo_postal" value={formData.codigo_postal} onChange={handleChange} />
+              </div>
+              <div className="col-md-3">
+                <label htmlFor="clave_pais" className="form-label">País</label>
+                <input type="text" className="form-control" id="clave_pais" value={formData.clave_pais} onChange={handleChange} />
+              </div>
             </div>
-            <p className="cc-modal-section-label" style={{marginTop: 20}}>Contacto</p>
-            <div className="cc-modal-grid">
-              {contactFields.map(({id, label, type, required}) => (
-                <Field key={id} id={id} label={label} type={type} required={required} value={getFieldValue(id)} onChange={handleChange} />
-              ))}
+
+            <p className="cc-modal-section-label">Contacto</p>
+            <div className="row g-3">
+              <div className="col-md-6">
+                <label htmlFor="c_nombres" className="form-label">Nombres *</label>
+                <input type="text" className="form-control" id="c_nombres" value={formData.contacto.nombres} onChange={handleChange} required />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="c_apellidos" className="form-label">Apellidos *</label>
+                <input type="text" className="form-control" id="c_apellidos" value={formData.contacto.apellidos} onChange={handleChange} required />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="c_email" className="form-label">Email *</label>
+                <input type="email" className="form-control" id="c_email" value={formData.contacto.email} onChange={handleChange} required />
+              </div>
+              <div className="col-md-6">
+                <label htmlFor="c_telefono" className="form-label">Teléfono</label>
+                <input type="text" className="form-control" id="c_telefono" value={formData.contacto.telefono} onChange={handleChange} />
+              </div>
             </div>
           </div>
         </ModalTemplate>

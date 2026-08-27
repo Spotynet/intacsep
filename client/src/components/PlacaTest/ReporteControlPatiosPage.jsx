@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import "jspdf-autotable";
@@ -6,9 +6,16 @@ import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
+import FilterBar from "../FilterBar";
+import DataTable from "../DataTable";
+import { Select } from "../Select";
+import DatePicker from "../DatePicker";
+import CellBadge from "../CellBadge";
 import { useAuth } from "../../context/AuthContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { fetchLineasTransporte } from "../../utils/api";
+
+import { getAllowedClients } from "../../utils/clientPermissions";
 
 const baseUrl = import.meta.env.VITE_BASE_URL;
 
@@ -41,26 +48,23 @@ const calcDuration = (entrada, salida) => {
 
 const SwapBadge = ({ record }) => {
   if (record.hubo_cambio_remolque === true)
-    return <span className="badge bg-warning text-dark">Cambio remolque</span>;
+    return <CellBadge label="Cambio remolque" variant="yellow" />;
   if (record.hubo_cambio_remolque === false)
-    return <span className="badge bg-success">Salió igual</span>;
+    return <CellBadge label="Salió igual" variant="green" />;
   if (record.placa_remolque_entrada && !record.fecha_hora_salida)
-    return <span className="badge bg-secondary">En patio</span>;
+    return <CellBadge label="En patio" variant="blue" />;
   return <span className="text-muted small">—</span>;
 };
 
-const StatCard = ({ label, value, icon, color }) => (
-  <div className="col-6 col-md-3">
-    <div className="card border-0 shadow-sm h-100">
-      <div className="card-body d-flex align-items-center gap-3">
-        <div className="rounded-circle d-flex align-items-center justify-content-center text-white"
-          style={{ width: 48, height: 48, background: color, flexShrink: 0 }}>
-          <i className={`fa ${icon}`}></i>
-        </div>
-        <div>
-          <div className="fs-4 fw-bold lh-1">{value}</div>
-          <div className="text-muted small">{label}</div>
-        </div>
+const MetricCard = ({ label, value, icon, variant = "duration" }) => (
+  <div className="col-md-3 col-6">
+    <div className="metric-card">
+      <div className={`metric-card__icon metric-card__icon--${variant}`}>
+        <i className={`fa ${icon}`}></i>
+      </div>
+      <div className="metric-card__body">
+        <div className="metric-card__value">{value}</div>
+        <div className="metric-card__label">{label}</div>
       </div>
     </div>
   </div>
@@ -80,10 +84,11 @@ const ReporteControlPatiosPage = () => {
   const [activeTab, setActiveTab] = useState("camiones"); // "camiones" | "remolques"
 
   const today = new Date();
-  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const lastMonth = new Date();
+  lastMonth.setDate(today.getDate() - 30);
 
   const [filters, setFilters] = useState({
-    desde: toLocalDateStr(firstOfMonth),
+    desde: toLocalDateStr(lastMonth),
     hasta: toLocalDateStr(today),
     cliente: "",
     linea: "",
@@ -91,6 +96,32 @@ const ReporteControlPatiosPage = () => {
     cambio: "", // "" | "true" | "false"
     placa: "",
   });
+
+  const hasActiveFilters = useMemo(() => {
+    const today = new Date();
+    const lastMonth = new Date();
+    lastMonth.setDate(today.getDate() - 30);
+    const defaultStart = toLocalDateStr(lastMonth);
+    const defaultEnd = toLocalDateStr(today);
+
+    return !!(filters.cliente || filters.linea || filters.status || filters.cambio || filters.placa ||
+           filters.desde !== defaultStart || filters.hasta !== defaultEnd);
+  }, [filters]);
+
+  const handleClearFilters = () => {
+    const today = new Date();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(today.getDate() - 30);
+    setFilters({
+      desde: toLocalDateStr(thirtyDaysAgo),
+      hasta: toLocalDateStr(today),
+      cliente: "",
+      linea: "",
+      status: "",
+      cambio: "",
+      placa: "",
+    });
+  };
 
   useEffect(() => {
     const init = async () => {
@@ -301,103 +332,146 @@ const ReporteControlPatiosPage = () => {
     saveAs(new Blob([buffer], { type: "application/octet-stream" }), `reporte-patios-${filters.desde}-${filters.hasta}.xlsx`);
   };
 
+  const visibleClients = useMemo(() => getAllowedClients(roleData, clients), [roleData, clients]);
+
+  const clientOptions = useMemo(() => visibleClients.map(c => ({ value: c.razon_social, label: c.razon_social })), [visibleClients]);
+  const lineaOptions  = useMemo(() => lineas.map(l => ({ value: l.nombre, label: l.nombre })), [lineas]);
+  const statusOptions = [
+    { value: "En patio", label: "En patio" },
+    { value: "Finalizado", label: "Finalizado" }
+  ];
+  const cambioOptions = [
+    { value: "true", label: "Con cambio" },
+    { value: "false", label: "Sin cambio" }
+  ];
+
+  const tractorColumns = [
+    {key: "placa", header: "Placa Camión", className: "fw-bold text-uppercase"},
+    {key: "placa_remolque_entrada", header: "Rem. Entrada", render: (r) => r.placa_remolque_entrada || "—"},
+    {
+      key: "placa_remolque_salida",
+      header: "Rem. Salida",
+      render: (r) => r.placa_remolque_salida || (r.fecha_hora_salida ? <span className="text-muted small">Sin remolque</span> : "—")
+    },
+    {key: "cambio", header: "Cambio", render: (r) => <SwapBadge record={r} />},
+    {key: "linea_transporte", header: "Línea"},
+    {key: "cliente", header: "Cliente", render: (r) => r.cliente || "—"},
+    {key: "fecha_hora_inicio", header: "Entrada", render: (r) => formatDate(r.fecha_hora_inicio)},
+    {key: "fecha_hora_salida", header: "Salida", render: (r) => formatDate(r.fecha_hora_salida)},
+    {key: "duracion", header: "Duración", render: (r) => formatDuration(calcDuration(r.fecha_hora_inicio, r.fecha_hora_salida))},
+    {
+      key: "status",
+      header: "Estado",
+      render: (r) => <CellBadge label={r.status} variant={r.status === "En patio" ? "blue" : "green"} />
+    },
+    {
+      key: "confidence",
+      header: "Confianza",
+      render: (r) => (
+        r.confidence != null
+          ? <CellBadge 
+              label={`${r.confidence.toFixed(1)}%`} 
+              variant={r.confidence >= 85 ? "green" : r.confidence >= 60 ? "yellow" : "red"} 
+            />
+          : <CellBadge label="N/A" variant="gray" />
+      )
+    },
+  ];
+
+  const remolqueColumns = [
+    {key: "placa", header: "Placa Remolque", className: "fw-bold text-uppercase"},
+    {key: "tractor_entrada_placa", header: "Camión Entrada", render: (r) => r.tractor_entrada_placa || "—"},
+    {key: "tractor_salida_placa", header: "Camión Salida", render: (r) => r.tractor_salida_placa || "—"},
+    {
+      key: "hubo_cambio_tractor",
+      header: "Cambio Camión",
+      render: (r) => (
+        r.hubo_cambio_tractor === true
+          ? <CellBadge label="Cambió camión" variant="yellow" />
+          : r.hubo_cambio_tractor === false
+            ? <CellBadge label="Mismo camión" variant="green" />
+            : <span className="text-muted small">—</span>
+      )
+    },
+    {key: "linea_transporte", header: "Línea", render: (r) => r.linea_transporte || "—"},
+    {key: "cliente", header: "Cliente", render: (r) => r.cliente || "—"},
+    {key: "fecha_hora_entrada", header: "Entrada", render: (r) => formatDate(r.fecha_hora_entrada)},
+    {key: "fecha_hora_salida", header: "Salida", render: (r) => formatDate(r.fecha_hora_salida)},
+    {key: "duracion", header: "Duración", render: (r) => formatDuration(calcDuration(r.fecha_hora_entrada, r.fecha_hora_salida))},
+    {
+      key: "status",
+      header: "Estado",
+      render: (r) => <CellBadge label={r.status} variant={r.status === "En patio" ? "blue" : "green"} />
+    },
+  ];
+
   if (!user) return <div>Cargando...</div>;
 
-  const visibleClients = roleData?.client_access === "specific" && roleData?.allowed_clients
-    ? clients.filter(c => roleData.allowed_clients.some(ac => ac.client_name === c.nombre))
-    : clients;
-
   return (
-    <section className="settings-page">
+    <section id="reporteDetallePatiosPage" className="settings-page">
       <div className="w-100 d-flex h-100 mt-0">
         <div className="sidebar-wrapper"><Sidebar /></div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
           <PageHeader
             title="Reporte Control de Patios"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
             filters={
-              <div className="card border-0 shadow-sm mb-0">
-                <div className="card-body p-2">
-                  <div className="row g-2 align-items-end">
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Desde</label>
-                      <input type="date" className="form-control form-control-sm"
-                        value={filters.desde} onChange={e => setFilter("desde", e.target.value)} />
-                    </div>
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Hasta</label>
-                      <input type="date" className="form-control form-control-sm"
-                        value={filters.hasta} onChange={e => setFilter("hasta", e.target.value)} />
-                    </div>
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Placa</label>
-                      <input type="text" className="form-control form-control-sm"
-                        placeholder="Camión o remolque"
-                        value={filters.placa}
-                        onChange={e => setFilter("placa", e.target.value.toUpperCase())} />
-                    </div>
-                    {roleData?.client_access !== "specific" && (
-                      <div className="col-6 col-md-auto">
-                        <label className="form-label small fw-bold mb-1">Cliente</label>
-                        <select className="form-select form-select-sm" value={filters.cliente} onChange={e => setFilter("cliente", e.target.value)}>
-                          <option value="">Todos</option>
-                          {visibleClients.map(c => <option key={c._id} value={c.nombre}>{c.nombre}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Línea</label>
-                      <select className="form-select form-select-sm" value={filters.linea} onChange={e => setFilter("linea", e.target.value)}>
-                        <option value="">Todas</option>
-                        {lineas.map(l => <option key={l._id} value={l.nombre}>{l.nombre}</option>)}
-                      </select>
-                    </div>
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Estado</label>
-                      <select className="form-select form-select-sm" value={filters.status} onChange={e => setFilter("status", e.target.value)}>
-                        <option value="">Todos</option>
-                        <option value="En patio">En patio</option>
-                        <option value="Finalizado">Finalizado</option>
-                      </select>
-                    </div>
-                    <div className="col-6 col-md-auto">
-                      <label className="form-label small fw-bold mb-1">Cambio remolque</label>
-                      <select className="form-select form-select-sm" value={filters.cambio} onChange={e => setFilter("cambio", e.target.value)}>
-                        <option value="">Todos</option>
-                        <option value="true">Con cambio</option>
-                        <option value="false">Sin cambio</option>
-                      </select>
-                    </div>
+              <FilterBar onClear={handleClearFilters}>
+                <div>
+                  <DatePicker label="Desde" value={filters.desde} onChange={v => setFilter("desde", v)} />
+                </div>
+                <div>
+                  <DatePicker label="Hasta" value={filters.hasta} onChange={v => setFilter("hasta", v)} />
+                </div>
+                <div>
+                  <span className="pselect__label">Placa</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-search pdt-field__icon"></i>
+                    <input type="text" className="pdt-field__input"
+                      placeholder="Buscar placa..."
+                      value={filters.placa}
+                      onChange={e => setFilter("placa", e.target.value.toUpperCase())} />
                   </div>
                 </div>
-              </div>
+                <div>
+                  <Select label="Cliente" value={filters.cliente} onChange={v => setFilter("cliente", v)} options={clientOptions} placeholder="Todos" />
+                </div>
+                <div>
+                  <Select label="Línea" value={filters.linea} onChange={v => setFilter("linea", v)} options={lineaOptions} placeholder="Todas" />
+                </div>
+                <div>
+                  <Select label="Estado" value={filters.status} onChange={v => setFilter("status", v)} options={statusOptions} placeholder="Todos" />
+                </div>
+                <div>
+                  <Select label="Cambio remolque" value={filters.cambio} onChange={v => setFilter("cambio", v)} options={cambioOptions} placeholder="Todos" />
+                </div>
+              </FilterBar>
             }
           >
             <div className="d-flex gap-2">
-              <button className="btn btn-outline-success btn-sm px-3" onClick={exportExcel} disabled={records.length === 0 && remolqueRecords.length === 0}>
-                <i className="fa fa-file-excel me-2"></i>Excel
+              <button className="btn-icon btn-icon--success" onClick={exportExcel} title="Exportar Excel" disabled={records.length === 0 && remolqueRecords.length === 0}>
+                <i className="fa fa-file-excel"></i>
               </button>
-              <button className="btn btn-danger btn-sm px-3" onClick={exportPDF} disabled={records.length === 0 && remolqueRecords.length === 0}>
-                <i className="fa fa-file-pdf me-2"></i>PDF
+              <button className="btn-icon btn-icon--danger" onClick={exportPDF} title="Exportar PDF" disabled={records.length === 0 && remolqueRecords.length === 0}>
+                <i className="fa fa-file-pdf"></i>
               </button>
             </div>
           </PageHeader>
 
           <div className="settings-content mt-4">
-            {/* Stat cards */}
-            <div className="row g-3 mb-4">
-              <StatCard label="Total camiones" value={total} icon="fa-truck" color="#0d6efd" />
-              <StatCard label="Camiones en patio" value={enPatio} icon="fa-parking" color="#0dcaf0" />
-              <StatCard label="Con cambio remolque" value={conCambio} icon="fa-exchange-alt" color="#fd7e14" />
-              <StatCard label="Sin cambio remolque" value={sinCambio} icon="fa-check-circle" color="#198754" />
-              <StatCard label="Total remolques" value={remolqueTotal} icon="fa-trailer" color="#6f42c1" />
-              <StatCard label="Remolques en patio" value={remolquesEnPatio} icon="fa-map-marker" color="#0dcaf0" />
-              <StatCard label="Remolques cambiaron camión" value={conCambioTractor} icon="fa-random" color="#dc3545" />
-              <StatCard label="Tiempo promedio camión" value={formatDuration(avgDuration)} icon="fa-clock" color="#6c757d" />
-            </div>
+            <div className="reporte-patios-container">
+              {/* Stat cards */}
+              <div className="row g-3 mb-4">
+                <MetricCard label="Total camiones" value={total} icon="fa-truck" variant="duration" />
+                <MetricCard label="Camiones en patio" value={enPatio} icon="fa-parking" variant="events" />
+                <MetricCard label="Con cambio remolque" value={conCambio} icon="fa-exchange-alt" variant="alerts" />
+                <MetricCard label="Tiempo promedio" value={formatDuration(avgDuration)} icon="fa-clock" variant="duration" />
+              </div>
 
-            {/* Tabs */}
-            <ul className="nav nav-tabs mb-3">
+              {/* Tabs */}
+              <ul className="nav nav-tabs mb-3">
               <li className="nav-item">
                 <button className={`nav-link ${activeTab === "camiones" ? "active" : ""}`} onClick={() => setActiveTab("camiones")}>
                   <i className="fa fa-truck me-2"></i>Camiones ({total})
@@ -410,123 +484,20 @@ const ReporteControlPatiosPage = () => {
               </li>
             </ul>
 
-            {loading ? (
-              <div className="d-flex justify-content-center py-5">
-                <div className="spinner-border text-primary" role="status"></div>
-              </div>
-            ) : activeTab === "camiones" ? (
-              records.length === 0 ? (
-                <div className="text-center text-muted py-5">
-                  <i className="fa fa-inbox fa-2x mb-2 d-block"></i>
-                  No se encontraron registros con los filtros seleccionados.
-                </div>
-              ) : (
-                <div className="table-responsive">
-                  <table className="table table-sm table-hover align-middle">
-                    <thead className="table-dark">
-                      <tr>
-                        <th>Placa Camión</th>
-                        <th>Remolque entrada</th>
-                        <th>Remolque salida</th>
-                        <th>Cambio</th>
-                        <th>Línea</th>
-                        <th>Cliente</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                        <th>Duración</th>
-                        <th>Estado</th>
-                        <th>Confianza</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {records.map(r => {
-                        const dur = calcDuration(r.fecha_hora_inicio, r.fecha_hora_salida);
-                        return (
-                          <tr key={r._id}>
-                            <td className="fw-bold text-uppercase">{r.placa}</td>
-                            <td>{r.placa_remolque_entrada || <span className="text-muted">—</span>}</td>
-                            <td>{r.placa_remolque_salida || (r.fecha_hora_salida ? <span className="text-muted small">Sin remolque</span> : <span className="text-muted">—</span>)}</td>
-                            <td><SwapBadge record={r} /></td>
-                            <td>{r.linea_transporte}</td>
-                            <td>{r.cliente || "—"}</td>
-                            <td>{formatDate(r.fecha_hora_inicio)}</td>
-                            <td>{formatDate(r.fecha_hora_salida)}</td>
-                            <td>{formatDuration(dur)}</td>
-                            <td>
-                              <span className={`badge ${r.status === "En patio" ? "bg-info" : "bg-success"}`}>{r.status}</span>
-                            </td>
-                            <td>
-                              {r.confidence != null
-                                ? <span className={`badge ${r.confidence >= 85 ? "bg-success" : r.confidence >= 60 ? "bg-warning text-dark" : "bg-danger"}`}>
-                                    {r.confidence.toFixed(1)}%
-                                  </span>
-                                : <span className="badge bg-secondary">N/A</span>}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )
-            ) : (
-              remolqueRecords.length === 0 ? (
-                <div className="text-center text-muted py-5">
-                  <i className="fa fa-inbox fa-2x mb-2 d-block"></i>
-                  No se encontraron remolques con los filtros seleccionados.
-                </div>
-              ) : (
-                <div className="table-responsive">
-                  <table className="table table-sm table-hover align-middle">
-                    <thead className="table-dark">
-                      <tr>
-                        <th>Placa Remolque</th>
-                        <th>Camión entrada</th>
-                        <th>Camión salida</th>
-                        <th>Cambio camión</th>
-                        <th>Línea</th>
-                        <th>Cliente</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                        <th>Duración</th>
-                        <th>Estado</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {remolqueRecords.map(r => {
-                        const dur = calcDuration(r.fecha_hora_entrada, r.fecha_hora_salida);
-                        return (
-                          <tr key={r._id}>
-                            <td className="fw-bold text-uppercase">{r.placa}</td>
-                            <td>{r.tractor_entrada_placa || <span className="text-muted">—</span>}</td>
-                            <td>{r.tractor_salida_placa || <span className="text-muted">—</span>}</td>
-                            <td>
-                              {r.hubo_cambio_tractor === true
-                                ? <span className="badge bg-warning text-dark">Cambió camión</span>
-                                : r.hubo_cambio_tractor === false
-                                  ? <span className="badge bg-success">Mismo camión</span>
-                                  : <span className="text-muted small">—</span>}
-                            </td>
-                            <td>{r.linea_transporte || "—"}</td>
-                            <td>{r.cliente || "—"}</td>
-                            <td>{formatDate(r.fecha_hora_entrada)}</td>
-                            <td>{formatDate(r.fecha_hora_salida)}</td>
-                            <td>{formatDuration(dur)}</td>
-                            <td>
-                              <span className={`badge ${r.status === "En patio" ? "bg-info" : "bg-success"}`}>{r.status}</span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )
-            )}
+            <div className="bits-table-shell">
+              <DataTable
+                loading={loading}
+                data={activeTab === "camiones" ? records : remolqueRecords}
+                columns={activeTab === "camiones" ? tractorColumns : remolqueColumns}
+                maxHeight="100%"
+                emptyMessage={activeTab === "camiones" ? "No se encontraron registros de camiones." : "No se encontraron registros de remolques."}
+              />
+            </div>
           </div>
         </div>
       </div>
-    </section>
+    </div>
+  </section>
   );
 };
 

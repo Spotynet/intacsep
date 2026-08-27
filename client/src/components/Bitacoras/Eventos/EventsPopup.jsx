@@ -8,6 +8,11 @@ const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
   useEffect(() => {
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = ""; };
+  }, []);
+
+  useEffect(() => {
     const fetchEventTypes = async () => {
       try {
         const res = await axios.get(`${baseUrl}/event_types`, {withCredentials: true});
@@ -164,10 +169,12 @@ const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
   return (
     <div className="frecuencia-popup-backdrop" onClick={onClose}>
       <div className="frecuencia-popup-content" onClick={(e) => e.stopPropagation()}>
-        <button className="close-btn" onClick={onClose}>
-          &times;
-        </button>
-        <h3 className="text-center mb-3">Tracking de Monitoreo</h3>
+        <div className="frecuencia-popup-header">
+          <h3>Tracking de Monitoreo</h3>
+          <button className="close-btn" onClick={onClose}>
+            &times;
+          </button>
+        </div>
 
         <div className="info-grid">
           <div>
@@ -201,10 +208,6 @@ const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
             <strong>Fecha Consulta:</strong> {formatFecha(new Date())}
           </div>
         </div>
-
-        <button className="btn btn-sm btn-primary mt-3" onClick={exportToPDF}>
-          <i className="fa fa-download me-1"></i> Exportar PDF
-        </button>
 
         <table className="eventos-table mt-3">
           <thead>
@@ -247,6 +250,12 @@ const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
             })}
           </tbody>
         </table>
+
+        <div className="frecuencia-popup-footer">
+          <button className="btn btn-sm btn-primary" onClick={exportToPDF}>
+            <i className="fa fa-download me-1"></i> Exportar PDF
+          </button>
+        </div>
       </div>
     </div>
   );

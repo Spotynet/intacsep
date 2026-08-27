@@ -32,6 +32,8 @@ import ReporteEstadisticasPage from "./components/ReporteEstadisticasPage";
 import PlacaTestPage from "./components/PlacaTest/PlacaTestPage";
 import ControlPatiosDashboard from "./components/PlacaTest/ControlPatiosDashboard";
 import ReporteControlPatiosPage from "./components/PlacaTest/ReporteControlPatiosPage";
+import EventosWialonPage from "./components/Wialon/EventosWialonPage";
+import MapWialonPage from "./components/Wialon/MapWialonPage";
 
 function App() {
   return (
@@ -67,6 +69,8 @@ function App() {
         <Route path="/placa-test" element={<PlacaTestPage />} />
         <Route path="/reporte-control-patios" element={<ControlPatiosDashboard />} />
         <Route path="/reporte-detalle-patios" element={<ReporteControlPatiosPage />} />
+        <Route path="/eventos-wialon" element={<EventosWialonPage />} />
+        <Route path="/map-wialon" element={<MapWialonPage />} />
       </Routes>
     </SidebarProvider>
   );

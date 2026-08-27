@@ -1,5 +1,6 @@
 import React, {useEffect, useState} from "react";
 import {useAuth} from "../../../context/AuthContext";
+import {useWialon} from "../../../context/WialonProvider";
 import {useParams} from "react-router-dom";
 import ModalTemplate from "../../ModalTemplate";
 
@@ -19,18 +20,15 @@ const tMatch = (a, b) =>
 
 const isManualTransporte = (t) => !t.gpsUnits || t.gpsUnits.length === 0;
 
-const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
+const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacoraId: propBitacoraId, initialTransporteId}) => {
   const [bitacora, setBitacora] = useState(null);
-  const {id} = useParams();
+  const {id: paramsId} = useParams();
+  const id = propBitacoraId || paramsId;
   const {verifyToken, user, setUser} = useAuth();
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const [selectedTransportes, setSelectedTransportes] = useState([]);
   const [transportes, setTransportes] = useState([]);
-  const [units, setUnits] = useState();
-
-  // const [units, setUnits] = useState([]);
-  const token = import.meta.env.VITE_WIALON_TOKEN;
-  // const {units} = useWialon();
+  const {getUnitById} = useWialon();
   const [openTransportId, setOpenTransportId] = useState(null);
 
   const toggleCollapse = (id) => {
@@ -42,7 +40,7 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
     descripcion: "",
     frecuencia: 0,
     registrado_por: `${user?.firstName} ${user?.lastName}`,
-    transportes: transportes,
+    transportes: [],
   });
 
   useEffect(() => {
@@ -50,19 +48,18 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
       try {
         const userData = await verifyToken();
         setUser(userData);
-        await fetchBitacora();
+        if (id) await fetchBitacora();
       } catch (error) {
         console.error("Token verification or Bitacora fetch failed:", error);
-        navigate("/login");
       }
     };
 
-    if (token) init();
-  }, [token]);
+    init();
+  }, [id]);
 
   useEffect(() => {
-    if (show) fetchBitacora();
-  }, [show]);
+    if (show && id) fetchBitacora();
+  }, [show, id]);
 
   const fetchBitacora = async () => {
     try {
@@ -72,90 +69,40 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
       });
       if (response.ok) {
         const data = await response.json();
+        let targetBitacora = null;
+        let targetTransportes = [];
 
         if (edited) {
-          setBitacora(data.edited_bitacora);
-          // setEditedBitacora(data.edited_bitacora);
-          setTransportes(data.edited_bitacora.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data.edited_bitacora;
+          targetTransportes = data.edited_bitacora.transportes;
         } else if (!edited && data.edited_bitacora) {
-          setBitacora(data);
-          // setEditedBitacora(data.edited_bitacora);
-          setTransportes(data.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data;
+          targetTransportes = data.transportes;
         } else {
-          setBitacora(data);
-          // setEditedBitacora(data);
-          setTransportes(data.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data;
+          targetTransportes = data.transportes;
+        }
+
+        setBitacora(targetBitacora);
+        setTransportes(targetTransportes);
+
+        // Pre-select unit if provided and available
+        if (initialTransporteId) {
+          const match = targetTransportes.find(t => String(t.id) === String(initialTransporteId));
+          if (match) {
+            // Need to set bitacora first so handleCheckboxChange finds it
+            // We use a slight delay or pass the bitacora directly to the function
+            setTimeout(() => {
+               handleCheckboxChange({ target: { value: String(match.id), checked: true } }, targetBitacora);
+               setOpenTransportId(match.id);
+            }, 100);
+          }
         }
       } else {
         console.error("Failed to fetch bitácora:", response.statusText);
       }
     } catch (e) {
       console.error("Error fetching bitácora:", e);
-    }
-  };
-
-  const fetchAllUnits = async (retries = 3, delay = 1000, token) => {
-    if (!token) {
-      console.error("No Wialon token available. Please log in.");
-      return;
-    }
-
-    const sess = window.wialon.core.Session.getInstance();
-    sess.initSession("https://hst-api.wialon.com");
-
-    console.log(sess);
-
-    try {
-      sess.loginToken(token, (code) => {
-        if (code) {
-          console.log("Error HERE");
-        } else {
-          console.log("Logged in successfully");
-        }
-      });
-
-      console.log("Wialon login successful.");
-      setSession(sess);
-      localStorage.setItem("wialonToken", token); // Store token for persistence
-      fetchAllUnits(sess);
-    } catch (error) {
-      console.error("Error during Wialon login:", error);
-    }
-
-    try {
-      const flags =
-        window.wialon.item.Item.dataFlag.base | window.wialon.item.Unit.dataFlag.lastMessage;
-
-      sess.loadLibrary("itemIcon");
-
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject("Library load timeout"), 5000);
-        sess.updateDataFlags([{type: "type", data: "avl_unit", flags, mode: 0}], (code) => {
-          clearTimeout(timeout);
-          if (code) {
-            reject(window.wialon.core.Errors.getErrorText(code));
-          } else {
-            resolve();
-          }
-        });
-      });
-
-      const fetchedUnits = sess.getItems("avl_unit") || [];
-      const unitDetails = fetchedUnits.map((unit) => ({id: unit.getId(), name: unit.getName()}));
-      setUnits(unitDetails);
-      console.log("Unidades obtenidas:", unitDetails);
-    } catch (error) {
-      console.error("Error al obtener unidades, reintentando...", error);
-      if (retries > 0) {
-        console.log(`Retrying in ${delay}ms...`);
-        setTimeout(() => fetchAllUnits(sess, retries - 1, delay), delay);
-      } else {
-        console.log("Max retries reached, failing...");
-        setUnits([]);
-      }
     }
   };
 
@@ -183,22 +130,7 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
   };
 
   const getUnitInfo = async (wialonId) => {
-    await fetchAllUnits(3, 1500, token);
-
-    if (!units || !units.length) {
-      console.warn("⚠️ Units not loaded.");
-      return null;
-    }
-
-    const found = units.find((u) => u.id == wialonId);
-
-    if (!found) {
-      console.warn(`❌ Unidad no encontrada para ID: ${wialonId}`);
-      return null;
-    }
-
-    const sess = window.wialon.core.Session.getInstance();
-    const unit = sess.getItems("avl_unit").find((u) => u.getId() === found.id);
+    const unit = getUnitById(wialonId);
 
     if (!unit || typeof unit.getPosition !== "function") {
       console.warn("⚠️ Unidad no disponible en sesión.");
@@ -262,11 +194,14 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
     return await Promise.all(gpsDataPromises);
   };
 
-  const handleCheckboxChange = async (e) => {
+  const handleCheckboxChange = async (e, manualBitacora = null) => {
     const {value, checked} = e.target;
     const transporteId = value;
 
-    const transporteToAdd = bitacora.transportes.find(
+    const targetBitacora = manualBitacora || bitacora;
+    if (!targetBitacora) return;
+
+    const transporteToAdd = targetBitacora.transportes.find(
       (transporte) => String(transporte.id) === transporteId
     );
 

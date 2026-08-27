@@ -43,6 +43,8 @@ const emptyPerms = {
   reporte_control_patios:  {create: false, read: false, update: false, delete: false},
   control_patios:          {create: false, read: false, update: false, delete: false},
   control_patios_remolques:{create: false, read: false, update: false, delete: false},
+  eventos_wialon:         {create: false, read: false, update: false, delete: false},
+  map_wialon:             {create: false, read: false, update: false, delete: false},
 };
 
 const emptyFlags = {
@@ -88,6 +90,8 @@ const permLabels = {
   reporte_eventos:         "Reporte eventos",
   reporte_estadisticas:    "Reporte de puntualidad",
   reporte_control_patios:  "Control de patios",
+  eventos_wialon:          "Alertas Wialon",
+  map_wialon:              "Mapa Wialon",
 };
 
 const disabledPerms = {
@@ -102,10 +106,12 @@ const disabledPerms = {
   auditoria_bitacora: {create: true, update: true, delete: true},
   dashboard:          {create: true, update: true, delete: true},
   dashboard_anomalias:{create: true, update: true, delete: true},
+  eventos_wialon:    {create: true, update: true, delete: true},
+  map_wialon:        {create: true, update: true, delete: true},
 };
 
 const permSections = [
-  {label: "Monitoreo",                        keys: ["bitacoras","planes_embarque","buscador_plan","control_patios","control_patios_remolques"]},
+  {label: "Monitoreo",                        keys: ["bitacoras","planes_embarque","buscador_plan","control_patios","control_patios_remolques","eventos_wialon","map_wialon"]},
   {label: "Bitácoras — Datos",                keys: ["bit_detalles","bit_transportes","bit_eventos"]},
   {label: "Bitácoras — Datos de transporte",  keys: ["gps_id","remolque","tracto","operador"]},
   {label: "Catálogos",                        keys: ["tipos_de_monitoreo","eventos","clientes","origenes","destinos","lineas_transporte","operadores"]},
@@ -301,6 +307,10 @@ const RolePage = () => {
         setEditRole(updated);
         setEditRoleData({...defaultRole, ...updated});
         setIsEditing(false);
+        // Sync sidebar cache if editing own role
+        if (user?.role === updated.name) {
+          try { localStorage.setItem("sidebar-role", JSON.stringify(updated)); } catch {}
+        }
         showToast("Rol actualizado correctamente", "success");
       } else {
         showToast("Error al actualizar el rol", "error");

@@ -27,7 +27,6 @@ const TransporteSchema = new mongoose.Schema(
     gpsUnits: [{
       wialonId: { type: String, required: true },
       name: { type: String },
-      data: { type: Object }
     }],
     gpsData: [{
       wialonId: { type: String },
@@ -139,6 +138,11 @@ BitSchema.index({ deleted: 1, cliente: 1 });
 BitSchema.index({ deleted: 1, status: 1 });
 BitSchema.index({ deleted: 1, createdAt: -1 });
 BitSchema.index({ deleted: 1, bitacora_id: -1 });
+BitSchema.index({ deleted: 1, operador: 1, createdAt: -1 });
+BitSchema.index({ deleted: 1, linea_transporte: 1, createdAt: -1 });
+BitSchema.index({ "transportes.lineaTransporte": 1 });
+BitSchema.index({ "transportes.operador": 1 });
+BitSchema.index({ "eventos.nombre": 1 });
 
 const Bitacora = mongoose.model("Bitacora", BitSchema);
 export default Bitacora;

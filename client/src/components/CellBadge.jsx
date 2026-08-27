@@ -11,8 +11,9 @@
  *   onClick    {Function}            — Makes the badge a clickable button.
  *   className  {string}              — Extra CSS classes.
  */
-const CellBadge = ({label, color, variant, onClick, className = ""}) => {
-  const style = color ? {backgroundColor: color} : undefined;
+const CellBadge = ({label, color, variant, onClick, className = "", style: customStyle}) => {
+  const baseStyle = color ? {backgroundColor: color} : {};
+  const style = {...baseStyle, ...customStyle};
 
   const variantClass = variant ? `cell-badge--${variant}` : "";
   const darkBg = color === "#000000" || color === "#333235";

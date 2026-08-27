@@ -165,7 +165,7 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
     const newTransporte = {
       id: newId,
       ...transporteData,
-      gpsUnits: selectedGpsUnits.map((unit) => ({wialonId: unit.id, name: unit.name, data: {}})),
+      gpsUnits: selectedGpsUnits.map((unit) => ({wialonId: String(unit.id), name: unit.name, data: {}})),
     };
 
     if (roleData?.crear_draft_transporte) {

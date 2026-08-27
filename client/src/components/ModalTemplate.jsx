@@ -1,3 +1,5 @@
+import {useEffect} from "react";
+
 const ModalTemplate = ({
   show,
   title,
@@ -6,18 +8,37 @@ const ModalTemplate = ({
   children,
   cancelText = "Cancelar",
   submitText = "Guardar",
-  cancelClass = "btn btn-danger",
-  submitClass = "btn btn-success",
+  cancelClass = "btn btn-secondary",
+  submitClass = "btn btn-primary",
   submitDisabled = false,
   hideFooter = false,
   wide = false,
+  extraWide = false,
+  width,
+  className = "",
 }) => {
+  useEffect(() => {
+    if (show) {
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = ""; };
+    }
+  }, [show]);
+
   if (!show) return null;
+
+  const containerClasses = [
+    "pm-container",
+    wide && "pm-container--wide",
+    extraWide && "pm-container--extra-wide",
+    className,
+  ].filter(Boolean).join(" ");
+
+  const containerStyle = width ? { maxWidth: width } : undefined;
 
   return (
     <section className="customModal">
       <div className="pm-backdrop" onClick={onClose}></div>
-      <div className={`pm-container${wide ? " pm-container--wide" : ""}`}>
+      <div className={containerClasses} style={containerStyle}>
         <div className="pm-header">
           <h2>{title}</h2>
           <button className="pm-close" onClick={onClose}>

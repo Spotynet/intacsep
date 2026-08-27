@@ -1,5 +1,7 @@
+import DatePicker from "./DatePicker";
+
 /**
- * DateTimeRangePicker — styled to match the pselect component system.
+ * DateTimeRangePicker — uses portal-based CustomDatePicker for premium experience.
  * Props: label, startValue, endValue, onStartChange, onEndChange
  */
 const DateTimeRangePicker = ({ label, startValue, endValue, onStartChange, onEndChange }) => {
@@ -7,25 +9,21 @@ const DateTimeRangePicker = ({ label, startValue, endValue, onStartChange, onEnd
     <div className="pdt-range">
       {label && <span className="pselect__label">{label}</span>}
       <div className="pdt-range__inputs">
-        <div className="pdt-field">
-          <span className="pdt-field__prefix">De</span>
-          <input
-            type="datetime-local"
-            className="pdt-field__input"
-            value={startValue}
-            onChange={(e) => onStartChange(e.target.value)}
-          />
-        </div>
-        <span className="pdt-range__sep">—</span>
-        <div className="pdt-field">
-          <span className="pdt-field__prefix">A</span>
-          <input
-            type="datetime-local"
-            className="pdt-field__input"
-            value={endValue}
-            onChange={(e) => onEndChange(e.target.value)}
-          />
-        </div>
+        <DatePicker
+          prefix="De"
+          showTime={true}
+          value={startValue}
+          onChange={onStartChange}
+          placeholder="Desde..."
+        />
+        <span className="pdt-range__sep">|</span>
+        <DatePicker
+          prefix="A"
+          showTime={true}
+          value={endValue}
+          onChange={onEndChange}
+          placeholder="Hasta..."
+        />
       </div>
     </div>
   );

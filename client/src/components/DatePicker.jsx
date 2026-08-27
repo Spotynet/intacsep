@@ -1,26 +1,44 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 const MONTHS = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DAYS   = ["Lu","Ma","Mi","Ju","Vi","Sá","Do"];
 
-const parseDate = (str) => {
+const parseDate = (str, timeOnly = false) => {
   if (!str) return null;
-  const d = new Date(str + "T00:00:00");
+  if (timeOnly) {
+    const [h, m] = str.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h || 0, m || 0, 0, 0);
+    return d;
+  }
+  const d = new Date(str.includes("T") ? str : str + "T00:00:00");
   return isNaN(d) ? null : d;
 };
 
-const toISO = (d) => {
+const toISO = (d, showTime = false, timeOnly = false) => {
   if (!d) return "";
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  
+  if (timeOnly) return `${hh}:${mm}`;
+  if (showTime) return `${y}-${m}-${day}T${hh}:${mm}`;
   return `${y}-${m}-${day}`;
 };
 
-const formatDisplay = (str) => {
-  const d = parseDate(str);
+const formatDisplay = (str, showTime = false, timeOnly = false) => {
+  const d = parseDate(str, timeOnly);
   if (!d) return null;
-  return `${String(d.getDate()).padStart(2,"0")} ${MONTHS[d.getMonth()].slice(0,3)} ${d.getFullYear()}`;
+  
+  const datePart = `${String(d.getDate()).padStart(2,"0")} ${MONTHS[d.getMonth()].slice(0,3)} ${d.getFullYear()}`;
+  const timePart = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  
+  if (timeOnly) return timePart;
+  if (showTime) return `${datePart} ${timePart}`;
+  return datePart;
 };
 
 const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
@@ -31,27 +49,38 @@ const getFirstDayOfWeek = (year, month) => {
 
 /**
  * DatePicker
- * Props: value (YYYY-MM-DD), onChange, label, placeholder, clearable, disabled, minDate, maxDate
+ * Props: value, onChange, label, placeholder, clearable, disabled, minDate, maxDate, showTime, timeOnly, prefix
  */
 const DatePicker = ({
   value,
   onChange,
   label,
-  placeholder = "Seleccionar fecha",
+  placeholder = "Seleccionar",
   clearable = true,
   disabled = false,
   minDate,
   maxDate,
+  showTime = false,
+  timeOnly = false,
+  prefix,
 }) => {
   const today = new Date();
-  const selected = parseDate(value);
+  const initialDate = parseDate(value, timeOnly) || today;
 
   const [open, setOpen] = useState(false);
-  const [viewYear, setViewYear] = useState((selected || today).getFullYear());
-  const [viewMonth, setViewMonth] = useState((selected || today).getMonth());
+  const [viewYear, setViewYear] = useState(initialDate.getFullYear());
+  const [viewMonth, setViewMonth] = useState(initialDate.getMonth());
   const [mode, setMode] = useState("days"); // "days" | "months" | "years"
+  const [menuStyle, setMenuStyle] = useState({});
+  
+  // Internal selection state (until Apply is clicked if time is involved)
+  const [selectedDate, setSelectedDate] = useState(parseDate(value, timeOnly));
+  const [selHH, setSelHH] = useState(initialDate.getHours());
+  const [selMM, setSelMM] = useState(initialDate.getMinutes());
 
   const wrapRef = useRef(null);
+  const hourListRef = useRef(null);
+  const minListRef = useRef(null);
 
   // Click outside
   useEffect(() => {
@@ -60,26 +89,105 @@ const DatePicker = ({
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Sync view when value changes externally
+  // Sync internal state when value changes externally
   useEffect(() => {
-    if (selected) { setViewYear(selected.getFullYear()); setViewMonth(selected.getMonth()); }
-  }, [value]);
+    const d = parseDate(value, timeOnly);
+    setSelectedDate(d);
+    if (d) {
+      setViewYear(d.getFullYear());
+      setViewMonth(d.getMonth());
+      setSelHH(d.getHours());
+      setSelMM(d.getMinutes());
+    }
+  }, [value, timeOnly]);
 
-  const handleOpen = () => { if (!disabled) { setOpen((p) => !p); setMode("days"); } };
+  const positionMenu = useCallback(() => {
+    if (!wrapRef.current) return;
+    const rect = wrapRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const menuHeight = (showTime || timeOnly) ? 400 : 320; 
+    const openUp = spaceBelow < menuHeight && rect.top > menuHeight;
 
-  const handleClear = (e) => { e.stopPropagation(); onChange(""); };
+    setMenuStyle({
+      position: "fixed",
+      left: rect.left,
+      width: Math.max(rect.width, 272),
+      ...(openUp
+        ? { bottom: window.innerHeight - rect.top + 5, top: "auto" }
+        : { top: rect.bottom + 5, bottom: "auto" }),
+      zIndex: 2000,
+    });
+  }, [showTime, timeOnly]);
+
+  const handleOpen = () => { 
+    if (!disabled) { 
+      setOpen((p) => {
+        if (!p) {
+          positionMenu();
+        }
+        return !p;
+      }); 
+      setMode("days"); 
+    } 
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => positionMenu();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    
+    // Auto scroll time columns
+    if (showTime || timeOnly) {
+      setTimeout(() => {
+        if (hourListRef.current) {
+          const el = hourListRef.current.querySelector(`[data-value="${selHH}"]`);
+          if (el) el.scrollIntoView({ block: "center", behavior: "auto" });
+        }
+        if (minListRef.current) {
+          const el = minListRef.current.querySelector(`[data-value="${selMM}"]`);
+          if (el) el.scrollIntoView({ block: "center", behavior: "auto" });
+        }
+      }, 50);
+    }
+
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, positionMenu, selHH, selMM, showTime, timeOnly]);
+
+  const handleClear = (e) => { 
+    e.stopPropagation(); 
+    onChange(""); 
+    setSelectedDate(null);
+  };
+
+  const handleApply = () => {
+    let finalDate = selectedDate || new Date();
+    finalDate.setHours(selHH, selMM, 0, 0);
+    onChange(toISO(finalDate, showTime, timeOnly));
+    setOpen(false);
+  };
 
   const selectDay = (day) => {
     const d = new Date(viewYear, viewMonth, day);
-    onChange(toISO(d));
-    setOpen(false);
+    if (!showTime && !timeOnly) {
+      onChange(toISO(d, false, false));
+      setOpen(false);
+    } else {
+      setSelectedDate(d);
+    }
   };
 
   const prevMonth = (e) => { e.stopPropagation(); if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); } else setViewMonth(m => m - 1); };
   const nextMonth = (e) => { e.stopPropagation(); if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); } else setViewMonth(m => m + 1); };
 
   const isToday = (day) => { const d = new Date(viewYear, viewMonth, day); return toISO(d) === toISO(today); };
-  const isSelected = (day) => { const d = new Date(viewYear, viewMonth, day); return value && toISO(d) === value; };
+  const isSelected = (day) => { 
+    if (!selectedDate) return false;
+    return selectedDate.getFullYear() === viewYear && selectedDate.getMonth() === viewMonth && selectedDate.getDate() === day;
+  };
   const isDisabled = (day) => {
     const d = new Date(viewYear, viewMonth, day);
     if (minDate && d < parseDate(minDate)) return true;
@@ -95,28 +203,14 @@ const DatePicker = ({
   const yearStart = Math.floor(viewYear / 12) * 12;
   const years = Array.from({ length: 12 }, (_, i) => yearStart + i);
 
-  return (
-    <div className={`pdp${open ? " pdp--open" : ""}${disabled ? " pdp--disabled" : ""}`} ref={wrapRef}>
-      {label && <span className="pselect__label">{label}</span>}
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+  const minutes = Array.from({ length: 60 }, (_, i) => i);
 
-      <div className="pdp__control" onClick={handleOpen}>
-        <i className="fa fa-calendar pdp__icon"></i>
-        <span className={`pdp__value${!value ? " pdp__value--placeholder" : ""}`}>
-          {value ? formatDisplay(value) : placeholder}
-        </span>
-        <div className="pdp__indicators">
-          {clearable && value && (
-            <button type="button" className="pselect__clear" onClick={handleClear} tabIndex={-1}>
-              <i className="fa fa-times"></i>
-            </button>
-          )}
-          <span className="pselect__arrow"><i className="fa fa-chevron-down"></i></span>
-        </div>
-      </div>
+  const menu = open && createPortal(
+    <div className="pdp__menu" style={menuStyle} onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
 
-      {open && (
-        <div className="pdp__menu" onClick={(e) => e.stopPropagation()}>
-
+      {!timeOnly && (
+        <>
           {/* ── Header ── */}
           <div className="pdp__header">
             <button type="button" className="pdp__nav" onClick={prevMonth}><i className="fa fa-chevron-left"></i></button>
@@ -192,16 +286,94 @@ const DatePicker = ({
               </div>
             </div>
           )}
+        </>
+      )}
 
-          {/* ── Footer ── */}
-          <div className="pdp__footer">
-            <button type="button" className="pdp__today-btn" onClick={() => { onChange(toISO(today)); setOpen(false); }}>
-              Hoy
-            </button>
+      {/* ── Time selection ── */}
+      {(showTime || timeOnly) && (
+        <div className="pdp__time-section">
+          <div className="pdp__time-title">
+            <i className="fa fa-clock"></i> {timeOnly ? "Seleccionar hora" : "Hora"}
           </div>
-
+          <div className="pdp__time-cols">
+            <div className="pdp__time-col custom-scrollbar" ref={hourListRef}>
+              {hours.map(h => (
+                <button 
+                  key={h} 
+                  data-value={h}
+                  className={`pdp__time-unit ${selHH === h ? "is-selected" : ""}`}
+                  onClick={() => setSelHH(h)}
+                >
+                  {String(h).padStart(2, "0")}
+                </button>
+              ))}
+            </div>
+            <div className="pdp__time-sep">:</div>
+            <div className="pdp__time-col custom-scrollbar" ref={minListRef}>
+              {minutes.map(m => (
+                <button 
+                  key={m} 
+                  data-value={m}
+                  className={`pdp__time-unit ${selMM === m ? "is-selected" : ""}`}
+                  onClick={() => setSelMM(m)}
+                >
+                  {String(m).padStart(2, "0")}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       )}
+
+      {/* ── Footer ── */}
+      <div className="pdp__footer">
+        {!timeOnly && (
+          <button type="button" className="pdp__today-btn" onClick={() => { 
+            const d = new Date();
+            if (showTime) {
+              setSelectedDate(d);
+              setSelHH(d.getHours());
+              setSelMM(d.getMinutes());
+            } else {
+              onChange(toISO(d, false, false));
+              setOpen(false);
+            }
+          }}>
+            Hoy
+          </button>
+        )}
+        {(showTime || timeOnly) && (
+          <button type="button" className="pdp__apply-btn" onClick={handleApply}>
+            Aplicar
+          </button>
+        )}
+      </div>
+
+    </div>,
+    document.body
+  );
+
+  return (
+    <div className={`pdp${open ? " pdp--open" : ""}${disabled ? " pdp--disabled" : ""}`} ref={wrapRef}>
+      {label && <span className="pselect__label">{label}</span>}
+
+      <div className="pdp__control" onClick={handleOpen}>
+        {prefix && <span className="pdt-range__prefix" style={{ marginRight: "4px" }}>{prefix}</span>}
+        <i className={`fa ${timeOnly ? "fa-clock" : "fa-calendar"} pdp__icon`}></i>
+        <span className={`pdp__value${!value ? " pdp__value--placeholder" : ""}`}>
+          {value ? formatDisplay(value, showTime, timeOnly) : placeholder}
+        </span>
+        <div className="pdp__indicators">
+          {clearable && value && (
+            <button type="button" className="pselect__clear" onClick={handleClear} tabIndex={-1}>
+              <i className="fa fa-times"></i>
+            </button>
+          )}
+          <span className="pselect__arrow"><i className="fa fa-chevron-down"></i></span>
+        </div>
+      </div>
+
+      {menu}
     </div>
   );
 };

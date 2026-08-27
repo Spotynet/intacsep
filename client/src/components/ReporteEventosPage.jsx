@@ -1,11 +1,23 @@
-import {useEffect, useRef, useState} from "react";
+import {useEffect, useRef, useState, useMemo, useCallback} from "react";
 import {useNavigate} from "react-router-dom";
 import jsPDF from "jspdf";
 import Sidebar from "./Sidebar";
 import PageHeader from "./PageHeader";
+import FilterBar from "./FilterBar";
+import {Select, MultiSelect} from "./Select";
+import DatePicker from "./DatePicker";
+import CellBadge from "./CellBadge";
 import {useAuth} from "../context/AuthContext";
 import {useSidebar} from "../context/SidebarContext";
 import {fetchClients, fetchLineasTransporte, fetchOperadores} from "../utils/api";
+
+// Helper: Standardized Skeleton component
+const Skeleton = ({ width = "100%", height = "20px", className = "" }) => (
+  <div 
+    className={`skeleton-loader ${className}`} 
+    style={{ width, height, borderRadius: '6px', display: 'inline-block' }}
+  />
+);
 
 const formatDateTime = (value) =>
   new Date(value).toLocaleString("es-MX", {
@@ -22,14 +34,14 @@ const formatTimeDifference = (current, previous) => {
   const minutes = totalMinutes % 60;
 
   if (hours === 0) {
-    return `${minutes} min despues`;
+    return `${minutes} min después`;
   }
 
   if (minutes === 0) {
-    return `${hours} h despues`;
+    return `${hours} h después`;
   }
 
-  return `${hours} h ${minutes} min despues`;
+  return `${hours} h ${minutes} min después`;
 };
 
 const formatDeviation = (actual, planned) => {
@@ -49,128 +61,150 @@ const ReporteEventosPage = () => {
   const navigate = useNavigate();
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
+  // Date helpers (Default 30 days)
+  const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const lastMonthStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  }, []);
+
   const [roleData, setRoleData] = useState(null);
   const [clients, setClients] = useState([]);
   const [lineasTransporte, setLineasTransporte] = useState([]);
   const [operadores, setOperadores] = useState([]);
   const [bitacoras, setBitacoras] = useState([]);
   const [eventTypes, setEventTypes] = useState([]);
-  const [loadingClients, setLoadingClients] = useState(false);
-  const [loadingLineas, setLoadingLineas] = useState(false);
-  const [loadingOperadores, setLoadingOperadores] = useState(false);
-  const [loadingBitacoras, setLoadingBitacoras] = useState(false);
-  const [loadingEventTypes, setLoadingEventTypes] = useState(false);
-  const [isTipoEventosOpen, setIsTipoEventosOpen] = useState(false);
+  
+  // Loading states
+  const [isInitialLoading, setIsInitialLoading] = useState(true);
+  const [isFetchingOptions, setIsFetchingOptions] = useState(false);
+  const [isDataLoading, setIsDataLoading] = useState(false);
+  
   const [filters, setFilters] = useState({
     cliente: "",
     operador: "",
     lineaTransporte: "",
     status: "",
+    fechaDesde: lastMonthStr,
+    fechaHasta: todayStr,
     bitacoraId: "",
     tipoEventos: [],
   });
 
+  const [appliedFilters, setAppliedFilters] = useState({
+    cliente: "",
+    operador: "",
+    lineaTransporte: "",
+    status: "",
+    fechaDesde: lastMonthStr,
+    fechaHasta: todayStr,
+    bitacoraId: "",
+    tipoEventos: [],
+  });
+
+  const [applyFiltersTrigger, setApplyFiltersTrigger] = useState(0);
+
+  // Authentication & Role setup
   useEffect(() => {
     const init = async () => {
       try {
         const data = await verifyToken();
         setUser(data);
-      } catch (e) {
-        console.log("Error verifying token or fetching user:", e);
-        navigate("/login");
-      }
-    };
-
-    init();
-  }, []);
-
-  useEffect(() => {
-    if (!user?.role) return;
-
-    const fetchRolePermissions = async () => {
-      try {
-        const response = await fetch(`${baseUrl}/roles/${user.role}`, {
+        
+        // Fetch role permissions
+        const roleResp = await fetch(`${baseUrl}/roles/${data.role}`, {
           method: "GET",
           credentials: "include",
         });
-        const data = await response.json();
-        setRoleData(data);
+        const roleData = await roleResp.json();
+        setRoleData(roleData);
 
-        if (!data?.reporte_eventos?.read) {
+        if (!roleData?.reporte_eventos?.read) {
           navigate("/");
+          return;
         }
-      } catch (e) {
-        console.log("Error fetching role permissions:", e);
-      }
-    };
 
-    fetchRolePermissions();
-  }, [user]);
-
-  useEffect(() => {
-    if (!roleData?.reporte_eventos?.read) return;
-
-    const fetchClientsOnly = async () => {
-      setLoadingClients(true);
-      try {
+        // Fetch clients initial load
         const clientsData = await fetchClients(roleData);
         setClients(clientsData);
+        
+        setIsInitialLoading(false);
       } catch (e) {
-        console.log("Error fetching report filter options:", e);
-      } finally {
-        setLoadingClients(false);
+        console.error("Auth initialization failed:", e);
+        navigate("/login");
       }
     };
+    init();
+  }, []);
 
-    fetchClientsOnly();
-  }, [roleData]);
+  // Fetch options (Lineas, Operadores, Bitacoras) when root filters change
+  const fetchFilteredOptions = useCallback(async () => {
+    if (!roleData?.reporte_eventos?.read) return;
 
-  useEffect(() => {
-    if (!roleData?.reporte_eventos?.read || !filters.cliente) {
-      setLineasTransporte([]);
-      return;
-    }
+    setIsFetchingOptions(true);
+    try {
+      const tasks = [];
+      
+      // Always fetch Bitacoras for selection based on date range
+      const params = new URLSearchParams({
+        page: "1",
+        limit: "500",
+        sortField: "bitacora_id",
+        sortOrder: "desc",
+        fechaDesde: filters.fechaDesde,
+        fechaHasta: filters.fechaHasta,
+      });
 
-    const fetchFilteredLineas = async () => {
-      setLoadingLineas(true);
-      try {
-        const data = await fetchLineasTransporte(filters.cliente);
-        setLineasTransporte(data);
-      } finally {
-        setLoadingLineas(false);
+      if (filters.cliente) params.append("clienteFilter", filters.cliente);
+      if (filters.operador) params.append("operadorFilter", filters.operador);
+      if (filters.status) params.append("statusFilter", filters.status);
+
+      if (roleData?.client_access === "specific" && roleData.allowed_clients?.length) {
+        const names = roleData.allowed_clients.map(c => c.client_name).join(",");
+        params.append("allowed_clients", names);
       }
-    };
 
-    fetchFilteredLineas();
-  }, [filters.cliente, roleData]);
+      // Bitacoras fetch is now always included
+      const bitacorasPromise = fetch(`${baseUrl}/bitacoras?${params.toString()}`, {
+        method: "GET",
+        credentials: "include"
+      }).then(r => r.json());
 
-  useEffect(() => {
-    if (!roleData?.reporte_eventos?.read || !filters.cliente) {
-      setOperadores([]);
-      return;
-    }
-
-    const fetchFilteredOperadores = async () => {
-      setLoadingOperadores(true);
-      try {
-        const data = await fetchOperadores(filters.lineaTransporte || null);
-        setOperadores(data);
-      } finally {
-        setLoadingOperadores(false);
+      if (filters.cliente) {
+        tasks.push(fetchLineasTransporte(filters.cliente));
+        tasks.push(fetchOperadores(filters.lineaTransporte || null));
+      } else {
+        tasks.push(Promise.resolve([]));
+        tasks.push(Promise.resolve([]));
       }
-    };
+      
+      tasks.push(bitacorasPromise);
 
-    fetchFilteredOperadores();
-  }, [filters.lineaTransporte, filters.cliente, roleData]);
+      const [lineas, ops, bitsData] = await Promise.all(tasks);
+      
+      setLineasTransporte(lineas);
+      setOperadores(ops);
+      setBitacoras(bitsData?.bitacoras || []);
+      
+    } catch (e) {
+      console.error("Error fetching filtered options:", e);
+    } finally {
+      setIsFetchingOptions(false);
+    }
+  }, [filters.cliente, filters.fechaDesde, filters.fechaHasta, filters.lineaTransporte, filters.operador, filters.status, roleData, baseUrl]);
 
   useEffect(() => {
-    if (!roleData?.reporte_eventos?.read || !filters.cliente) {
-      setEventTypes([]);
-      return;
+    if (!isInitialLoading) {
+      fetchFilteredOptions();
     }
+  }, [isInitialLoading, fetchFilteredOptions]);
 
+  // Fetch Event Types once on mount
+  useEffect(() => {
+    if (isInitialLoading) return;
+    
     const fetchEventTypes = async () => {
-      setLoadingEventTypes(true);
       try {
         const response = await fetch(`${baseUrl}/event_types`, {
           method: "GET",
@@ -178,204 +212,93 @@ const ReporteEventosPage = () => {
         });
         if (response.ok) setEventTypes(await response.json());
       } catch (e) {
-        console.log("Error fetching event types:", e);
-        setEventTypes([]);
-      } finally {
-        setLoadingEventTypes(false);
+        console.error("Error fetching event types:", e);
       }
     };
-
     fetchEventTypes();
-  }, [baseUrl, filters.cliente, roleData]);
+  }, [isInitialLoading, baseUrl]);
 
-  useEffect(() => {
-    if (!roleData?.reporte_eventos?.read || !filters.cliente) {
-      setBitacoras([]);
-      return;
+  // Selected Bitácora Details
+  const selectedBitacora = useMemo(() => 
+    bitacoras.find(b => b.bitacora_id === appliedFilters.bitacoraId),
+  [bitacoras, appliedFilters.bitacoraId]);
+
+  const selectedEventos = useMemo(() => {
+    const events = (selectedBitacora?.eventos?.length ? selectedBitacora.eventos : null)
+      || selectedBitacora?.edited_bitacora?.eventos
+      || [];
+    return [...events].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  }, [selectedBitacora]);
+
+  const planDeEmbarqueEvento = useMemo(() => 
+    selectedEventos.find(e => ["PLAN DE EMBARQUE", "PRESENCIA EN ORIGEN"].includes(e.nombre?.toUpperCase()))
+  , [selectedEventos]);
+
+  const filteredEvents = useMemo(() => {
+    let events = [...selectedEventos];
+    if (appliedFilters.tipoEventos.length) {
+      events = events.filter(e => appliedFilters.tipoEventos.includes(e.nombre));
     }
+    // Always include Plan de Embarque for deviation calculation if not already there?
+    // Actually the UI handles it if it's in the timeline.
+    return events;
+  }, [selectedEventos, appliedFilters.tipoEventos]);
 
-    const fetchBitacoraOptions = async () => {
-      setLoadingBitacoras(true);
-      try {
-        const params = new URLSearchParams({
-          page: "1",
-          limit: "300",
-          sortField: "bitacora_id",
-          sortOrder: "desc",
-        });
+  // Insights Calculations
+  const insights = useMemo(() => {
+    if (!selectedBitacora || !selectedEventos.length) return null;
+    
+    const start = new Date(selectedEventos[0].createdAt);
+    const end = new Date(selectedEventos[selectedEventos.length - 1].createdAt);
+    const diffMs = end.getTime() - start.getTime();
+    const totalMin = Math.max(0, Math.round(diffMs / 60000));
+    
+    const anomalies = selectedEventos.filter(e => 
+      ["ENA", "DR", "FM", "ONC"].includes(e.metadata?.categoriaAnomalia) ||
+      /anomalia/i.test(e.nombre)
+    ).length;
 
-        if (filters.cliente) {
-          params.append("clienteFilter", filters.cliente);
-        }
-
-        if (filters.operador) {
-          params.append("operadorFilter", filters.operador);
-        }
-
-        if (filters.status) {
-          params.append("statusFilter", filters.status);
-        }
-
-        if (roleData?.client_access === "specific" && roleData.allowed_clients?.length) {
-          const allowedClientNames = roleData.allowed_clients.map((client) => client.client_name);
-          params.append("allowed_clients", allowedClientNames.join(","));
-        }
-
-        if (roleData?.ver_bitacoras_cerradas === false) {
-          params.append("hideCerradas", "true");
-        }
-
-        const response = await fetch(`${baseUrl}/bitacoras?${params.toString()}`, {
-          method: "GET",
-          credentials: "include",
-        });
-
-        if (!response.ok) {
-          throw new Error("Failed to fetch bitacoras");
-        }
-
-        const data = await response.json();
-        const filteredBitacoras = (data.bitacoras || []).filter((bitacora) => {
-          if (!filters.lineaTransporte) return true;
-
-          const hasTopLevelLine =
-            (bitacora.linea_transporte || "").trim().toLowerCase() ===
-            filters.lineaTransporte.trim().toLowerCase();
-
-          const hasTransportLine = (bitacora.transportes || []).some(
-            (transporte) =>
-              (transporte.lineaTransporte || "").trim().toLowerCase() ===
-              filters.lineaTransporte.trim().toLowerCase()
-          );
-
-          return hasTopLevelLine || hasTransportLine;
-        });
-
-        setBitacoras(filteredBitacoras);
-      } catch (e) {
-        console.log("Error fetching bitacora options:", e);
-        setBitacoras([]);
-      } finally {
-        setLoadingBitacoras(false);
-      }
+    return {
+      duration: totalMin,
+      totalEvents: selectedEventos.length,
+      anomalies
     };
+  }, [selectedBitacora, selectedEventos]);
 
-    fetchBitacoraOptions();
-  }, [baseUrl, filters.cliente, filters.lineaTransporte, filters.operador, filters.status, roleData]);
-
-  const tipoEventosRef = useRef(null);
-
-  useEffect(() => {
-    const handleOutsideClick = (event) => {
-      if (tipoEventosRef.current && !tipoEventosRef.current.contains(event.target)) {
-        setIsTipoEventosOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, []);
-
-  const handleFilterChange = (e) => {
-    const {name, value} = e.target;
-
-    setFilters((prev) => {
-      const next = {...prev, [name]: value};
-
-      if (name === "cliente") {
-        next.lineaTransporte = "";
-        next.operador = "";
-        next.status = "";
-        next.bitacoraId = "";
-        next.tipoEventos = [];
-      }
-
-      if (name === "lineaTransporte") {
-        next.operador = "";
-        next.bitacoraId = "";
-      }
-
-      if (name === "operador") {
-        next.bitacoraId = "";
-      }
-
-      if (name === "status") {
-        next.bitacoraId = "";
-      }
-
-      if (name === "tipoEventos") {
-        const selectedValues = Array.from(e.target.selectedOptions, (option) => option.value);
-        next.tipoEventos = selectedValues.includes("__ALL__")
-          ? eventTypes.map((eventType) => eventType.evento)
-          : selectedValues.filter((value) => value !== "__ALL__");
-      }
-
-      return next;
-    });
+  const handleApplyFilters = () => {
+    setAppliedFilters({...filters});
+    setApplyFiltersTrigger(prev => prev + 1);
   };
 
-  const handleTipoEventoToggle = (value) => {
-    setFilters((prev) => {
-      const currentValues = prev.tipoEventos;
-
-      if (value === "__ALL__") {
-        const nextValues =
-          currentValues.length === eventTypes.length ? [] : eventTypes.map((eventType) => eventType.evento);
-        return {...prev, tipoEventos: nextValues};
-      }
-
-      const nextValues = currentValues.includes(value)
-        ? currentValues.filter((item) => item !== value)
-        : [...currentValues, value];
-
-      return {...prev, tipoEventos: nextValues};
-    });
-  };
-
-  const clientSelected = Boolean(filters.cliente);
-  const allEventTypesSelected =
-    eventTypes.length > 0 && filters.tipoEventos.length === eventTypes.length;
-  const tipoEventosLabel = !clientSelected
-    ? "Selecciona un cliente"
-    : allEventTypesSelected
-      ? "Todos"
-      : filters.tipoEventos.length === 0
-        ? "Selecciona tipos de evento"
-        : filters.tipoEventos.length === 1
-          ? filters.tipoEventos[0]
-          : `${filters.tipoEventos.length} tipos seleccionados`;
-  const selectedBitacora = bitacoras.find((bitacora) => bitacora.bitacora_id === filters.bitacoraId);
-  // For "cerrada (e)" (edited) bitácoras, use edited_bitacora.eventos as fallback
-  // when the root eventos array is empty.
-  const selectedEventos =
-    (selectedBitacora?.eventos?.length ? selectedBitacora.eventos : null)
-    || selectedBitacora?.edited_bitacora?.eventos
-    || [];
-  const planDeEmbarqueEvento = selectedEventos.find(
-    (e) => ["PLAN DE EMBARQUE", "PRESENCIA EN ORIGEN"].includes(e.nombre?.toUpperCase())
-  );
-  const filteredEvents = selectedBitacora
-    ? [...selectedEventos]
-        .filter((evento) => filters.tipoEventos.includes(evento.nombre))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
-    : [];
-  const timelineEvents = planDeEmbarqueEvento
-    ? [planDeEmbarqueEvento, ...filteredEvents]
-    : filteredEvents;
-
-  const clearFilters = () => {
-    setFilters({
+  const handleClearFilters = () => {
+    const reset = {
       cliente: "",
       operador: "",
       lineaTransporte: "",
       status: "",
+      fechaDesde: lastMonthStr,
+      fechaHasta: todayStr,
       bitacoraId: "",
       tipoEventos: [],
-    });
+    };
+    setFilters(reset);
+    setAppliedFilters(reset);
+    setApplyFiltersTrigger(prev => prev + 1);
   };
 
+  const hasActiveFilters = useMemo(() => {
+    return !!(appliedFilters.cliente || 
+           appliedFilters.operador ||
+           appliedFilters.lineaTransporte ||
+           appliedFilters.status ||
+           appliedFilters.bitacoraId ||
+           appliedFilters.tipoEventos?.length > 0 ||
+           appliedFilters.fechaDesde !== lastMonthStr || 
+           appliedFilters.fechaHasta !== todayStr);
+  }, [appliedFilters, lastMonthStr, todayStr]);
+
   const handlePrintPDF = async () => {
-    if (!selectedBitacora || timelineEvents.length === 0) return;
+    if (!selectedBitacora || filteredEvents.length === 0) return;
 
     // Load logo
     let logoDataUrl = null;
@@ -451,9 +374,19 @@ const ReporteEventosPage = () => {
 
     // ── Bitácora title ───────────────────────────────────────────
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(13);
+    doc.setFontSize(14);
     doc.setTextColor(30, 41, 59);
     doc.text(`Bitácora #${selectedBitacora.bitacora_id}`, margin, y);
+    
+    // Status Badge in PDF
+    const statusText = (selectedBitacora.status || "Nueva").toUpperCase();
+    const statusW = doc.getTextWidth(statusText) + 6;
+    doc.setFillColor(241, 245, 249);
+    doc.roundedRect(margin + 45, y - 5, statusW, 7, 1, 1, "F");
+    doc.setFontSize(8);
+    doc.setTextColor(71, 85, 105);
+    doc.text(statusText, margin + 48, y);
+    
     y += 8;
 
     // ── General info (2-col grid) ────────────────────────────────
@@ -463,20 +396,16 @@ const ReporteEventosPage = () => {
     const bit = selectedBitacora;
     const col2W = contentW / 2;
 
-    // For "cerrada (e)" (edited) bitácoras, eventos may live in root or edited_bitacora.
-    // Use whichever has content as the source of truth.
     const bitEventos = (bit.eventos?.length ? bit.eventos : null)
       || bit.edited_bitacora?.eventos
       || [];
 
-    // Derive plan/presence fields from the source event metadata
     const planEvento = bitEventos.find(
       (e) => ["PLAN DE EMBARQUE", "PRESENCIA EN ORIGEN"].includes(e.nombre?.toUpperCase())
     );
     const citaCarga  = planEvento?.metadata?.citaCarga;
     const horaSalida = planEvento?.metadata?.horaSalida;
 
-    // Derive inicio/final from evento transportes (same logic as BitacoraDetail)
     const validacionEvento = bitEventos.find(
       (e) => e.nombre?.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") === "validacion"
     );
@@ -486,14 +415,13 @@ const ReporteEventosPage = () => {
     const inicioMonitoreo = validacionEvento?.transportes?.[0]?.inicioMonitoreo || bit.inicioMonitoreo;
     const finalMonitoreo  = cierreEvento?.transportes?.[0]?.finalMonitoreo     || bit.finalMonitoreo;
 
-    // For edited bitácoras, origen/destino may be stored as plain name strings rather
-    // than ObjectIds, so origen_nombre enrichment can fail → fall back to raw field.
     const origenDisplay  = bit.origen_nombre  || bit.origen  || "";
     const destinoDisplay = bit.destino_nombre || bit.destino || "";
 
     const generalRows = [
       ["Folio Servicio",   bit.folio_servicio,                              "Estatus",         (bit.status || "").toUpperCase()],
-      ["Cliente",          bit.cliente,                                     "Tipo Monitoreo",  bit.monitoreo],
+      ["Cliente",          bit.cliente,                                     "Línea",           bit.linea_transporte],
+      ["Operador",         bit.operador,                                    "Tipo Monitoreo",  bit.monitoreo],
       ["Origen",           origenDisplay,                                   "Destino",         destinoDisplay],
       ["Cita de Carga",    citaCarga  ? formatDateTime(citaCarga)  : null,  "Inicio Monitoreo", inicioMonitoreo ? formatDateTime(inicioMonitoreo) : null],
       ["Hora de Salida",   horaSalida ? formatDateTime(horaSalida) : null,  "Final Monitoreo",  finalMonitoreo  ? formatDateTime(finalMonitoreo)  : null],
@@ -506,17 +434,51 @@ const ReporteEventosPage = () => {
       y += 8;
     });
 
-    y += 4;
+    y += 6;
+
+    // ── Insights Summary ─────────────────────────────────────────
+    if (insights) {
+      checkPageBreak(25);
+      sectionTitle("Resumen de Métricas", y);
+      y += 8;
+      
+      const insightW = contentW / 3;
+      
+      // Background for insights
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(margin, y, contentW, 14, 2, 2, "F");
+      
+      const drawInsight = (label, value, x) => {
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(7);
+        doc.setTextColor(100, 116, 139);
+        doc.text(label.toUpperCase(), x + 4, y + 5);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(30, 41, 59);
+        doc.text(String(value), x + 4, y + 10);
+      };
+
+      const durationStr = formatTimeDifference(selectedEventos[selectedEventos.length-1]?.createdAt, selectedEventos[0]?.createdAt).replace(' Primer evento', '');
+      
+      drawInsight("Duración Total", durationStr, margin);
+      drawInsight("Eventos Registrados", insights.totalEvents, margin + insightW);
+      drawInsight("Alertas de Riesgo", insights.anomalies, margin + insightW * 2);
+      
+      y += 20;
+    } else {
+      y += 4;
+    }
 
     // ── Timeline ─────────────────────────────────────────────────
     checkPageBreak(16);
     sectionTitle("Timeline de eventos", y);
     y += 5;
 
-    if (timelineEvents.length >= 2) {
+    if (filteredEvents.length >= 2) {
       const diffMs =
-        new Date(timelineEvents[timelineEvents.length - 1].createdAt) -
-        new Date(timelineEvents[0].createdAt);
+        new Date(filteredEvents[filteredEvents.length - 1].createdAt) -
+        new Date(filteredEvents[0].createdAt);
       const totalMin = Math.max(0, Math.round(diffMs / 60000));
       const h = Math.floor(totalMin / 60);
       const m = totalMin % 60;
@@ -533,9 +495,9 @@ const ReporteEventosPage = () => {
     const dotX = margin + 3;
     const textX = margin + 10;
 
-    timelineEvents.forEach((evento, index) => {
-      const isLast = index === timelineEvents.length - 1;
-      const prevTime = index > 0 ? timelineEvents[index - 1].createdAt : null;
+    filteredEvents.forEach((evento, index) => {
+      const isLast = index === filteredEvents.length - 1;
+      const prevTime = index > 0 ? filteredEvents[index - 1].createdAt : null;
       const desc = evento.descripcion || "";
       const descLines = desc ? doc.splitTextToSize(desc, contentW - 14).length : 0;
       const isInicioRecorrido = /inicio de recorrido/i.test(evento.nombre);
@@ -610,6 +572,46 @@ const ReporteEventosPage = () => {
     doc.save(`reporte-eventos-${bit.bitacora_id}.pdf`);
   };
 
+  const bitacoraOptions = useMemo(() => 
+    bitacoras.map(b => {
+      const rawStatus = (b.status || 'Nueva').toUpperCase();
+      const status = rawStatus.replace(/[\[\]]/g, "").trim();
+      let badgeVariant = "gray";
+      
+      if (status.includes("CERRADA")) badgeVariant = "green";
+      if (status.includes("CANCELADA")) badgeVariant = "red";
+      if (status.includes("TRANSITO") || status.includes("RUTA")) badgeVariant = "blue";
+      if (status.includes("PROGRAMADA") || status.includes("NUEVA")) badgeVariant = "gray";
+      if (status.includes("ORIGEN") || status.includes("CARGA")) badgeVariant = "yellow";
+      if (status.includes("DESTINO") || status.includes("ARRIBO")) badgeVariant = "purple";
+      if (status.includes("FINALIZADA")) badgeVariant = "green";
+
+      return {
+        value: b.bitacora_id,
+        searchText: `#${b.bitacora_id} ${b.folio_servicio || ''} ${status}`,
+        label: (
+          <div className="d-flex align-items-center justify-content-between w-100 gap-2 py-1">
+            <div className="d-flex align-items-center gap-2">
+              <span className="fw-bold text-primary" style={{minWidth: '45px', fontSize: '0.85rem'}}>#{b.bitacora_id}</span>
+              <span className="text-muted opacity-25">|</span>
+              <span className="text-truncate fw-medium" style={{maxWidth: '180px', color: '#334155'}}>{b.folio_servicio || 'Sin Folio'}</span>
+            </div>
+            <CellBadge 
+              label={status} 
+              variant={badgeVariant} 
+              className="p-1 px-2 fw-bold"
+              style={{ fontSize: '0.62rem', minWidth: '85px', textAlign: 'center', letterSpacing: '0.02em' }}
+            />
+          </div>
+        )
+      };
+    })
+  , [bitacoras]);
+
+  const eventTypeOptions = useMemo(() => 
+    eventTypes.map(et => ({ value: et.evento, label: et.evento }))
+  , [eventTypes]);
+
   return (
     <section id="reporteEventosPage" className="settings-page">
       <div className="w-100 d-flex">
@@ -621,273 +623,243 @@ const ReporteEventosPage = () => {
           <PageHeader
             title="Dashboard - Reporte Eventos"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={handleClearFilters}
+            filters={
+              <FilterBar onClear={handleClearFilters}>
+                <div className="reporte-field">
+                  <Select
+                    label="Cliente"
+                    options={clients.map(c => ({ value: c.razon_social, label: c.razon_social }))}
+                    value={filters.cliente}
+                    onChange={(v) => setFilters(prev => ({ ...prev, cliente: v, bitacoraId: "", lineaTransporte: "", operador: "" }))}
+                    placeholder="Seleccionar cliente..."
+                  />
+                </div>
+                <div className="reporte-field">
+                  <DatePicker
+                    label="Desde"
+                    value={filters.fechaDesde}
+                    onChange={(v) => setFilters(prev => ({ ...prev, fechaDesde: v, bitacoraId: "" }))}
+                  />
+                </div>
+                <div className="reporte-field">
+                  <DatePicker
+                    label="Hasta"
+                    value={filters.fechaHasta}
+                    onChange={(v) => setFilters(prev => ({ ...prev, fechaHasta: v, bitacoraId: "" }))}
+                  />
+                </div>
+                <div className="reporte-field">
+                  <Select
+                    label="Línea de Transporte"
+                    options={lineasTransporte.map(l => ({ value: l.nombre, label: l.nombre }))}
+                    value={filters.lineaTransporte}
+                    onChange={(v) => setFilters(prev => ({ ...prev, lineaTransporte: v, bitacoraId: "", operador: "" }))}
+                    placeholder="Todas las líneas"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+                <div className="reporte-field">
+                  <Select
+                    label="Operador"
+                    options={operadores.map(o => ({ value: o.nombre, label: o.nombre }))}
+                    value={filters.operador}
+                    onChange={(v) => setFilters(prev => ({ ...prev, operador: v, bitacoraId: "" }))}
+                    placeholder="Todos los operadores"
+                    disabled={!filters.cliente}
+                  />
+                </div>
+                <div className="reporte-field">
+                  <Select
+                    label="Bitácora (ID / Folio)"
+                    options={bitacoraOptions}
+                    value={filters.bitacoraId}
+                    onChange={(v) => setFilters(prev => ({ ...prev, bitacoraId: v }))}
+                    placeholder={isFetchingOptions ? "Actualizando listado..." : "Selecciona una bitácora..."}
+                    searchable={true}
+                    disabled={isFetchingOptions}
+                  />
+                </div>
+                <div className="reporte-field">
+                  <MultiSelect
+                    label="Tipos de Evento"
+                    options={eventTypeOptions}
+                    value={filters.tipoEventos}
+                    onChange={(v) => setFilters(prev => ({ ...prev, tipoEventos: v }))}
+                    placeholder="Todos los eventos"
+                  />
+                </div>
+              </FilterBar>
+            }
+            filterActions={<>
+              <button
+                className="new-btn"
+                style={{minWidth: '140px'}}
+                onClick={handleApplyFilters}
+                disabled={isFetchingOptions || !filters.bitacoraId}>
+                {isFetchingOptions ? (
+                  <><span className="spinner-border spinner-border-sm me-2"></span>Cargando...</>
+                ) : (
+                  <><i className="fa fa-wand-magic-sparkles me-2"></i>Generar Reporte</>
+                )}
+              </button>
+            </>}
           />
 
-          {roleData?.reporte_eventos?.read && (
-            <div className="settings-content">
-              <div className="reporte-eventos-panel">
-                <div className="reporte-eventos-panel__header">
-                  <div>
-                    <h5 className="mb-1">Filtros</h5>
-                    <p className="text-muted mb-0">
-                      Selecciona cliente, operador, linea, bitacora y tipo de evento.
-                    </p>
-                  </div>
-
-                  <button type="button" className="reporte-clear-btn" onClick={clearFilters}>
-                    <i className="fas fa-times"></i>
-                    Limpiar
-                  </button>
-                </div>
-
-                <div className="reporte-eventos-grid reporte-eventos-grid--top">
-                  <div className="reporte-field">
-                    <label htmlFor="reporte-cliente" className="reporte-field__label">Cliente</label>
-                    {loadingClients ? (
-                      <div className="reporte-skeleton" />
-                    ) : (
-                      <select
-                        id="reporte-cliente"
-                        className="form-select reporte-field__control"
-                        name="cliente"
-                        value={filters.cliente}
-                        onChange={handleFilterChange}>
-                        <option value="">Selecciona un cliente</option>
-                        {clients.map((client) => (
-                          <option key={client._id} value={client.razon_social}>
-                            {client.razon_social}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="reporte-field">
-                    <label htmlFor="reporte-operador" className="reporte-field__label">Operador</label>
-                    {loadingOperadores ? (
-                      <div className="reporte-skeleton" />
-                    ) : (
-                      <select
-                        id="reporte-operador"
-                        className="form-select reporte-field__control"
-                        name="operador"
-                        value={filters.operador}
-                        onChange={handleFilterChange}
-                        disabled={!clientSelected}>
-                        <option value="">Todos los operadores</option>
-                        {operadores.map((operador) => (
-                          <option key={operador._id || operador.nombre} value={operador.nombre}>
-                            {operador.nombre}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="reporte-field">
-                    <label htmlFor="reporte-linea" className="reporte-field__label">Linea de transporte</label>
-                    {loadingLineas ? (
-                      <div className="reporte-skeleton" />
-                    ) : (
-                      <select
-                        id="reporte-linea"
-                        className="form-select reporte-field__control"
-                        name="lineaTransporte"
-                        value={filters.lineaTransporte}
-                        onChange={handleFilterChange}
-                        disabled={!clientSelected}>
-                        <option value="">Todas las lineas de transporte</option>
-                        {lineasTransporte.map((linea) => (
-                          <option key={linea._id || linea.nombre} value={linea.nombre}>
-                            {linea.nombre}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="reporte-field">
-                    <label htmlFor="reporte-status" className="reporte-field__label">Estatus de bitácora</label>
-                    <select
-                      id="reporte-status"
-                      className="form-select reporte-field__control"
-                      name="status"
-                      value={filters.status}
-                      onChange={handleFilterChange}
-                      disabled={!clientSelected}>
-                      <option value="">Todos los estatus</option>
-                      <option value="nueva">Nueva</option>
-                      <option value="creada">Creada</option>
-                      <option value="plan de embarque">Plan de embarque</option>
-                      <option value="validada">Validada</option>
-                      <option value="iniciada">Iniciada</option>
-                      <option value="finalizada">Finalizada</option>
-                      <option value="cerrada">Cerrada</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="reporte-eventos-grid reporte-eventos-grid--bottom">
-                  <div className="reporte-field reporte-field--wide">
-                    <label htmlFor="reporte-bitacora" className="reporte-field__label">Bitacora ID</label>
-                    {loadingBitacoras ? (
-                      <div className="reporte-skeleton" />
-                    ) : (
-                      <select
-                        id="reporte-bitacora"
-                        className="form-select reporte-field__control"
-                        name="bitacoraId"
-                        value={filters.bitacoraId}
-                        onChange={handleFilterChange}
-                        disabled={!clientSelected}>
-                        <option value="">Todas las bitacoras</option>
-                        {bitacoras.map((bitacora) => (
-                          <option key={bitacora._id} value={bitacora.bitacora_id}>
-                            {bitacora.bitacora_id} - {bitacora.cliente}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-
-                  <div className="reporte-field">
-                    <label htmlFor="reporte-tipo-evento" className="reporte-field__label">Tipos de evento</label>
-                    {loadingEventTypes ? (
-                      <div className="reporte-skeleton" />
-                    ) : (
-                    <div
-                      ref={tipoEventosRef}
-                      className={`reporte-multiselect ${!clientSelected ? "is-disabled" : ""} ${
-                        isTipoEventosOpen ? "is-open" : ""
-                      }`}>
-                      <button
-                        type="button"
-                        id="reporte-tipo-evento"
-                        className="reporte-multiselect__trigger"
-                        onClick={() => clientSelected && setIsTipoEventosOpen((prev) => !prev)}
-                        disabled={!clientSelected}>
-                        <span className="reporte-multiselect__label">{tipoEventosLabel}</span>
-                        <i className={`fas fa-chevron-${isTipoEventosOpen ? "up" : "down"}`}></i>
-                      </button>
-
-                      {isTipoEventosOpen && (
-                        <div className="reporte-multiselect__menu">
-                          <label className="reporte-multiselect__option">
-                            <input
-                              type="checkbox"
-                              checked={allEventTypesSelected}
-                              onChange={() => handleTipoEventoToggle("__ALL__")}
-                            />
-                            <span>Todos</span>
-                          </label>
-
-                          {eventTypes.map((eventType) => (
-                            <label key={eventType._id} className="reporte-multiselect__option">
-                              <input
-                                type="checkbox"
-                                checked={filters.tipoEventos.includes(eventType.evento)}
-                                onChange={() => handleTipoEventoToggle(eventType.evento)}
-                              />
-                              <span>{eventType.evento}</span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
+          <div className="settings-content pt-3 px-4">
+            {isInitialLoading ? (
+              <div className="p-0">
+                <Skeleton height="120px" className="mb-3" />
+                <Skeleton height="100px" className="mb-4" />
+                <div className="row g-3 mb-4">
+                  {[1, 2, 3].map(i => (
+                    <div key={i} className="col-md-4">
+                      <Skeleton height="100px" />
                     </div>
-                    )}
-                  </div>
+                  ))}
                 </div>
-
-                {filters.bitacoraId && filters.tipoEventos.length > 0 && (
-                  <div className="reporte-eventos-timeline">
-                    <div className="reporte-eventos-timeline__header">
-                      <div className="d-flex align-items-center justify-content-between">
-                        <div className="d-flex align-items-center gap-3 flex-wrap">
-                          <h5 className="mb-0">Timeline de eventos</h5>
-                        {timelineEvents.length >= 2 && (() => {
-                          const diffMs = new Date(timelineEvents[timelineEvents.length - 1].createdAt) - new Date(timelineEvents[0].createdAt);
-                          const totalMinutes = Math.max(0, Math.round(diffMs / 60000));
-                          const hours = Math.floor(totalMinutes / 60);
-                          const minutes = totalMinutes % 60;
-                          const label = hours === 0
-                            ? `${minutes} min`
-                            : minutes === 0
-                              ? `${hours} h`
-                              : `${hours} h ${minutes} min`;
-                          return (
-                            <span className="text-muted" style={{fontSize: "0.8rem"}}>
-                              {label} en total
-                            </span>
-                          );
-                        })()}
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-success btn-sm"
-                          title="Exportar PDF"
-                          onClick={handlePrintPDF}>
-                          <i className="fas fa-file-pdf"></i>
-                        </button>
-                      </div>
-                      <p className="text-muted mb-0 mt-1">
-                        Bitacora {filters.bitacoraId} con {timelineEvents.length} evento
-                        {timelineEvents.length === 1 ? "" : "s"} filtrado
-                        {timelineEvents.length === 1 ? "" : "s"}.
+                <Skeleton height="400px" />
+              </div>
+            ) : (
+              <>
+                {!appliedFilters.bitacoraId ? (
+                  <div className="reporte-eventos-empty fade-in mt-5">
+                    <div className="text-center py-5">
+                      <i className="fa fa-file-invoice fa-4x mb-3 text-muted opacity-25"></i>
+                      <h5>Generar Reporte de Bitácora</h5>
+                      <p className="text-muted">
+                        Ajusta los filtros de alcance en el <strong>Paso 1</strong> y selecciona una bitácora en el <strong>Paso 2</strong> para visualizar la línea de tiempo.
                       </p>
                     </div>
-
-                    {timelineEvents.length > 0 ? (
-                      <div className="reporte-timeline">
-                        {timelineEvents.map((evento, index) => (
-                          <div key={evento._id || `${evento.nombre}-${evento.createdAt}-${index}`} className="reporte-timeline__item">
-                            <div className="reporte-timeline__rail">
-                              <span className="reporte-timeline__dot"></span>
-                              {index !== timelineEvents.length - 1 && <span className="reporte-timeline__line"></span>}
-                            </div>
-
-                            <div className="reporte-timeline__content">
-                              <div className="reporte-timeline__top">
-                                <h6 className="mb-0">{evento.nombre}</h6>
-                                <span className="reporte-timeline__date">{formatDateTime(evento.createdAt)}</span>
-                              </div>
-
-                              <p className="reporte-timeline__description mb-2">
-                                {evento.descripcion || "Sin descripcion"}
-                              </p>
-
-                              <span className="reporte-timeline__diff">
-                                <i className="fas fa-clock"></i>
-                                {formatTimeDifference(
-                                  evento.createdAt,
-                                  index > 0 ? timelineEvents[index - 1].createdAt : null
-                                )}
-                              </span>
-                              {/inicio de recorrido/i.test(evento.nombre) &&
-                                planDeEmbarqueEvento?.metadata?.horaSalida && (
-                                <span className="reporte-timeline__plan-diff">
-                                  <i className="fas fa-calendar-check"></i>
-                                  Plan: {formatDateTime(planDeEmbarqueEvento.metadata.horaSalida)}
-                                  &nbsp;·&nbsp;
-                                  Desfase: {formatDeviation(evento.createdAt, planDeEmbarqueEvento.metadata.horaSalida)}
-                                </span>
-                              )}
-                            </div>
+                  </div>
+                ) : (
+              <div className="reporte-eventos-container">
+                {insights && (
+                  <div className="row g-3 mb-3">
+                    <div className="col-md-4">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--duration">
+                          <i className="fa fa-clock"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">
+                            {formatTimeDifference(selectedEventos[selectedEventos.length-1]?.createdAt, selectedEventos[0]?.createdAt).replace(' Primer evento', '')}
                           </div>
-                        ))}
+                          <div className="metric-card__label">Duración Total</div>
+                        </div>
                       </div>
-                    ) : (
-                      <div className="reporte-eventos-empty">
-                        No hay eventos del tipo seleccionado dentro de esta bitacora.
+                    </div>
+                    <div className="col-md-4">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--events">
+                          <i className="fa fa-list-ul"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{insights.totalEvents}</div>
+                          <div className="metric-card__label">Total de Eventos</div>
+                        </div>
                       </div>
-                    )}
+                    </div>
+                    <div className="col-md-4">
+                      <div className="metric-card">
+                        <div className="metric-card__icon metric-card__icon--alerts">
+                          <i className="fa fa-shield-halved"></i>
+                        </div>
+                        <div className="metric-card__body">
+                          <div className="metric-card__value">{insights.anomalies}</div>
+                          <div className="metric-card__label">Alertas de Riesgo</div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
+
+                <div className="card mb-3 border-0 shadow-sm" style={{borderRadius: '12px'}}>
+                  <div className="card-header bg-white py-2 px-3 border-bottom d-flex justify-content-between align-items-center">
+                    <h6 className="mb-0 fw-bold" style={{fontSize: '0.85rem'}}>
+                      <i className="fa fa-route me-2 text-primary"></i>
+                      Bitácora #{selectedBitacora.bitacora_id}
+                    </h6>
+                    <button className="btn btn-success btn-sm px-3 fw-semibold" style={{fontSize: '0.78rem', borderRadius: '8px'}} onClick={handlePrintPDF}>
+                      <i className="fa fa-file-pdf me-1"></i>Exportar PDF
+                    </button>
+                  </div>
+                  <div className="card-body p-3">
+                    <div className="reporte-meta-grid">
+                      {[
+                        { label: "Cliente", value: selectedBitacora.cliente },
+                        { label: "Línea de Transporte", value: selectedBitacora.linea_transporte },
+                        { label: "Operador", value: selectedBitacora.operador },
+                        { label: "Folio de Servicio", value: selectedBitacora.folio_servicio },
+                        { label: "Origen", value: selectedBitacora.origen_nombre || selectedBitacora.origen },
+                        { label: "Destino", value: selectedBitacora.destino_nombre || selectedBitacora.destino },
+                      ].map((item, idx) => (
+                        <div key={idx} className="reporte-meta-item">
+                          <div className="reporte-meta-item__label">{item.label}</div>
+                          <div className="reporte-meta-item__value">{item.value || "—"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="reporte-timeline-wrapper">
+                  <div className="reporte-timeline-header">
+                    <h5 className="reporte-timeline-header__title">Cronología del Servicio</h5>
+                    <span className="reporte-timeline-header__badge">
+                      {filteredEvents.length} evento{filteredEvents.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+
+                  <div className="reporte-timeline">
+                    {filteredEvents.map((evento, index) => (
+                      <div key={evento._id || index} className="reporte-timeline__item">
+                        <div className="reporte-timeline__rail">
+                          <span className="reporte-timeline__dot"></span>
+                          {index !== filteredEvents.length - 1 && <span className="reporte-timeline__line"></span>}
+                        </div>
+
+                        <div className="reporte-timeline__content">
+                          <div className="d-flex justify-content-between align-items-start mb-1">
+                            <div>
+                              <CellBadge 
+                                variant={evento.metadata?.categoriaAnomalia ? "red" : "blue"} 
+                                label={evento.nombre}
+                                className="mb-1"
+                              />
+                              <div className="reporte-timeline__date">
+                                <i className="far fa-clock me-1"></i>{formatDateTime(evento.createdAt)}
+                              </div>
+                            </div>
+                            <span className="reporte-timeline__diff">
+                              {formatTimeDifference(evento.createdAt, index > 0 ? filteredEvents[index - 1].createdAt : null)}
+                            </span>
+                          </div>
+
+                          <p className="reporte-timeline__description mb-0">
+                            {evento.descripcion || "Evento registrado sin observaciones adicionales."}
+                          </p>
+
+                          {/inicio de recorrido/i.test(evento.nombre) && planDeEmbarqueEvento?.metadata?.horaSalida && (
+                            <div className="reporte-timeline__plan-diff">
+                              <i className="fa fa-history"></i>
+                              Desfase vs Plan: <strong>{formatDeviation(evento.createdAt, planDeEmbarqueEvento.metadata.horaSalida)}</strong>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </>
+        )}
       </div>
-    </section>
+    </div>
+  </div>
+</section>
   );
 };
 
