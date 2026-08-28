@@ -304,14 +304,17 @@ const DataTable = ({
                             <div className="action-buttons">
                               {actions.map((action, i) => {
                                 if (!isActionVisible(action, row)) return null;
-                                return (
-                                  <button
-                                    key={i}
-                                    type="button"
-                                    className={action.className}
-                                    title={action.title}
-                                    onClick={() => action.onClick(row)}>
-                                    {action.icon && <i className={action.icon}></i>}
+                                  const isDisabled = typeof action.disabled === "function" ? action.disabled(row) : !!action.disabled;
+
+                                  return (
+                                    <button
+                                      key={i}
+                                      type="button"
+                                      className={`${action.className} ${isDisabled ? "disabled" : ""}`}
+                                      title={isDisabled ? "Acción no permitida para el estado actual" : action.title}
+                                      onClick={() => !isDisabled && action.onClick(row)}
+                                      disabled={isDisabled}>
+                                      {action.icon && <i className={action.icon}></i>}
                                     {action.label && (
                                       <span className={action.icon ? "ms-1" : ""}>{action.label}</span>
                                     )}

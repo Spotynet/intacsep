@@ -122,7 +122,7 @@ export const WialonProvider = ({ children }) => {
       const numId = Number(id);
       return session.getItems("avl_unit").find((u) => u.getId() === numId) || null;
     },
-    [session]
+    [session, units]
   );
 
   return (

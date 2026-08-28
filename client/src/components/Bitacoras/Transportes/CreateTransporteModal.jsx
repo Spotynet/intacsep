@@ -1,21 +1,39 @@
 import React, {useState, useEffect} from "react";
-import {Form} from "react-bootstrap";
 import {useAuth} from "../../../context/AuthContext";
 import ModalTemplate from "../../../components/ModalTemplate";
+import TextInput from "../../../components/TextInput";
+import {Select} from "../../../components/Select";
 
 const STEPS = [
-  {key: "gps",      label: "GPS",      icon: "fa-solid fa-satellite-dish"},
-  {key: "tracto",   label: "Tracto",   icon: "fa-solid fa-truck"},
+  {key: "gps", label: "GPS", icon: "fa-solid fa-satellite-dish"},
+  {key: "tracto", label: "Tracto", icon: "fa-solid fa-truck"},
   {key: "remolque", label: "Remolque", icon: "fa-solid fa-trailer"},
   {key: "operador", label: "Operador", icon: "fa-solid fa-user-tie"},
 ];
+
+const FIELD_LABELS_TRACTO = {
+  eco: "Eco",
+  placa: "Placa",
+  marca: "Marca",
+  modelo: "Modelo",
+  color: "Color",
+  tipo: "Tipo",
+};
+
+const FIELD_LABELS_REMOLQUE = {
+  eco: "Eco",
+  placa: "Placa",
+  color: "Color",
+  capacidad: "Capacidad",
+  sello: "Sello",
+};
 
 const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, bitacora, units, onDraftCreated}) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [slideDirection, setSlideDirection] = useState("forward");
   const [transporteData, setTransporteData] = useState({
-    tracto:  {eco: "", placa: "", marca: "", modelo: "", color: "", tipo: ""},
-    remolque:{eco: "", placa: "", color: "", capacidad: "", sello: ""},
+    tracto: {eco: "", placa: "", marca: "", modelo: "", color: "", tipo: ""},
+    remolque: {eco: "", placa: "", color: "", capacidad: "", sello: ""},
     lineaTransporte: "",
     operador: "",
     telefono: "",
@@ -33,7 +51,6 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
   const {user, verifyToken, setUser} = useAuth();
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
-  // Reset wizard step when modal opens
   useEffect(() => {
     if (show) setCurrentStep(0);
   }, [show]);
@@ -81,8 +98,7 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
   const fetchOperadores = async (lineaTransporte = null) => {
     try {
       let url = `${baseUrl}/operadores`;
-      if (lineaTransporte && lineaTransporte !== "all")
-        url += `?lineaTransporte=${encodeURIComponent(lineaTransporte)}`;
+      if (lineaTransporte && lineaTransporte !== "all") url += `?lineaTransporte=${encodeURIComponent(lineaTransporte)}`;
       const response = await fetch(url, {method: "GET", credentials: "include"});
       if (response.ok) setOperadores(await response.json());
       else setOperadores([]);
@@ -95,9 +111,7 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
 
   const handleGpsUnitToggle = (unit) => {
     setSelectedGpsUnits((prev) =>
-      prev.some((u) => u.id === unit.id)
-        ? prev.filter((u) => u.id !== unit.id)
-        : [...prev, unit]
+      prev.some((u) => u.id === unit.id) ? prev.filter((u) => u.id !== unit.id) : [...prev, unit]
     );
   };
 
@@ -113,17 +127,11 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
   );
 
   const handleSelectAllFiltered = () => {
-    const allSelected = filteredGpsUnits.every((unit) =>
-      selectedGpsUnits.some((s) => s.id === unit.id)
-    );
+    const allSelected = filteredGpsUnits.every((unit) => selectedGpsUnits.some((s) => s.id === unit.id));
     if (allSelected) {
-      setSelectedGpsUnits((prev) =>
-        prev.filter((s) => !filteredGpsUnits.some((f) => f.id === s.id))
-      );
+      setSelectedGpsUnits((prev) => prev.filter((s) => !filteredGpsUnits.some((f) => f.id === s.id)));
     } else {
-      const newSelections = filteredGpsUnits.filter(
-        (unit) => !selectedGpsUnits.some((s) => s.id === unit.id)
-      );
+      const newSelections = filteredGpsUnits.filter((unit) => !selectedGpsUnits.some((s) => s.id === unit.id));
       setSelectedGpsUnits((prev) => [...prev, ...newSelections]);
     }
   };
@@ -132,9 +140,7 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
     const {name, value} = e.target;
     const [section, field] = name.split(".");
     if (name === "telefono") {
-      setPhoneError(value && !validatePhoneNumber(value)
-        ? "El número debe tener exactamente 10 dígitos"
-        : "");
+      setPhoneError(value && !validatePhoneNumber(value) ? "El número debe tener exactamente 10 dígitos" : "");
     }
     if (section && field) {
       setTransporteData((prev) => ({...prev, [section]: {...prev[section], [field]: value}}));
@@ -151,7 +157,10 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
 
     let newId;
     if (idMethod === "wialon") {
-      if (selectedGpsUnits.length === 0) { alert("Seleccione al menos una unidad GPS."); return; }
+      if (selectedGpsUnits.length === 0) {
+        alert("Seleccione al menos una unidad GPS.");
+        return;
+      }
       newId = generateTransporteId();
     } else {
       newId = generateTransporteId();
@@ -204,9 +213,12 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
 
     addTransporte(newTransporte, bitacora._id);
     setTransporteData({
-      tracto:  {eco: "", placa: "", marca: "", modelo: "", color: "", tipo: ""},
-      remolque:{eco: "", placa: "", color: "", capacidad: "", sello: ""},
-      lineaTransporte: "", operador: "", telefono: "", gpsUnits: [],
+      tracto: {eco: "", placa: "", marca: "", modelo: "", color: "", tipo: ""},
+      remolque: {eco: "", placa: "", color: "", capacidad: "", sello: ""},
+      lineaTransporte: "",
+      operador: "",
+      telefono: "",
+      gpsUnits: [],
     });
     setSelectedGpsUnits([]);
     setGpsSearchTerm("");
@@ -215,115 +227,114 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
     handleClose();
   };
 
-  const handleSubmitTransporte = (e) => { e.preventDefault(); };
-
-  // ── Step content renderers ─────────────────────────────────────
+  const handleSubmitTransporte = (e) => {
+    e.preventDefault();
+  };
 
   const renderStepGps = () => (
     <div className="wizard-step-content">
-      <Form.Group className="mb-3">
-        <Form.Label className="fw-semibold">Método de identificación</Form.Label>
+      <div className="mb-3">
+        <span className="ptext__label">Método de identificación</span>
         <div className="wizard-radio-group">
           {[
-            {value: "automatic", label: "Automático",         icon: "fa-solid fa-magic-wand-sparkles"},
-            {value: "wialon",    label: "GPS ID",             icon: "fa-solid fa-satellite-dish"},
+            {value: "automatic", label: "Automático", icon: "fa-solid fa-magic-wand-sparkles"},
+            {value: "wialon", label: "GPS ID", icon: "fa-solid fa-satellite-dish"},
           ].map(({value, label, icon}) => (
             <label key={value} className={`wizard-radio-card ${idMethod === value ? "selected" : ""}`}>
-              <input type="radio" name="idMethod" value={value} checked={idMethod === value}
-                onChange={() => setIdMethod(value)} className="visually-hidden" />
+              <input
+                type="radio"
+                name="idMethod"
+                value={value}
+                checked={idMethod === value}
+                onChange={() => setIdMethod(value)}
+                className="visually-hidden"
+              />
               <i className={icon}></i>
               <span>{label}</span>
             </label>
           ))}
         </div>
-      </Form.Group>
+      </div>
 
       {idMethod === "wialon" && (
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold">Unidades GPS</Form.Label>
-          <div className="input-group mb-2">
-            <span className="input-group-text"><i className="fa fa-search"></i></span>
-            <input type="text" className="form-control" placeholder="Buscar por nombre o ID…"
-              value={gpsSearchTerm} onChange={(e) => setGpsSearchTerm(e.target.value)} />
+        <div className="unit-picker">
+          <div className="up-search">
+            <i className="fa fa-search up-search-icon"></i>
+            <input
+              className="up-search-input"
+              placeholder="Buscar por nombre o ID…"
+              value={gpsSearchTerm}
+              onChange={(e) => setGpsSearchTerm(e.target.value)}
+            />
             {gpsSearchTerm && (
-              <button className="btn btn-outline-secondary" type="button" onClick={() => setGpsSearchTerm("")}>
+              <button type="button" className="up-search-clear" onClick={() => setGpsSearchTerm("")}>
                 <i className="fa fa-times"></i>
+              </button>
+            )}
+            <span className="up-count">{filteredGpsUnits.length} unidades</span>
+            {filteredGpsUnits.length > 0 && (
+              <button type="button" className="up-select-all" onClick={handleSelectAllFiltered}>
+                {filteredGpsUnits.every((u) => selectedGpsUnits.some((s) => s.id === u.id))
+                  ? "Deseleccionar"
+                  : "Seleccionar todos"}
               </button>
             )}
           </div>
 
-          {filteredGpsUnits.length > 0 && (
-            <div className="mb-2 d-flex justify-content-between align-items-center">
-              <small className="text-muted">{filteredGpsUnits.length} unidades</small>
-              <button type="button" className="btn btn-sm btn-outline-primary" onClick={handleSelectAllFiltered}>
-                {filteredGpsUnits.every((u) => selectedGpsUnits.some((s) => s.id === u.id))
-                  ? "Deseleccionar todos" : "Seleccionar todos"}
-              </button>
-            </div>
-          )}
-
-          <div className="gps-units-selection">
+          <div className="up-list">
             {units.length === 0 ? (
-              <div className="p-3 text-muted text-center">
-                <i className="fa fa-spinner fa-spin me-2"></i>Cargando unidades…
+              <div className="up-empty">
+                <i className="fa fa-spinner fa-spin"></i>
+                Cargando unidades…
               </div>
             ) : filteredGpsUnits.length === 0 ? (
-              <div className="p-3 text-muted text-center">
-                <i className="fa fa-search me-2"></i>Sin resultados para "{gpsSearchTerm}"
+              <div className="up-empty">
+                <i className="fa fa-search"></i>
+                Sin resultados para &quot;{gpsSearchTerm}&quot;
               </div>
             ) : (
-              <div className="list-group list-group-flush">
-                {filteredGpsUnits.map((unit) => {
-                  const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
-                  return (
-                    <div key={unit.id}
-                      className={`list-group-item list-group-item-action d-flex align-items-center ${isSelected ? "active" : ""}`}
-                      style={{cursor: "pointer", border: "none"}}
-                      onClick={() => handleGpsUnitToggle(unit)}>
-                      <input className="form-check-input me-3" type="checkbox" checked={isSelected}
-                        onChange={() => handleGpsUnitToggle(unit)} onClick={(e) => e.stopPropagation()} />
-                      <div className="flex-grow-1">
-                        <div className="fw-semibold">{unit.name}</div>
-                        <small className="text-muted">ID: {unit.id}</small>
-                      </div>
-                      {isSelected && <i className="fa fa-check-circle text-success"></i>}
+              filteredGpsUnits.map((unit) => {
+                const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
+                return (
+                  <div
+                    key={unit.id}
+                    className={`up-item ${isSelected ? "selected" : ""}`}
+                    onClick={() => handleGpsUnitToggle(unit)}
+                  >
+                    <div className="up-item-icon">
+                      <i className="fa-solid fa-satellite-dish"></i>
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="up-item-info">
+                      <div className="up-item-name">{unit.name}</div>
+                      <div className="up-item-id">ID: {unit.id}</div>
+                    </div>
+                    <div className="up-item-check">
+                      <i className="fa fa-check"></i>
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
 
           {selectedGpsUnits.length > 0 && (
-            <div className="mt-2 p-2 bg-light rounded">
-              <div className="d-flex justify-content-between align-items-center mb-1">
-                <small className="text-muted"><strong>{selectedGpsUnits.length}</strong> seleccionados</small>
-                <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => setSelectedGpsUnits([])}>
-                  Limpiar
-                </button>
-              </div>
-              <div className="d-flex flex-wrap gap-1">
-                {selectedGpsUnits.map((unit) => (
-                  <span key={unit.id} className="badge bg-primary" style={{fontSize: "0.75rem"}}>
-                    {unit.name}
-                    <button type="button" className="btn-close btn-close-white ms-1" style={{fontSize: "0.5rem"}}
-                      onClick={(e) => {e.stopPropagation(); handleGpsUnitToggle(unit);}} />
-                  </span>
-                ))}
-              </div>
+            <div className="up-floating-pill">
+              <span>{selectedGpsUnits.length} unidades seleccionadas</span>
+              <button type="button" className="up-pill-clear" onClick={() => setSelectedGpsUnits([])}>
+                Limpiar
+              </button>
             </div>
           )}
-        </Form.Group>
+        </div>
       )}
 
       {idMethod === "automatic" && (
-        <Form.Group className="mb-3">
-          <Form.Label className="fw-semibold">ID generado</Form.Label>
-          <Form.Control type="text" value={generateTransporteId()} disabled />
-          <Form.Text className="text-muted">
+        <div className="mt-3">
+          <TextInput label="ID generado" value={generateTransporteId()} disabled />
+          <small className="text-muted d-block mt-1">
             Formato: T{String(transportes.length + 1).padStart(3, "0")}_{transporteData.tracto.placa || "N/A"}
-          </Form.Text>
-        </Form.Group>
+          </small>
+        </div>
       )}
     </div>
   );
@@ -332,12 +343,16 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
     <div className="wizard-step-content">
       <div className="wizard-grid-2">
         {["eco", "placa", "marca", "modelo", "color", "tipo"].map((field) => (
-          <Form.Group key={field} className="mb-3">
-            <Form.Label className="fw-semibold">{field.toUpperCase()} <span className="text-danger">*</span></Form.Label>
-            <Form.Control type="text" name={`tracto.${field}`}
-              value={transporteData.tracto[field]} onChange={handleChange}
-              required={!!roleData?.tracto?.create} />
-          </Form.Group>
+          <TextInput
+            key={field}
+            label={FIELD_LABELS_TRACTO[field]}
+            name={`tracto.${field}`}
+            value={transporteData.tracto[field]}
+            onChange={handleChange}
+            required={!!roleData?.tracto?.create}
+            className="mb-3"
+            placeholder={FIELD_LABELS_TRACTO[field]}
+          />
         ))}
       </div>
     </div>
@@ -347,12 +362,16 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
     <div className="wizard-step-content">
       <div className="wizard-grid-2">
         {["eco", "placa", "color", "capacidad", "sello"].map((field) => (
-          <Form.Group key={field} className="mb-3">
-            <Form.Label className="fw-semibold">{field.toUpperCase()} <span className="text-danger">*</span></Form.Label>
-            <Form.Control type="text" name={`remolque.${field}`}
-              value={transporteData.remolque[field]} onChange={handleChange}
-              required={!!roleData?.remolque?.create} />
-          </Form.Group>
+          <TextInput
+            key={field}
+            label={FIELD_LABELS_REMOLQUE[field]}
+            name={`remolque.${field}`}
+            value={transporteData.remolque[field]}
+            onChange={handleChange}
+            required={!!roleData?.remolque?.create}
+            className="mb-3"
+            placeholder={FIELD_LABELS_REMOLQUE[field]}
+          />
         ))}
       </div>
     </div>
@@ -360,84 +379,93 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
 
   const renderStepOperador = () => (
     <div className="wizard-step-content">
-      <Form.Group className="mb-3">
-        <Form.Label className="fw-semibold">Línea de Transporte <span className="text-danger">*</span></Form.Label>
-        <Form.Select name="lineaTransporte"
-          value={draftLineaText ? "" : transporteData.lineaTransporte}
-          onChange={async (e) => {
+      <Select
+        label="Línea de transporte"
+        value={draftLineaText ? "" : transporteData.lineaTransporte}
+        onChange={(val) => {
+          setDraftLineaText("");
+          setDraftOperadorText("");
+          setTransporteData((prev) => ({...prev, lineaTransporte: val || "", operador: ""}));
+          setOperadores([]);
+          if (val && val !== "all") fetchOperadores(val);
+        }}
+        options={lineasTransporte.map((linea) => ({value: linea.nombre, label: linea.nombre}))}
+        placeholder="Selecciona una línea"
+        searchable
+        clearable
+        className="mb-3"
+      />
+      {roleData?.crear_draft_transporte && (
+        <TextInput
+          placeholder="O escribe una línea nueva…"
+          value={draftLineaText}
+          onChange={(e) => {
             const val = e.target.value;
-            setDraftLineaText("");
+            setDraftLineaText(val);
             setDraftOperadorText("");
             setTransporteData((prev) => ({...prev, lineaTransporte: val, operador: ""}));
             setOperadores([]);
-            if (val && val !== "all") fetchOperadores(val);
+            if (val) fetchOperadores(val);
           }}
-          required={!!roleData?.operador?.create && !draftLineaText}>
-          <option value="">Selecciona una línea de transporte</option>
-          {lineasTransporte.map((linea) => (
-            <option key={linea._id} value={linea.nombre}>{linea.nombre}</option>
-          ))}
-        </Form.Select>
-        {roleData?.crear_draft_transporte && (
-          <Form.Control type="text" className="mt-2" value={draftLineaText}
-            placeholder="O escribe una línea nueva…"
-            onChange={async (e) => {
-              const val = e.target.value;
-              setDraftLineaText(val);
-              setDraftOperadorText("");
-              setTransporteData((prev) => ({...prev, lineaTransporte: val, operador: ""}));
-              setOperadores([]);
-              if (val) fetchOperadores(val);
-            }} />
-        )}
-      </Form.Group>
+          className="mb-3"
+        />
+      )}
 
-      <Form.Group className="mb-3">
-        <Form.Label className="fw-semibold">Operador <span className="text-danger">*</span></Form.Label>
-        <Form.Select name="operador"
-          value={draftOperadorText ? "" : transporteData.operador}
+      <Select
+        label="Operador"
+        value={draftOperadorText ? "" : transporteData.operador}
+        onChange={(val) => {
+          setDraftOperadorText("");
+          setTransporteData((prev) => ({...prev, operador: val || ""}));
+        }}
+        options={operadores.map((op) => ({value: op.nombre, label: op.nombre}))}
+        placeholder={transporteData.lineaTransporte ? "Selecciona un operador" : "Selecciona una línea primero"}
+        searchable
+        clearable
+        className="mb-3"
+        disabled={!transporteData.lineaTransporte}
+      />
+      {roleData?.crear_draft_transporte && (
+        <TextInput
+          placeholder="O escribe un operador nuevo…"
+          value={draftOperadorText}
           onChange={(e) => {
-            setDraftOperadorText("");
-            setTransporteData((prev) => ({...prev, operador: e.target.value}));
+            const val = e.target.value;
+            setDraftOperadorText(val);
+            setTransporteData((prev) => ({...prev, operador: val}));
           }}
-          required={!!roleData?.operador?.create && !draftOperadorText}
-          disabled={!transporteData.lineaTransporte}>
-          <option value="">
-            {transporteData.lineaTransporte ? "Selecciona un operador" : "Selecciona una línea primero"}
-          </option>
-          {operadores.map((op) => (
-            <option key={op._id} value={op.nombre}>{op.nombre}</option>
-          ))}
-        </Form.Select>
-        {roleData?.crear_draft_transporte && (
-          <Form.Control type="text" className="mt-2" value={draftOperadorText}
-            placeholder="O escribe un operador nuevo…"
-            onChange={(e) => {
-              const val = e.target.value;
-              setDraftOperadorText(val);
-              setTransporteData((prev) => ({...prev, operador: val}));
-            }} />
-        )}
-      </Form.Group>
+          className="mb-3"
+        />
+      )}
 
-      <Form.Group className="mb-3">
-        <Form.Label className="fw-semibold">Teléfono <span className="text-danger">*</span></Form.Label>
-        <Form.Control type="text" name="telefono" value={transporteData.telefono}
-          onChange={handleChange} required={!!roleData?.operador?.create} isInvalid={!!phoneError}
-          placeholder="1234567890" />
-        {phoneError
-          ? <Form.Control.Feedback type="invalid">{phoneError}</Form.Control.Feedback>
-          : <Form.Text className="text-muted">Exactamente 10 dígitos sin espacios</Form.Text>
-        }
-      </Form.Group>
+      <TextInput
+        label="Teléfono"
+        name="telefono"
+        value={transporteData.telefono}
+        onChange={handleChange}
+        placeholder="1234567890"
+        required={!!roleData?.operador?.create}
+        className="mb-2"
+      />
+      {phoneError ? (
+        <small className="text-danger d-block mb-2">{phoneError}</small>
+      ) : (
+        <small className="text-muted d-block mb-2">Exactamente 10 dígitos sin espacios</small>
+      )}
     </div>
   );
 
   const stepContent = [renderStepGps, renderStepTracto, renderStepRemolque, renderStepOperador];
   const isLastStep = currentStep === STEPS.length - 1;
 
-  const goNext = () => { setSlideDirection("forward");  setCurrentStep((s) => s + 1); };
-  const goPrev = () => { setSlideDirection("backward"); setCurrentStep((s) => s - 1); };
+  const goNext = () => {
+    setSlideDirection("forward");
+    setCurrentStep((s) => s + 1);
+  };
+  const goPrev = () => {
+    setSlideDirection("backward");
+    setCurrentStep((s) => s - 1);
+  };
 
   return (
     <ModalTemplate
@@ -446,45 +474,45 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
       title="Crear Nuevo Transporte"
       onClose={handleClose}
       onSubmit={handleSubmitTransporte}
-      hideFooter>
-
-      {/* Step indicator */}
+      hideFooter
+    >
       <div className="wizard-steps">
         {STEPS.map((step, i) => (
           <React.Fragment key={step.key}>
             <div className={`wizard-step ${i === currentStep ? "active" : ""} ${i < currentStep ? "completed" : ""}`}>
               <div className="wizard-step-circle">
-                {i < currentStep
-                  ? <i className="fa-solid fa-check"></i>
-                  : <span>{i + 1}</span>}
+                {i < currentStep ? <i className="fa-solid fa-check"></i> : <span>{i + 1}</span>}
               </div>
               <span className="wizard-step-label">{step.label}</span>
             </div>
-            {i < STEPS.length - 1 && (
-              <div className={`wizard-step-connector ${i < currentStep ? "completed" : ""}`} />
-            )}
+            {i < STEPS.length - 1 && <div className={`wizard-step-connector ${i < currentStep ? "completed" : ""}`} />}
           </React.Fragment>
         ))}
       </div>
 
-      {/* Compact numeric indicator — visible only on mobile via CSS */}
       <div className="wizard-numeric-indicator">
         Paso {currentStep + 1} de {STEPS.length} — {STEPS[currentStep].label}
       </div>
 
-      {/* Current step content — keyed so animation replays on each step change */}
-      <div key={`step-${currentStep}-${slideDirection}`}
-           className={`wizard-step-content slide-${slideDirection}`}>
+      <div key={`step-${currentStep}-${slideDirection}`} className={`wizard-step-content slide-${slideDirection}`}>
         {stepContent[currentStep]()}
       </div>
 
-      {/* Sticky navigation footer */}
       <div className="wizard-footer">
-        <button type="button" className="btn btn-outline-secondary"
-          onClick={currentStep === 0 ? handleClose : goPrev}>
-          {currentStep === 0
-            ? <><i className="fa-solid fa-xmark me-1"></i>Cancelar</>
-            : <><i className="fa-solid fa-arrow-left me-1"></i>Anterior</>}
+        <button
+          type="button"
+          className="btn btn-outline-secondary"
+          onClick={currentStep === 0 ? handleClose : goPrev}
+        >
+          {currentStep === 0 ? (
+            <>
+              <i className="fa-solid fa-xmark me-1"></i>Cancelar
+            </>
+          ) : (
+            <>
+              <i className="fa-solid fa-arrow-left me-1"></i>Anterior
+            </>
+          )}
         </button>
         {isLastStep ? (
           <button type="button" className="btn btn-success" onClick={doSave}>

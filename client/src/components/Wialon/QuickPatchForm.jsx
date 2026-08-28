@@ -1,37 +1,136 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { useToast } from "../../hooks/useToast";
+import { useWialon } from "../../context/WialonProvider";
+import { Select } from "../Select";
+import { TextInput } from "../TextInput";
+import { TextArea } from "../TextArea";
+import { findBestEventMatch } from "../../utils/wialonUtils";
 
-const QuickPatchForm = ({ unit, eventTypes, onSuccess, onCancel }) => {
+const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, ref) => {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const { getUnitById } = useWialon();
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
   const [loading, setLoading] = useState(false);
   const [bitacora, setBitacora] = useState(null);
+  const [matchSource, setMatchSource] = useState(null);
   const [formData, setFormData] = useState({
     nombre: "",
     descripcion: "",
     frecuencia: 0,
   });
+  const [transportData, setTransportData] = useState(null);
 
-  useEffect(() => {
-    if (unit?.bitacora_raw_id) {
-      fetchBitacora();
+  // Expose handleSubmit to parent
+  useImperativeHandle(ref, () => ({
+    submit: () => {
+      // Use a custom event to trigger the form's onSubmit or just call handleSubmit
+      const fakeEvent = { preventDefault: () => {} };
+      return handleSubmit(fakeEvent);
+    },
+    isLoading: loading
+  }));
+
+  // Helper functions for GPS data (synced with NewEventModal.jsx)
+  const formatDuration = (seconds) => {
+    if (seconds < 60) return `Hace ${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `Hace ${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `Hace ${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `Hace ${days}d`;
+  };
+
+  const getAddressFromCoordinates = (lon, lat) => {
+    return new Promise((resolve, reject) => {
+      if (!lon || !lat) return reject("Invalid coordinates");
+      if (!window.wialon?.util?.Gis?.getLocations) return reject("Wialon GIS not available");
+
+      window.wialon.util.Gis.getLocations([{lon, lat}], (code, res) => {
+        if (code === 0) resolve(res[0]);
+        else reject("No se pudo obtener la dirección.");
+      });
+    });
+  };
+
+  const getUnitInfo = useCallback(async (wialonId) => {
+    const unitObj = getUnitById(wialonId);
+    if (!unitObj || typeof unitObj.getPosition !== "function") return null;
+
+    const pos = unitObj.getPosition();
+    if (!pos) return null;
+
+    let ubicacion = "";
+    try {
+      const address = await getAddressFromCoordinates(pos.x, pos.y);
+      ubicacion = Array.isArray(address) ? address.join(", ") : address;
+    } catch (e) {
+      console.warn("⚠️ Dirección no encontrada:", e);
     }
-  }, [unit]);
 
-  // Autofill description with event name from Wialon if not already set
-  useEffect(() => {
-    if (unit?.eventName && !formData.descripcion) {
-      setFormData(prev => ({
-        ...prev,
-        descripcion: `Alerta Wialon: ${unit.eventName}`
-      }));
+    return {
+      duracion: formatDuration(Math.floor(Date.now() / 1000) - pos.t),
+      velocidad: pos.s,
+      coordenadas: `${pos.y}, ${pos.x}`,
+      ultimo_posicionamiento: window.wialon?.util?.DateTime?.formatTime(pos.t) || "—",
+      ubicacion,
+    };
+  }, [getUnitById]);
+
+  const getTransporteLabel = (transporte) => {
+    const id = transporte.id || "";
+    if (!id) return "Sin ID";
+    if (id.startsWith("T") && id.includes("_")) return id;
+    const parts = id.split("_");
+    if (parts.length >= 3) return `${parts[1]} - ${parts[2]}`;
+    if (parts.length === 2) return `${parts[0]} - ${parts[1]}`;
+    return id;
+  };
+
+  const getMultipleGpsData = useCallback(async (transporte) => {
+    // Compatibility with older transport versions
+    if (!transporte.gpsUnits || transporte.gpsUnits.length === 0) {
+      const formattedId = transporte.id?.split("_")[0];
+      if (!formattedId || formattedId === "0" || formattedId === "blank") {
+        return []; 
+      }
+      const data = await getUnitInfo(formattedId);
+      return data ? [{ wialonId: formattedId, name: `GPS ${formattedId}`, data }] : [];
     }
-  }, [unit]);
 
-  const fetchBitacora = async () => {
+    const gpsDataPromises = transporte.gpsUnits.map(async (gpsUnit) => {
+      const data = await getUnitInfo(gpsUnit.wialonId);
+      return {
+        wialonId: gpsUnit.wialonId,
+        name: gpsUnit.name,
+        data: data || {},
+      };
+    });
+    return await Promise.all(gpsDataPromises);
+  }, [getUnitInfo]);
+
+  const enrichTransportWithGps = useCallback(async (transporte) => {
+    if (!transporte) return null;
+    const transporteCopy = { ...transporte };
+
+    const gpsData = await getMultipleGpsData(transporteCopy);
+    if (gpsData.length === 0) {
+      // Fallback to manual or empty if enrichment fails or it's manual
+      transporteCopy.registro = transporteCopy.registro || {
+        ubicacion: "", duracion: "", ultimo_posicionamiento: "", velocidad: "", coordenadas: "",
+      };
+    } else {
+      transporteCopy.gpsData = gpsData;
+      transporteCopy.registro = gpsData[0].data || {};
+    }
+    
+    return transporteCopy;
+  }, [getMultipleGpsData]);
+
+  const fetchBitacora = useCallback(async () => {
     try {
       const res = await fetch(`${baseUrl}/bitacora/${unit.bitacora_raw_id}`, {
         credentials: "include",
@@ -39,15 +138,94 @@ const QuickPatchForm = ({ unit, eventTypes, onSuccess, onCancel }) => {
       if (res.ok) {
         const data = await res.json();
         setBitacora(data);
+        
+        // Find the specific transport
+        const match = data.transportes.find(
+          t => String(t.id) === String(unit.transporte_id) || t.placa === unit.placa
+        );
+        if (match) {
+          setTransportData(match); // Set initial data, enrichment happens in another effect
+        }
       }
     } catch (err) {
       console.error("Error fetching bitacora:", err);
     }
+  }, [unit, baseUrl]);
+
+  useEffect(() => {
+    if (unit?.bitacora_raw_id) {
+      fetchBitacora();
+    }
+  }, [unit, fetchBitacora]);
+
+  // Dedicated effect for GPS enrichment
+  useEffect(() => {
+    let active = true;
+    const runEnrichment = async () => {
+      if (!transportData || transportData.gpsEnriched) return;
+      
+      const enriched = await enrichTransportWithGps(transportData);
+      if (active && enriched && enriched.gpsData?.length > 0) {
+        setTransportData({ ...enriched, gpsEnriched: true });
+      }
+    };
+    
+    runEnrichment();
+    return () => { active = false; };
+  }, [transportData, enrichTransportWithGps]);
+
+  // Autofill and Match Logic
+  useEffect(() => {
+    if (unit?.eventName && !formData.descripcion) {
+      setFormData(prev => ({
+        ...prev,
+        descripcion: `Alerta Wialon: ${unit.eventName}`
+      }));
+    }
+
+    if (unit?.eventName && eventTypes.length > 0) {
+      const bestMatch = findBestEventMatch(unit.eventName, eventTypes);
+      
+      if (bestMatch) {
+        setFormData(prev => ({ ...prev, nombre: bestMatch.match.evento }));
+        setMatchSource(bestMatch.source);
+      } else {
+        setMatchSource(null);
+      }
+    }
+  }, [unit, eventTypes]);
+
+  const handleSelectChange = (val) => {
+    setFormData((prev) => ({ ...prev, nombre: val }));
   };
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleManualRegistroChange = (field, value) => {
+    setTransportData(prev => ({
+      ...prev,
+      registro: { ...prev.registro, [field]: value }
+    }));
+  };
+
+  const handleGpsDataChange = (gpsIndex, field, value) => {
+    setTransportData(prev => {
+      const updatedGpsData = [...(prev.gpsData || [])];
+      if (updatedGpsData[gpsIndex]) {
+        updatedGpsData[gpsIndex] = {
+          ...updatedGpsData[gpsIndex],
+          data: { ...updatedGpsData[gpsIndex].data, [field]: value }
+        };
+      }
+      return {
+        ...prev,
+        gpsData: updatedGpsData,
+        registro: updatedGpsData[0]?.data || prev.registro
+      };
+    });
   };
 
   const handleSubmit = async (e) => {
@@ -59,22 +237,14 @@ const QuickPatchForm = ({ unit, eventTypes, onSuccess, onCancel }) => {
 
     setLoading(true);
     try {
-      if (!bitacora) throw new Error("Cargando datos de la bitácora...");
-
-      const transporteMatch = bitacora.transportes.find(
-        t => String(t.id) === String(unit.transporte_id) || t.placa === unit.placa
-      );
-
-      if (!transporteMatch) {
-        throw new Error("No se encontró el transporte en la bitácora");
-      }
+      if (!bitacora || !transportData) throw new Error("Cargando datos de la bitácora...");
 
       const patchData = {
         nombre: formData.nombre,
         descripcion: formData.descripcion,
         registrado_por: `${user.firstName} ${user.lastName}`,
         frecuencia: parseInt(formData.frecuencia) || 0,
-        transportes: [transporteMatch],
+        transportes: [transportData],
       };
 
       const res = await fetch(`${baseUrl}/bitacora/${unit.bitacora_raw_id}/event`, {
@@ -112,76 +282,138 @@ const QuickPatchForm = ({ unit, eventTypes, onSuccess, onCancel }) => {
     );
   }
 
+  const selectOptions = eventTypes.map(et => ({ value: et.evento, label: et.evento }));
+
   return (
     <div className="quick-patch-form animate__animated animate__fadeIn">
+      {transportData && (
+        <div className="mb-4 p-3 border rounded bg-light-subtle animate__animated animate__fadeIn">
+          <div className="d-flex flex-column gap-2">
+            <div style={{ fontSize: '0.85rem', color: '#64748b' }}>
+              <span className="fw-bold" style={{ color: '#1e293b' }}>Bitácora No. :</span> {unit.bitacora_id || '—'}
+            </div>
+            <div style={{ fontSize: '0.85rem', color: '#64748b' }}>
+              <span className="fw-bold" style={{ color: '#1e293b' }}>Transporte:</span> {getTransporteLabel(transportData)}
+            </div>
+            <div className="d-flex align-items-center gap-2" style={{ fontSize: '0.85rem', color: '#64748b' }}>
+              <span className="fw-bold" style={{ color: '#1e293b' }}>Gps included:</span>
+              <div className="d-flex flex-wrap gap-2">
+                {transportData.gpsUnits && transportData.gpsUnits.length > 0 ? (
+                  transportData.gpsUnits.map((gps, idx) => (
+                    <span key={idx} className="badge bg-success-subtle text-success-emphasis" style={{ fontSize: '0.65rem', padding: '4px 8px' }}>
+                      <i className="fa fa-satellite-dish me-1"></i> {gps.name}
+                    </span>
+                  ))
+                ) : (
+                  <span className="badge bg-warning-subtle text-warning-emphasis" style={{ fontSize: '0.65rem', padding: '4px 8px' }}>
+                    Manual
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={handleSubmit}>
-        <div className="mb-3">
-          <label className="form-label fw-bold small text-muted">TIPO DE EVENTO</label>
-          <select
-            name="nombre"
-            className="form-select border-primary"
-            value={formData.nombre}
-            onChange={handleChange}
-            required
-            style={{ borderRadius: "8px" }}
-          >
-            <option value="">Seleccionar...</option>
-            {eventTypes.map((et) => (
-              <option key={et._id} value={et.evento}>
-                {et.evento}
-              </option>
-            ))}
-          </select>
+        <div className="row g-3">
+          <div className="col-md-8">
+            <Select
+              label="TIPO DE EVENTO"
+              options={selectOptions}
+              value={formData.nombre}
+              onChange={handleSelectChange}
+              placeholder="Seleccionar..."
+              clearable={false}
+            />
+            {matchSource && (
+              <div className="mt-1 small text-info animate__animated animate__fadeIn">
+                <i className="fa fa-magic me-1"></i> {matchSource}
+              </div>
+            )}
+          </div>
+          <div className="col-md-4">
+            <TextInput
+              label="FRECUENCIA (MIN)"
+              type="number"
+              name="frecuencia"
+              value={formData.frecuencia}
+              onChange={handleChange}
+              min="0"
+              placeholder="0"
+            />
+          </div>
         </div>
 
-        <div className="mb-3">
-          <label className="form-label fw-bold small text-muted">DESCRIPCIÓN / COMENTARIO</label>
-          <textarea
+        <div className="mt-3 mb-4">
+          <TextArea
+            label="DESCRIPCIÓN / COMENTARIO"
             name="descripcion"
-            className="form-control"
-            rows="5"
+            rows={4}
             value={formData.descripcion}
             onChange={handleChange}
             placeholder="Ingrese detalles del evento..."
             required
-            style={{ borderRadius: "8px", resize: "none" }}
           />
         </div>
 
-        <div className="mb-3">
-          <label className="form-label fw-bold small text-muted">FRECUENCIA (MINUTOS)</label>
-          <div className="input-group">
-            <span className="input-group-text bg-white"><i className="fa fa-clock text-muted"></i></span>
-            <input
-              type="number"
-              name="frecuencia"
-              className="form-control"
-              value={formData.frecuencia}
-              onChange={handleChange}
-              min="0"
-              style={{ borderRadius: "0 8px 8px 0" }}
-            />
+        {transportData && (
+          <div className="unit-details-section mt-5 pt-4 border-top">
+            <label className="pselect__label mb-3 fw-bold" style={{ fontSize: "0.85rem", letterSpacing: "0.5px" }}>
+              DETALLE POR UNIDAD
+            </label>
+            <div className="modern-unit-card border rounded-3 overflow-hidden shadow-sm">
+              <div className="modern-unit-card__header bg-light p-3 border-bottom d-flex justify-content-between align-items-center">
+                <div className="fw-bold text-dark" style={{ fontSize: "0.95rem" }}>{getTransporteLabel(transportData)}</div>
+                <span className={`badge ${!transportData.gpsUnits?.length ? "bg-warning-subtle text-warning-emphasis" : "bg-success-subtle text-success-emphasis"}`} style={{ fontSize: "0.7rem", padding: "4px 8px" }}>
+                  {!transportData.gpsUnits?.length ? "Manual" : "GPS"}
+                </span>
+              </div>
+              <div className="modern-unit-card__body p-4 bg-white">
+                {transportData.gpsData && transportData.gpsData.length > 0 ? (
+                  <div className="row g-4">
+                    {transportData.gpsData.map((gps, idx) => (
+                      <div key={idx} className="col-12 p-3 border rounded bg-light-subtle">
+                        <div className="d-flex align-items-center mb-3 gap-2 fw-bold text-primary" style={{ fontSize: "0.85rem" }}>
+                          <i className="fa fa-satellite-dish"></i>
+                          {gps.name}
+                        </div>
+                        <div className="row g-3">
+                          {["duracion", "ubicacion", "velocidad", "ultimo_posicionamiento", "coordenadas"].map(f => (
+                            <div className="col-md-6" key={f}>
+                              <label className="pselect__label mb-2 text-uppercase" style={{ fontSize: "0.7rem", color: "#6c757d" }}>{f.replace("_", " ")}</label>
+                              <TextInput
+                                className="ptext--sm"
+                                value={gps.data?.[f] || ""}
+                                onChange={(e) => handleGpsDataChange(idx, f, e.target.value)}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="row g-3">
+                    {["duracion", "ubicacion", "velocidad", "ultimo_posicionamiento", "coordenadas"].map(f => (
+                      <div className="col-md-6" key={f}>
+                        <label className="pselect__label mb-2 text-uppercase" style={{ fontSize: "0.7rem", color: "#6c757d" }}>{f.replace("_", " ")}</label>
+                        <TextInput
+                          className="ptext--sm"
+                          value={transportData.registro?.[f] || ""}
+                          onChange={(e) => handleManualRegistroChange(f, e.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-          <div className="form-text small">Próximo seguimiento en minutos (0 = sin seguimiento).</div>
-        </div>
-
-        <div className="d-grid gap-2 mt-4">
-          <button 
-            type="submit" 
-            className="btn btn-primary fw-bold" 
-            disabled={loading}
-            style={{ borderRadius: "8px", padding: "10px" }}
-          >
-            {loading ? (
-              <><i className="fa fa-spinner fa-spin me-2"></i>Guardando...</>
-            ) : (
-              <><i className="fa fa-paper-plane me-2"></i>Registrar en Bitácora</>
-            )}
-          </button>
-        </div>
+        )}
       </form>
     </div>
   );
-};
+});
 
 export default QuickPatchForm;

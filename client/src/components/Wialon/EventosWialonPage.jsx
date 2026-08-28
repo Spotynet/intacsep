@@ -1,4 +1,4 @@
-import {useEffect, useState, useCallback, useMemo} from "react";
+import {useEffect, useState, useCallback, useMemo, useRef} from "react";
 import Sidebar from "../Sidebar";
 import PageHeader from "../PageHeader";
 import DataTable from "../DataTable";
@@ -12,7 +12,9 @@ import QuickPatchForm from "./QuickPatchForm";
 import {useToast} from "../../hooks/useToast";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
+import {useWialon} from "../../context/WialonProvider";
 import {useNavigate} from "react-router-dom";
+import {findBestEventMatch} from "../../utils/wialonUtils";
 
 const fmtTime = (ts) => {
   if (!ts) return "—";
@@ -118,14 +120,6 @@ const EventosWialonPage = () => {
   const [sortField, setSortField] = useState("createdAt");
   const [sortOrder, setSortOrder] = useState("desc");
 
-  const [togglingId, setTogglingId] = useState(null);
-
-  // Log state
-  const [logModalVisible, setLogModalVisible] = useState(false);
-  const [selectedNotifForLog, setSelectedNotifForLog] = useState(null);
-  const [loadingLogs, setLoadingLogs] = useState(false);
-  const [notificationLogs, setNotificationLogs] = useState([]);
-
   // Unit modal state
   const [unitModalVisible, setUnitModalVisible] = useState(false);
   const [selectedNotifForUnits, setSelectedNotifForUnits] = useState(null);
@@ -136,10 +130,12 @@ const EventosWialonPage = () => {
   const [eventModalVisible, setEventModalVisible] = useState(false);
   const [activeEventContext, setActiveEventContext] = useState({ bitacoraId: null, transporteId: null });
 
+  const quickPatchRef = useRef();
+
   useEffect(() => {
     const fetchEventTypes = async () => {
       try {
-        const res = await fetch(`${baseUrl}/event-types`, {credentials: "include"});
+        const res = await fetch(`${baseUrl}/event_types`, {credentials: "include"});
         if (res.ok) {
           const data = await res.json();
           setEventTypes(data);
@@ -319,57 +315,39 @@ const EventosWialonPage = () => {
     setResourceFilter(null);
   };
 
-  // Toggle single notification
-  const handleToggle = async (notification) => {
-    setTogglingId(notification._key);
-    try {
-      const res = await fetch(
-        `${baseUrl}/wialon/notifications/${notification.resourceId}/${notification.id}/toggle`,
-        {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          credentials: "include",
-          body: JSON.stringify({enabled: !notification.enabled}),
-        }
-      );
-      if (!res.ok) throw new Error("Error al cambiar estado");
-      setNotifications((prev) =>
-        prev.map((n) => (n._key === notification._key ? {...n, enabled: !n.enabled} : n))
-      );
-      showToast(`Notificación ${!notification.enabled ? "activada" : "desactivada"}`, "success");
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setTogglingId(null);
+  const handleAutoEvent = (notification) => {
+    if (!notification.activeBitacoras?.length) {
+      showToast("No hay bitácoras activas vinculadas a esta alerta.", "warning");
+      return;
     }
-  };
 
-  const handleCopy = (text) => {
-    if (!text) return;
-    navigator.clipboard.writeText(text)
-      .then(() => showToast("Copiado al portapapeles", "success"))
-      .catch(() => showToast("Error al copiar", "error"));
-  };
+    // Pick the first unit that has an active bitacora
+    const uId = notification.units[0];
+    const uName = notification.unitNames?.[0] || `ID: ${uId}`;
+    const bit = notification.activeBitacoras.find(b => String(b.wialonId) === String(uId)) || notification.activeBitacoras[0];
+    
+    // If the first unit doesn't have a bitacora, find the first one that does
+    const targetUnitId = bit.wialonId;
+    const targetIdx = notification.units.indexOf(targetUnitId);
+    const targetName = notification.unitNames?.[targetIdx] || `ID: ${targetUnitId}`;
 
-  const fetchNotificationLogs = async (notification) => {
-    setSelectedNotifForLog(notification);
-    setLogModalVisible(true);
-    setLoadingLogs(true);
-    setNotificationLogs([]);
+    const unitObj = {
+      id: targetUnitId,
+      name: targetName,
+      bitacora_id: bit.bitacora_id,
+      bitacora_raw_id: bit._id,
+      transporte_id: bit.transporteId,
+      status: bit.status,
+      edited: bit.edited,
+      placa: bit.placa,
+      eco: bit.eco,
+      eventName: notification.name,
+      _key: `unit-${targetUnitId}-${targetIdx}`
+    };
 
-    try {
-      const res = await fetch(
-        `${baseUrl}/wialon/notifications/${notification.resourceId}/${notification.id}/log`,
-        { credentials: "include" }
-      );
-      if (!res.ok) throw new Error("Error al cargar historial");
-      const data = await res.json();
-      setNotificationLogs(data.logs || []);
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setLoadingLogs(false);
-    }
+    setSelectedNotifForUnits(notification);
+    setSelectedUnitInModal(unitObj);
+    setUnitModalVisible(true);
   };
 
   const unitColumns = [
@@ -382,7 +360,7 @@ const EventosWialonPage = () => {
     { 
       key: "bitacora_id", 
       header: "Bitácora", 
-      width: "25%",
+      width: "20%",
       render: (row) => row.bitacora_id ? (
         <CellBadge 
           label={row.bitacora_id} 
@@ -392,10 +370,27 @@ const EventosWialonPage = () => {
         />
       ) : <span className="text-muted small">No vinculada</span>
     },
+    {
+      key: "status",
+      header: "Estatus",
+      width: "15%",
+      render: (row) => row.status ? (
+        <CellBadge
+          label={`${row.status === "plan de embarque" ? "Embarque" : row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}${row.edited ? " (e)" : ""}`}
+          variant={
+            row.status === "nueva"      ? "blue"   :
+            row.status === "validada"   ? "yellow" :
+            row.status === "iniciada"   ? "green"  :
+            row.status === "cerrada"    ? "red"    :
+            row.status === "finalizada" ? "purple" : "gray"
+          }
+        />
+      ) : <span className="text-muted small">—</span>
+    },
     { 
       key: "eventName", 
-      header: "Evento", 
-      width: "30%",
+      header: "Alerta", 
+      width: "25%",
       render: (row) => <span className="text-muted small">{row.eventName}</span>
     },
   ];
@@ -416,6 +411,7 @@ const EventosWialonPage = () => {
       className: "action-btn btn-success",
       title: "Crear Evento",
       show: (row) => !!row.bitacora_raw_id,
+      disabled: (row) => ["cerrada", "cerrada (e)", "finalizada"].includes(row.status),
       onClick: (row) => {
         setSelectedUnitInModal(row);
       }
@@ -437,6 +433,10 @@ const EventosWialonPage = () => {
         bitacora_id: bit?.bitacora_id || null,
         bitacora_raw_id: bit?._id || null,
         transporte_id: bit?.transporteId || null,
+        status: bit?.status || null,
+        edited: bit?.edited || false,
+        placa: bit?.placa || null,
+        eco: bit?.eco || null,
         eventName: name,
         // for DataTable rowKey
         _key: `unit-${uId}-${idx}`
@@ -538,9 +538,10 @@ const EventosWialonPage = () => {
       sortable: true,
       render: (row) => {
         const count = row.units?.length || 0;
-        
+        const hasActive = row.activeBitacoras?.length > 0;
+
         return (
-          <div style={{display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap"}}>
+          <div style={{display: "flex", alignItems: "center", gap: "6px", position: "relative"}}>
             <CellBadge 
               label={count > 0 ? String(count) : "0"} 
               variant={count > 0 ? "blue" : "gray"} 
@@ -553,6 +554,20 @@ const EventosWialonPage = () => {
               }}
               style={{cursor: count > 0 ? "pointer" : "default"}}
             />
+            {hasActive && (
+              <Tooltip text="Unidades con bitácora activa" position="top">
+                <span 
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    backgroundColor: "#10b981",
+                    borderRadius: "50%",
+                    boxShadow: "0 0 0 2px rgba(16, 185, 129, 0.2)",
+                    display: "inline-block"
+                  }} 
+                />
+              </Tooltip>
+            )}
           </div>
         );
       },
@@ -565,52 +580,34 @@ const EventosWialonPage = () => {
 
       render: (row) => (
         <div style={{display: "flex", alignItems: "center", justifyContent: "center", gap: "8px"}}>
-          <button 
-            className={`notification-toggle ${row.enabled ? "active" : ""}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              if (togglingId === row._key) return;
-              handleToggle(row);
-            }}
-            disabled={togglingId === row._key}
-            title={row.enabled ? "Desactivar" : "Activar"}
-          >
-            <span className="toggle-track">
-              <span className="toggle-thumb">
-                {togglingId === row._key && (
-                  <i 
-                    className="fa fa-spinner fa-spin" 
-                    style={{
-                      fontSize: "0.6rem", 
-                      color: "#6b7280",
-                      position: "absolute",
-                      top: "50%",
-                      left: "50%",
-                      transform: "translate(-50%, -50%)"
-                    }}
-                  />
-                )}
-              </span>
-            </span>
-          </button>
-          <button 
-            className="action-icon-btn" 
-            onClick={(e) => {
-              e.stopPropagation();
-              fetchNotificationLogs(row);
-            }}
-            title="Ver historial"
-            style={{
-              background: "none",
-              border: "none",
-              color: "#6b7280",
-              cursor: "pointer",
-              padding: "4px",
-              fontSize: "0.9rem"
-            }}
-          >
-            <i className="fa fa-history"></i>
-          </button>
+          <Tooltip text="Auto-evento" position="left">
+            <button 
+              className="action-icon-btn" 
+              onClick={(e) => {
+                e.stopPropagation();
+                handleAutoEvent(row);
+              }}
+              style={{
+                backgroundColor: row.activeBitacoras?.length ? "#10b981" : "#e5e7eb",
+                border: "none",
+                color: "white",
+                cursor: row.activeBitacoras?.length ? "pointer" : "not-allowed",
+                padding: "6px",
+                fontSize: "0.9rem",
+                borderRadius: "6px",
+                width: "30px",
+                height: "30px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                transition: "all 0.2s ease",
+                boxShadow: row.activeBitacoras?.length ? "0 2px 4px rgba(16, 185, 129, 0.2)" : "none"
+              }}
+              disabled={loading || !row.activeBitacoras?.length}
+            >
+              <i className={`fa ${loading ? "fa-spinner fa-spin" : "fa-magic"}`}></i>
+            </button>
+          </Tooltip>
         </div>
       ),
     },
@@ -619,74 +616,47 @@ const EventosWialonPage = () => {
   return (
     <section id="eventosWialonPage" className="settings-page">
       <Toast toasts={toasts} removeToast={removeToast} />
-
-      {/* Log Modal */}
-      <ModalTemplate
-        show={logModalVisible}
-        onClose={() => setLogModalVisible(false)}
-        title={`Historial: ${selectedNotifForLog?.name || "Notificación"}`}
-        width="800px"
-      >
-        <div style={{padding: "20px"}}>
-          {loadingLogs ? (
-            <div className="text-center py-5">
-              <i className="fa fa-spinner fa-spin fa-2x text-primary mb-3"></i>
-              <p className="text-muted">Cargando eventos recientes...</p>
-            </div>
-          ) : notificationLogs.length === 0 ? (
-            <div className="text-center py-5">
-              <i className="fa fa-info-circle fa-2x text-muted mb-3"></i>
-              <p className="text-muted">No se encontraron registros recientes para esta alerta.</p>
-            </div>
-          ) : (
-            <div className="table-responsive">
-              <table className="table table-sm">
-                <thead>
-                  <tr>
-                    <th>Fecha/Hora</th>
-                    <th>Unidad</th>
-                    <th>Detalle</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {notificationLogs.map((log, i) => (
-                    <tr key={i}>
-                      <td style={{whiteSpace: "nowrap"}}>{fmtTime(log.t)}</td>
-                      <td>{log.u || "—"}</td>
-                      <td style={{fontSize: "0.85rem"}}>{log.m || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </ModalTemplate>
       
-      {/* Units Detail Modal */}
       <ModalTemplate
         show={unitModalVisible}
         onClose={() => {
           setUnitModalVisible(false);
           setSelectedUnitInModal(null);
         }}
-        title={`Unidades vinculadas: ${selectedNotifForUnits?.name || ""}`}
+        title={
+          selectedUnitInModal ? (
+            <div className="d-flex align-items-center gap-2">
+              <button 
+                className="bits-breadcrumb__back me-1" 
+                onClick={() => setSelectedUnitInModal(null)}
+                type="button"
+                style={{ background: 'none', border: 'none', padding: 0, width: 'auto', height: 'auto', color: 'inherit' }}
+              >
+                <i className="fa fa-chevron-left" style={{ fontSize: '0.9rem' }}></i>
+              </button>
+              <h1 className="bits-header__title mb-0" style={{ fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center' }}>
+                <span className="bits-breadcrumb__ancestor" style={{ color: '#64748b', fontWeight: 400 }}>Monitoreo<span className="bits-breadcrumb__sep" style={{ margin: '0 4px', opacity: 0.5 }}>/</span></span>
+                <span className="bits-breadcrumb__ancestor" style={{ color: '#64748b', fontWeight: 400 }}>Alertas Wialon<span className="bits-breadcrumb__sep" style={{ margin: '0 4px', opacity: 0.5 }}>/</span></span>
+                <span className="bits-breadcrumb__current" style={{ color: '#1e293b' }}>Crear nuevo evento</span>
+              </h1>
+            </div>
+          ) : (
+            `Unidades vinculadas: ${selectedNotifForUnits?.name || ""}`
+          )
+        }
         extraWide={true}
-        hideFooter={true}
+        hideFooter={!selectedUnitInModal}
+        submitText="Guardar Evento"
+        cancelText="Cancelar"
+        onSubmit={(e) => {
+          e.preventDefault();
+          quickPatchRef.current?.submit();
+        }}
         className="split-view-modal"
       >
-        <div className="d-flex" style={{ height: "600px" }}>
-          <div 
-            className="unit-list-side" 
-            style={{ 
-              flex: selectedUnitInModal ? "0 0 400px" : "1",
-              borderRight: selectedUnitInModal ? "1px solid #e5e7eb" : "none",
-              transition: "all 0.3s ease",
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <div className="bits-table-shell bits-table-shell--no-padding">
+        <div style={{ minHeight: "400px", padding: selectedUnitInModal ? "20px" : "0" }}>
+          {!selectedUnitInModal ? (
+            <div className="bits-table-shell bits-table-shell--no-padding" style={{ height: "500px" }}>
               <DataTable
                 data={unitListData}
                 columns={unitColumns}
@@ -696,35 +666,15 @@ const EventosWialonPage = () => {
                 maxHeight="100%"
               />
             </div>
-          </div>
-          
-          {selectedUnitInModal && (
-            <div 
-              className="unit-form-side" 
-              style={{ 
-                flex: "1",
-                padding: "20px",
-                overflowY: "auto",
-                backgroundColor: "#f9fafb"
-              }}
-            >
-              <div className="d-flex justify-content-between align-items-center mb-4">
-                <h5 className="mb-0 fw-bold text-primary">
-                  Gestionar Bitácora: #{selectedUnitInModal.bitacora_id}
-                </h5>
-                <button 
-                  className="btn btn-sm btn-light"
-                  onClick={() => setSelectedUnitInModal(null)}
-                >
-                  <i className="fa fa-times me-1"></i> Cerrar Panel
-                </button>
-              </div>
-              
+          ) : (
+            <div className="animate__animated animate__fadeIn">
               <QuickPatchForm 
+                ref={quickPatchRef}
                 unit={selectedUnitInModal}
                 eventTypes={eventTypes}
                 onSuccess={() => {
                   fetchNotifications();
+                  setSelectedUnitInModal(null);
                 }}
               />
             </div>

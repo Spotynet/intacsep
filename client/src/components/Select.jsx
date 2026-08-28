@@ -57,7 +57,16 @@ export const Select = ({
       })
     : normalizedOptions;
 
-  const selected = normalizedOptions.find((o) => o.value === value) ?? null;
+  const selected =
+    normalizedOptions.find((o) => o.value === value) ??
+    (typeof value === "string" && value !== ""
+      ? normalizedOptions.find(
+          (o) =>
+            typeof o.value === "string" &&
+            normalize(String(o.value).trim()) === normalize(String(value).trim())
+        )
+      : null) ??
+    null;
 
   const positionMenu = useCallback(() => {
     if (!wrapRef.current) return;

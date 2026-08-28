@@ -11,6 +11,7 @@ import {useNavigate} from "react-router-dom";
 import CellBadge from "../CellBadge";
 import {Select} from "../Select";
 import TextInput from "../TextInput";
+import DatePicker from "../DatePicker";
 
 const fmt = (dt) =>
   dt ? new Date(dt).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"}) : "—";

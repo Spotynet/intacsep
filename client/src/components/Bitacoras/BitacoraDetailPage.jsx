@@ -16,6 +16,9 @@ import ModalTemplate from "../../components/ModalTemplate"; // make sure path is
 import {useSidebar} from "../../context/SidebarContext";
 import PageHeader from "../PageHeader";
 import CellBadge from "../CellBadge";
+import TextInput from "../TextInput";
+import {Select} from "../Select";
+import TextArea from "../TextArea";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -275,42 +278,32 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
         title="Editar Evento"
         onClose={handleClose}
         onSubmit={handleFormSubmit}>
-        <Form.Group className="mb-3">
-          <Form.Label>Nombre</Form.Label>
-          <Form.Control type="text" name="nombre" value={formData.nombre} disabled />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Registrado Por</Form.Label>
-          <Form.Control type="text" name="registrado_por" value={formData.registrado_por} disabled />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Transportes</Form.Label>
-          <Form.Control
-            type="text"
-            name="transportes"
-            value={formData.transportes.map((t) => getTransporteLabel(t)).join(", ")}
-            disabled
-          />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Descripción</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={3}
-            name="descripcion"
-            value={formData.descripcion}
-            onChange={handleInputChange}
-          />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Frecuencia</Form.Label>
-          <Form.Control
-            type="number"
-            name="frecuencia"
-            value={formData.frecuencia}
-            onChange={handleInputChange}
-          />
-        </Form.Group>
+        <TextInput label="Nombre" name="nombre" value={formData.nombre} disabled className="mb-3" />
+        <TextInput label="Registrado por" name="registrado_por" value={formData.registrado_por} disabled className="mb-3" />
+        <TextInput
+          label="Transportes"
+          name="transportes"
+          value={formData.transportes.map((t) => getTransporteLabel(t)).join(", ")}
+          disabled
+          className="mb-3"
+        />
+        <TextArea
+          label="Descripción"
+          name="descripcion"
+          value={formData.descripcion}
+          onChange={handleInputChange}
+          rows={3}
+          placeholder="Detalles del evento..."
+          className="mb-3"
+        />
+        <TextInput
+          label="Frecuencia (min)"
+          type="number"
+          name="frecuencia"
+          value={formData.frecuencia}
+          onChange={handleInputChange}
+          className="mb-3"
+        />
       </ModalTemplate>
     </div>
   );
@@ -2017,136 +2010,126 @@ const BitacoraDetailPage = ({edited}) => {
           title="Editar Bitácora"
           onClose={() => setEditModalVisible(false)}
           onSubmit={handleEditSubmit}>
-          <Form.Group className="mb-3">
-            <Form.Label htmlFor="folio_servicio">Folio de servicio</Form.Label>
-            <Form.Control
-              type="text"
-              id="folio_servicio"
-              name="folio_servicio"
-              value={bitacora.folio_servicio}
-              onChange={handleEditChange}
-            />
-          </Form.Group>
+          <TextInput
+            label="Folio de servicio"
+            name="folio_servicio"
+            value={bitacora.folio_servicio || ""}
+            onChange={handleEditChange}
+            className="mb-3"
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label htmlFor="bitacora_id">No. Bitácora</Form.Label>
-            <Form.Control
-              type="text"
-              id="bitacora_id"
-              name="bitacora_id"
-              value={bitacora.bitacora_id}
-              onChange={handleEditChange}
-              disabled
-            />
-          </Form.Group>
+          <TextInput
+            label="No. Bitácora"
+            name="bitacora_id"
+            value={bitacora.bitacora_id || ""}
+            onChange={handleEditChange}
+            disabled
+            className="mb-3"
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Cliente</Form.Label>
-            <Form.Select
-              name="cliente"
-              value={bitacora.cliente || ""}
-              onChange={handleEditChange}
-              required>
-              <option value="">Selecciona una opción</option>
-              {clients.length > 0 ? (
-                clients.map((cliente) => (
-                  <option key={cliente._id} value={cliente.razon_social}>
-                    {cliente.razon_social}
-                  </option>
-                ))
-              ) : (
-                <option value="" disabled>
-                  Cargando clientes...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Cliente"
+            value={bitacora.cliente || ""}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                cliente: val || "",
+                origen: null,
+                destino: null,
+              }))
+            }
+            options={clients.map((cliente) => ({
+              value: cliente.razon_social,
+              label: cliente.razon_social,
+            }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Tipo de Monitoreo</Form.Label>
-            <Form.Select
-              name="monitoreo"
-              value={bitacora.monitoreo || ""}
-              onChange={handleEditChange}
-              required>
-              <option value="">Selecciona una opción</option>
-              {monitoreos.length > 0 ? (
-                monitoreos.map((monitoreo) => (
-                  <option key={monitoreo._id} value={monitoreo.tipoMonitoreo}>
-                    {monitoreo.tipoMonitoreo}
-                  </option>
-                ))
-              ) : (
-                <option value="" disabled>
-                  Cargando monitoreos...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Tipo de Monitoreo"
+            value={bitacora.monitoreo || ""}
+            onChange={(val) => {
+              setBitacora((prev) => {
+                const updates = {monitoreo: val || ""};
+                const isCustodia =
+                  val === "Custodia fisica" ||
+                  val === "CUSTODIA FISICA" ||
+                  val?.toLowerCase() === "custodia fisica";
+                if (isCustodia && !prev.custodia) {
+                  updates.custodia = {
+                    custodio1_nombre: "",
+                    custodio1_telefono: "",
+                    custodio2_nombre: "",
+                    custodio2_telefono: "",
+                    placa: "",
+                    modelo: "",
+                    color: "",
+                    marca: "",
+                  };
+                }
+                return {...prev, ...updates};
+              });
+            }}
+            options={monitoreos.map((monitoreo) => ({
+              value: monitoreo.tipoMonitoreo,
+              label: monitoreo.tipoMonitoreo,
+            }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Origen</Form.Label>
-            <Form.Select
-              name="origen"
-              value={getLocationValue(
-                edited_bitacora.origen,
-                origenes.filter((origen) => origen.cliente === bitacora?.cliente)
-              )}
-              onChange={(e) =>
-                setBitacora((prev) => ({
-                  ...prev,
-                  origen: e.target.value ? JSON.parse(e.target.value) : null,
-                }))
-              }
-              required>
-              <option value="">Selecciona una opción</option>
-              {origenes.length > 0 ? (
-                origenes
-                  .filter((origen) => origen.cliente === bitacora?.cliente)
-                  .map((origen) => (
-                    <option key={origen._id} value={JSON.stringify(origen)}>
-                      {`${origen.nombre}, ${origen.estado}`}
-                    </option>
-                  ))
-              ) : (
-                <option value="" disabled>
-                  Cargando origenes...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Origen"
+            value={getLocationValue(
+              edited_bitacora.origen,
+              origenes.filter((origen) => origen.cliente === bitacora?.cliente)
+            )}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                origen: val ? JSON.parse(val) : null,
+              }))
+            }
+            options={origenes
+              .filter((origen) => origen.cliente === bitacora?.cliente)
+              .map((origen) => ({
+                value: JSON.stringify(origen),
+                label: `${origen.nombre}, ${origen.estado}`,
+              }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Destino</Form.Label>
-            <Form.Select
-              name="destino"
-              value={getLocationValue(
-                edited_bitacora.destino,
-                destinos.filter((destino) => destino.cliente === bitacora?.cliente)
-              )}
-              onChange={(e) =>
-                setBitacora((prev) => ({
-                  ...prev,
-                  destino: e.target.value ? JSON.parse(e.target.value) : null,
-                }))
-              }
-              required>
-              <option value="">Selecciona una opción</option>
-              {destinos.length > 0 ? (
-                destinos
-                  .filter((destino) => destino.cliente === bitacora?.cliente)
-                  .map((destino) => (
-                    <option key={destino._id} value={JSON.stringify(destino)}>
-                      {`${destino.nombre}, ${destino.estado}`}
-                    </option>
-                  ))
-              ) : (
-                <option value="" disabled>
-                  Cargando destinos...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Destino"
+            value={getLocationValue(
+              edited_bitacora.destino,
+              destinos.filter((destino) => destino.cliente === bitacora?.cliente)
+            )}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                destino: val ? JSON.parse(val) : null,
+              }))
+            }
+            options={destinos
+              .filter((destino) => destino.cliente === bitacora?.cliente)
+              .map((destino) => ({
+                value: JSON.stringify(destino),
+                label: `${destino.nombre}, ${destino.estado}`,
+              }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
           {/* Campos de Custodia Física - Solo para tipo "Custodia fisica" */}
           {(bitacora.monitoreo === "Custodia fisica" ||
@@ -2158,87 +2141,71 @@ const BitacoraDetailPage = ({edited}) => {
 
               <div className="row">
                 <div className="col-md-6">
-                  <Form.Group className="mb-3">
-                    <Form.Label>Nombre Custodio 1</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio1_nombre"
-                      value={bitacora.custodia?.custodio1_nombre || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Nombre Custodio 1"
+                    name="custodia.custodio1_nombre"
+                    value={bitacora.custodia?.custodio1_nombre || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Teléfono Custodio 1</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio1_telefono"
-                      value={bitacora.custodia?.custodio1_telefono || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Teléfono Custodio 1"
+                    name="custodia.custodio1_telefono"
+                    value={bitacora.custodia?.custodio1_telefono || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Nombre Custodio 2</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio2_nombre"
-                      value={bitacora.custodia?.custodio2_nombre || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Nombre Custodio 2"
+                    name="custodia.custodio2_nombre"
+                    value={bitacora.custodia?.custodio2_nombre || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Teléfono Custodio 2</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio2_telefono"
-                      value={bitacora.custodia?.custodio2_telefono || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Teléfono Custodio 2"
+                    name="custodia.custodio2_telefono"
+                    value={bitacora.custodia?.custodio2_telefono || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
                 </div>
 
                 <div className="col-md-6">
-                  <Form.Group className="mb-3">
-                    <Form.Label>Placa</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.placa"
-                      value={bitacora.custodia?.placa || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Placa"
+                    name="custodia.placa"
+                    value={bitacora.custodia?.placa || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Modelo</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.modelo"
-                      value={bitacora.custodia?.modelo || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Modelo"
+                    name="custodia.modelo"
+                    value={bitacora.custodia?.modelo || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Color</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.color"
-                      value={bitacora.custodia?.color || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Color"
+                    name="custodia.color"
+                    value={bitacora.custodia?.color || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Marca</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.marca"
-                      value={bitacora.custodia?.marca || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Marca"
+                    name="custodia.marca"
+                    value={bitacora.custodia?.marca || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
                 </div>
               </div>
             </>
@@ -2296,219 +2263,95 @@ const BitacoraDetailPage = ({edited}) => {
             {/* GPS step */}
             {currentKey === "gps" && (
               <div className="wizard-step-content">
-                <>
-                  <Form.Group className="mb-3">
-                    <Form.Label>Método de ID</Form.Label>
-                      <div>
-                        <Form.Check
-                          type="radio"
-                          label="Automático"
-                          name="idMethod"
-                          value="automatic"
-                          checked={idMethod === "automatic"}
-                          onChange={() => setIdMethod("automatic")}
-                        />
-                        <Form.Check
-                          type="radio"
-                          label="GPS ID"
-                          name="idMethod"
-                          value="wialon"
-                          checked={idMethod === "wialon"}
-                          onChange={() => setIdMethod("wialon")}
-                        />
-                      </div>
-                    </Form.Group>
-                    {idMethod === "wialon" && (
-                      <Form.Group className="mb-3">
-                        <Form.Label>Seleccionar unidades Wialon (múltiples)</Form.Label>
+                <div className="mb-3">
+                  <span className="ptext__label">Método de identificación</span>
+                  <div className="wizard-radio-group">
+                    {[
+                      {value: "automatic", label: "Automático", icon: "fa-solid fa-magic-wand-sparkles"},
+                      {value: "wialon", label: "GPS ID", icon: "fa-solid fa-satellite-dish"},
+                    ].map(({value, label, icon}) => (
+                      <label key={value} className={`wizard-radio-card ${idMethod === value ? "selected" : ""}`}>
+                        <input type="radio" name="idMethod" value={value} checked={idMethod === value} onChange={() => setIdMethod(value)} className="visually-hidden" />
+                        <i className={icon}></i>
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-                        {/* Barra de búsqueda */}
-                        <div className="mb-3">
-                          <div className="input-group">
-                            <span className="input-group-text">
-                              <i className="fa fa-search"></i>
-                            </span>
-                            <input
-                              type="text"
-                              className="form-control"
-                              placeholder="Buscar por nombre o ID..."
-                              value={gpsSearchTerm}
-                              onChange={(e) => setGpsSearchTerm(e.target.value)}
-                            />
-                            {gpsSearchTerm && (
-                              <button
-                                className="btn btn-outline-secondary"
-                                type="button"
-                                onClick={() => setGpsSearchTerm("")}>
-                                <i className="fa fa-times"></i>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Controles de selección */}
-                        {filteredGpsUnits.length > 0 && (
-                          <div className="mb-2 d-flex justify-content-between align-items-center">
-                            <small className="text-muted">
-                              {filteredGpsUnits.length} GPS encontrados
-                            </small>
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-primary"
-                              onClick={handleSelectAllFiltered}>
-                              {filteredGpsUnits.every((unit) =>
-                                selectedGpsUnits.some((selected) => selected.id === unit.id)
-                              )
-                                ? "Deseleccionar todos"
-                                : "Seleccionar todos"}
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Lista de GPS con mejor diseño */}
-                        <div
-                          className="gps-units-selection"
-                          style={{
-                            maxHeight: "300px",
-                            overflowY: "auto",
-                            border: "1px solid #dee2e6",
-                            borderRadius: "0.375rem",
-                            padding: "0",
-                          }}>
-                          {units?.length === 0 ? (
-                            <div className="p-3 text-muted text-center">
-                              <i className="fa fa-spinner fa-spin me-2"></i>
-                              Cargando unidades...
-                            </div>
-                          ) : filteredGpsUnits.length === 0 ? (
-                            <div className="p-3 text-muted text-center">
-                              <i className="fa fa-search me-2"></i>
-                              No se encontraron GPS con "{gpsSearchTerm}"
-                            </div>
-                          ) : (
-                            <div className="list-group list-group-flush">
-                              {filteredGpsUnits.map((unit) => {
-                                const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
-                                return (
-                                  <div
-                                    key={unit.id}
-                                    className={`list-group-item list-group-item-action d-flex align-items-center ${
-                                      isSelected ? "active" : ""
-                                    }`}
-                                    style={{cursor: "pointer", border: "none"}}
-                                    onClick={() => handleGpsUnitToggle(unit)}>
-                                    <div className="form-check me-3">
-                                      <input
-                                        className="form-check-input"
-                                        type="checkbox"
-                                        checked={isSelected}
-                                        onChange={() => handleGpsUnitToggle(unit)}
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
-                                    </div>
-                                    <div className="flex-grow-1">
-                                      <div className="fw-semibold">{unit.name}</div>
-                                      <small className="text-muted">ID: {unit.id}</small>
-                                    </div>
-                                    {isSelected && (
-                                      <div className="text-success">
-                                        <i className="fa fa-check-circle"></i>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Resumen de selección */}
-                        {selectedGpsUnits.length > 0 && (
-                          <div className="mt-3 p-2 bg-light rounded">
-                            <div className="d-flex justify-content-between align-items-center">
-                              <small className="text-muted">
-                                <strong>{selectedGpsUnits.length}</strong> GPS seleccionados
-                              </small>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-outline-danger"
-                                onClick={() => setSelectedGpsUnits([])}>
-                                Limpiar selección
-                              </button>
-                            </div>
-                            <div className="mt-2">
-                              <div className="d-flex flex-wrap gap-1">
-                                {selectedGpsUnits.map((unit) => (
-                                  <span
-                                    key={unit.id}
-                                    className="badge bg-primary"
-                                    style={{fontSize: "0.75rem"}}>
-                                    {unit.name}
-                                    <button
-                                      type="button"
-                                      className="btn-close btn-close-white ms-1"
-                                      style={{fontSize: "0.5rem"}}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleGpsUnitToggle(unit);
-                                      }}></button>
-                                  </span>
-                                ))}
+                {idMethod === "wialon" && (
+                  <div className="unit-picker">
+                    <div className="up-search">
+                      <i className="fa fa-search up-search-icon"></i>
+                      <input className="up-search-input" placeholder="Buscar por nombre o ID…" value={gpsSearchTerm} onChange={(e) => setGpsSearchTerm(e.target.value)} />
+                      {gpsSearchTerm && (
+                        <button type="button" className="up-search-clear" onClick={() => setGpsSearchTerm("")}>
+                          <i className="fa fa-times"></i>
+                        </button>
+                      )}
+                      <span className="up-count">{filteredGpsUnits.length} unidades</span>
+                      {filteredGpsUnits.length > 0 && (
+                        <button type="button" className="up-select-all" onClick={handleSelectAllFiltered}>
+                          {filteredGpsUnits.every((unit) => selectedGpsUnits.some((selected) => selected.id === unit.id)) ? "Deseleccionar" : "Seleccionar todos"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="up-list">
+                      {units?.length === 0 ? (
+                        <div className="up-empty"><i className="fa fa-spinner fa-spin"></i>Cargando unidades…</div>
+                      ) : filteredGpsUnits.length === 0 ? (
+                        <div className="up-empty"><i className="fa fa-search"></i>Sin resultados para &quot;{gpsSearchTerm}&quot;</div>
+                      ) : (
+                        filteredGpsUnits.map((unit) => {
+                          const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
+                          return (
+                            <div key={unit.id} className={`up-item ${isSelected ? "selected" : ""}`} onClick={() => handleGpsUnitToggle(unit)}>
+                              <div className="up-item-icon"><i className="fa-solid fa-satellite-dish"></i></div>
+                              <div className="up-item-info">
+                                <div className="up-item-name">{unit.name}</div>
+                                <div className="up-item-id">ID: {unit.id}</div>
                               </div>
+                              <div className="up-item-check"><i className="fa fa-check"></i></div>
                             </div>
-                          </div>
-                        )}
-                      </Form.Group>
+                          );
+                        })
+                      )}
+                    </div>
+                    {selectedGpsUnits.length > 0 && (
+                      <div className="up-floating-pill">
+                        <span>{selectedGpsUnits.length} unidades seleccionadas</span>
+                        <button type="button" className="up-pill-clear" onClick={() => setSelectedGpsUnits([])}>Limpiar</button>
+                      </div>
                     )}
+                  </div>
+                )}
 
-                    {idMethod === "automatic" && (
-                      <Form.Group className="mb-3">
-                        <Form.Label>ID generado</Form.Label>
-                        <Form.Control
-                          type="text"
-                          value={(() => {
-                            // FIXED: Extract and preserve existing numeric ID
-                            let numericId;
-                            if (
-                              editedTransporte?.originalId?.startsWith("T") &&
-                              editedTransporte.originalId.includes("_")
-                            ) {
-                              // Extract numeric part from existing ID (e.g., "003" from "T003_1243")
-                              const match = editedTransporte.originalId.match(/^T(\d+)_/);
-                              numericId = match
-                                ? match[1]
-                                : (transportes.length + 1).toString().padStart(3, "0");
-                            } else {
-                              // For new/blank transports, generate new numeric ID
-                              numericId = (transportes.length + 1).toString().padStart(3, "0");
-                            }
-                            return `T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
-                          })()}
-                          disabled
-                        />
-                        <Form.Text className="text-muted">
-                          {(() => {
-                            // Show the same logic in the hint
-                            let numericId;
-                            if (
-                              editedTransporte?.originalId?.startsWith("T") &&
-                              editedTransporte.originalId.includes("_")
-                            ) {
-                              const match = editedTransporte.originalId.match(/^T(\d+)_/);
-                              numericId = match
-                                ? match[1]
-                                : (transportes.length + 1).toString().padStart(3, "0");
-                            } else {
-                              numericId = (transportes.length + 1).toString().padStart(3, "0");
-                            }
-                            return `Formato: T${numericId}_${
-                              editedTransporte?.tracto?.placa || "N/A"
-                            }`;
-                          })()}
-                        </Form.Text>
-                      </Form.Group>
-                    )}
-                  </>
+                {idMethod === "automatic" && (
+                  <div className="mt-3">
+                    <TextInput label="ID generado" value={(() => {
+                      let numericId;
+                      if (editedTransporte?.originalId?.startsWith("T") && editedTransporte.originalId.includes("_")) {
+                        const match = editedTransporte.originalId.match(/^T(\d+)_/);
+                        numericId = match ? match[1] : (transportes.length + 1).toString().padStart(3, "0");
+                      } else {
+                        numericId = (transportes.length + 1).toString().padStart(3, "0");
+                      }
+                      return `T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
+                    })()} disabled />
+                    <small className="text-muted d-block mt-1">
+                      {(() => {
+                        let numericId;
+                        if (editedTransporte?.originalId?.startsWith("T") && editedTransporte.originalId.includes("_")) {
+                          const match = editedTransporte.originalId.match(/^T(\d+)_/);
+                          numericId = match ? match[1] : (transportes.length + 1).toString().padStart(3, "0");
+                        } else {
+                          numericId = (transportes.length + 1).toString().padStart(3, "0");
+                        }
+                        return `Formato: T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
+                      })()}
+                    </small>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2517,44 +2360,17 @@ const BitacoraDetailPage = ({edited}) => {
               <div className="wizard-step-content">
                 <div className="wizard-grid-2">
                 {["eco", "placa", "marca", "modelo", "color", "tipo"].map((field) => (
-                  <Form.Group className="mb-3" key={field}>
-                    <Form.Label className="fw-semibold">{field.toUpperCase()}</Form.Label>
-                    <Form.Control
-                      type="text"
-                      value={editedTransporte.tracto[field] || ""}
-                      onChange={(e) => {
-                        const value = e.target.value;
-
-                        setEditedTransporte((prev) => {
-                          const updatedTracto = {
-                            ...prev.tracto,
-                            [field]: value,
-                          };
-
-                          // Only regenerate ID if editing 'eco' and in 'automatic' mode and editable
-                          if (
-                            field === "eco" &&
-                            idMethod === "automatic" &&
-                            (prev.originalId?.startsWith("blank_") || prev.id?.startsWith("0_"))
-                          ) {
-                            const updatedId = `0_${(transportes.length + 1)
-                              .toString()
-                              .padStart(2, "0")}_${value || "N/A"}`;
-                            return {
-                              ...prev,
-                              id: updatedId,
-                              tracto: updatedTracto,
-                            };
-                          }
-
-                          return {
-                            ...prev,
-                            tracto: updatedTracto,
-                          };
-                        });
-                      }}
-                    />
-                  </Form.Group>
+                  <TextInput key={field} label={field.charAt(0).toUpperCase()+field.slice(1)} value={editedTransporte.tracto[field] || ""} onChange={(e) => {
+                    const value = e.target.value;
+                    setEditedTransporte((prev) => {
+                      const updatedTracto = {...prev.tracto, [field]: value};
+                      if (field === "eco" && idMethod === "automatic" && (prev.originalId?.startsWith("blank_") || prev.id?.startsWith("0_"))) {
+                        const updatedId = `0_${(transportes.length + 1).toString().padStart(2, "0")}_${value || "N/A"}`;
+                        return {...prev, id: updatedId, tracto: updatedTracto};
+                      }
+                      return {...prev, tracto: updatedTracto};
+                    });
+                  }} className="mb-3" placeholder={field.charAt(0).toUpperCase()+field.slice(1)} />
                 ))}
                 </div>
               </div>
@@ -2565,19 +2381,7 @@ const BitacoraDetailPage = ({edited}) => {
               <div className="wizard-step-content">
                 <div className="wizard-grid-2">
                 {["eco", "placa", "color", "capacidad", "sello"].map((field) => (
-                  <Form.Group className="mb-3" key={field}>
-                    <Form.Label className="fw-semibold">{field.toUpperCase()}</Form.Label>
-                    <Form.Control
-                      type="text"
-                      value={editedTransporte.remolque[field] || ""}
-                      onChange={(e) =>
-                        setEditedTransporte((prev) => ({
-                          ...prev,
-                          remolque: {...prev.remolque, [field]: e.target.value},
-                        }))
-                      }
-                    />
-                  </Form.Group>
+                  <TextInput key={field} label={field.charAt(0).toUpperCase()+field.slice(1)} value={editedTransporte.remolque[field] || ""} onChange={(e) => setEditedTransporte((prev) => ({...prev, remolque: {...prev.remolque, [field]: e.target.value}}))} className="mb-3" placeholder={field.charAt(0).toUpperCase()+field.slice(1)} />
                 ))}
                 </div>
               </div>
@@ -2586,98 +2390,40 @@ const BitacoraDetailPage = ({edited}) => {
             {/* Operador step */}
             {currentKey === "operador" && (
               <div className="wizard-step-content">
-                <Form.Group className="mb-3">
-                  <Form.Label>Línea de Transporte</Form.Label>
-                  <Form.Select
-                    value={editDraftLineaText ? "" : (editedTransporte.lineaTransporte || "")}
-                    onChange={(e) => {
-                      const selectedLinea = e.target.value;
-                      setEditDraftLineaText("");
-                      setOperadores([]);
-                      setEditedTransporte((prev) => ({ ...prev, lineaTransporte: selectedLinea, operador: "" }));
-                      // fetch is handled by the useEffect watching editedTransporte.lineaTransporte
-                    }}>
-                    <option value="">Selecciona una línea de transporte</option>
-                    {lineasTransporte.map((linea) => (
-                      <option key={linea._id} value={linea.nombre}>
-                        {linea.nombre}
-                      </option>
-                    ))}
-                  </Form.Select>
-                  {(roleData?.crear_draft_transporte || editDraftLineaText) && (
-                    <Form.Control
-                      type="text"
-                      className="mt-2"
-                      value={editDraftLineaText}
-                      placeholder="O escribe una línea nueva..."
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditDraftLineaText(val);
-                        setOperadores([]);
-                        setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val, operador: "" }));
-                        // fetch handled by useEffect watching editedTransporte.lineaTransporte
-                      }}
-                    />
-                  )}
-                </Form.Group>
-                <Form.Group className="mb-3">
-                  <Form.Label>Operador</Form.Label>
-                  <Form.Select
-                    value={editDraftOperadorText ? "" : (editedTransporte.operador || "")}
-                    onChange={(e) => {
-                      setEditDraftOperadorText("");
-                      setEditedTransporte((prev) => ({ ...prev, operador: e.target.value }));
-                    }}
-                    disabled={!editedTransporte.lineaTransporte}>
-                    <option value="">
-                      {editedTransporte.lineaTransporte
-                        ? "Selecciona un operador"
-                        : "Selecciona una línea de transporte primero"}
-                    </option>
-                    {operadores.map((operador) => (
-                      <option key={operador._id} value={operador.nombre}>
-                        {operador.nombre}
-                      </option>
-                    ))}
-                  </Form.Select>
-                  {(roleData?.crear_draft_transporte || editDraftOperadorText) && (
-                    <Form.Control
-                      type="text"
-                      className="mt-2"
-                      value={editDraftOperadorText}
-                      placeholder="O escribe un operador nuevo..."
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditDraftOperadorText(val);
-                        setEditedTransporte((prev) => ({ ...prev, operador: val }));
-                      }}
-                    />
-                  )}
-                </Form.Group>
-                <Form.Group className="mb-3">
-                  <Form.Label>Teléfono</Form.Label>
-                  <Form.Control
-                    type="text"
-                    value={editedTransporte.telefono || ""}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      // Validar teléfono en tiempo real
-                      if (value && !validatePhoneNumber(value)) {
-                        setPhoneError(
-                          "El número de teléfono debe tener exactamente 10 dígitos seguidos (ej: 1234567890)"
-                        );
-                      } else {
-                        setPhoneError("");
-                      }
-                      setEditedTransporte((prev) => ({...prev, telefono: value}));
-                    }}
-                    isInvalid={!!phoneError}
-                  />
-                  {phoneError && (
-                    <Form.Control.Feedback type="invalid">{phoneError}</Form.Control.Feedback>
-                  )}
-                  <Form.Text className="text-muted">Formato: 1234567890</Form.Text>
-                </Form.Group>
+                <Select label="Línea de transporte" value={editDraftLineaText ? "" : (editedTransporte.lineaTransporte || "")} onChange={(val) => {
+                  setEditDraftLineaText("");
+                  setOperadores([]);
+                  setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val || "", operador: "" }));
+                }} options={lineasTransporte.map((linea) => ({value: linea.nombre, label: linea.nombre}))} placeholder="Selecciona una línea" searchable clearable className="mb-3" />
+                {(roleData?.crear_draft_transporte || editDraftLineaText) && (
+                  <TextInput placeholder="O escribe una línea nueva…" value={editDraftLineaText} onChange={(e) => {
+                    const val = e.target.value;
+                    setEditDraftLineaText(val);
+                    setOperadores([]);
+                    setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val, operador: "" }));
+                  }} className="mb-3" />
+                )}
+                <Select label="Operador" value={editDraftOperadorText ? "" : (editedTransporte.operador || "")} onChange={(val) => {
+                  setEditDraftOperadorText("");
+                  setEditedTransporte((prev) => ({ ...prev, operador: val || "" }));
+                }} options={operadores.map((op) => ({value: op.nombre, label: op.nombre}))} placeholder={editedTransporte.lineaTransporte ? "Selecciona un operador" : "Selecciona una línea primero"} searchable clearable className="mb-3" disabled={!editedTransporte.lineaTransporte} />
+                {(roleData?.crear_draft_transporte || editDraftOperadorText) && (
+                  <TextInput placeholder="O escribe un operador nuevo…" value={editDraftOperadorText} onChange={(e) => {
+                    const val = e.target.value;
+                    setEditDraftOperadorText(val);
+                    setEditedTransporte((prev) => ({ ...prev, operador: val }));
+                  }} className="mb-3" />
+                )}
+                <TextInput label="Teléfono" value={editedTransporte.telefono || ""} onChange={(e) => {
+                  const value = e.target.value;
+                  if (value && !validatePhoneNumber(value)) {
+                    setPhoneError("El número de teléfono debe tener exactamente 10 dígitos seguidos (ej: 1234567890)");
+                  } else {
+                    setPhoneError("");
+                  }
+                  setEditedTransporte((prev) => ({...prev, telefono: value}));
+                }} placeholder="1234567890" className="mb-2" />
+                {phoneError ? <small className="text-danger d-block mb-2">{phoneError}</small> : <small className="text-muted d-block mb-2">Exactamente 10 dígitos sin espacios</small>}
               </div>
             )}
 

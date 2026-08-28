@@ -3,6 +3,9 @@ import {useAuth} from "../../../context/AuthContext";
 import {useWialon} from "../../../context/WialonProvider";
 import {useParams} from "react-router-dom";
 import ModalTemplate from "../../ModalTemplate";
+import {Select} from "../../Select";
+import TextInput from "../../TextInput";
+import TextArea from "../../TextArea";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -263,6 +266,95 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
     }));
   };
 
+  const handleSelectChange = (val) => {
+    // Auto-set and disable frecuencia if event is Cierre de servicio
+    if (val?.toLowerCase() === "cierre de servicio") {
+      setNewEvent((prev) => ({...prev, nombre: val, frecuencia: 0}));
+    } else {
+      setNewEvent((prev) => ({...prev, nombre: val}));
+    }
+  };
+
+  const filteredEventOptions = React.useMemo(() => {
+    if (!newEvent.transportes.length || !bitacora) return [];
+
+    // Filtrar eventos con nombre "Validación"
+    const eventosValidacion =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "validación") || [];
+
+    // Filtrar eventos con nombre "Inicio de recorrido"
+    const eventosInicioRecorrido =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "inicio de recorrido") ||
+      [];
+
+    // Filtrar eventos con nombre "Arribo a destino"
+    const eventosArriboDestino =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "arribo a destino") ||
+      [];
+
+    // Build a matcher that checks id OR internalId so renamed transportes stay linked
+    const transporteInSet = (eventoTransportes, candidate) =>
+      eventoTransportes.some((et) => {
+        if (candidate.internalId && et.internalId && candidate.internalId === et.internalId) return true;
+        return et.id?.toLowerCase() === candidate.id?.toLowerCase();
+      });
+
+    const allTransportesInEvento = (candidatos, eventoList) =>
+      candidatos.every((c) =>
+        eventoList.some((ev) => transporteInSet(ev.transportes, c))
+      );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Validación"
+    const allSelectedTransportesInValidacion = allTransportesInEvento(
+      newEvent.transportes, eventosValidacion
+    );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Inicio de recorrido"
+    const allSelectedTransportesInInicioRecorrido = allTransportesInEvento(
+      newEvent.transportes, eventosInicioRecorrido
+    );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Arribo a destino"
+    const allSelectedTransportesInArriboDestino = allTransportesInEvento(
+      newEvent.transportes, eventosArriboDestino
+    );
+
+    let finalTypes = [];
+
+    if (allSelectedTransportesInValidacion) {
+      if (allSelectedTransportesInInicioRecorrido) {
+        // Si todos los transportes están en "Validación" y "Inicio de recorrido"
+        finalTypes = eventTypes.filter(
+          (eventType) =>
+            allSelectedTransportesInArriboDestino ||
+            eventType.evento.toLowerCase() !== "cierre de servicio"
+        );
+      } else {
+        // Si todos los transportes están en "Validación" pero no en "Inicio de recorrido", mostrar solo "Inicio de recorrido"
+        const inicioRecorridoEventType = eventTypes.find(
+          (et) => et.evento.toLowerCase() === "inicio de recorrido"
+        );
+        if (inicioRecorridoEventType) {
+          finalTypes = [inicioRecorridoEventType];
+        } else {
+          finalTypes = [{_id: 'temp-ir', evento: 'Inicio de recorrido'}];
+        }
+      }
+    } else {
+      // Si algún transporte no está en "Validación", solo permitir "Validación"
+      const validacionEventType = eventTypes.find(
+        (et) => et.evento.toLowerCase() === "validación"
+      );
+      if (validacionEventType) {
+        finalTypes = [validacionEventType];
+      } else {
+        finalTypes = [{_id: 'temp-val', evento: 'Validación'}];
+      }
+    }
+
+    return finalTypes.map(et => ({ value: et.evento, label: et.evento }));
+  }, [newEvent.transportes, bitacora, eventTypes]);
+
   const handleChange = (e) => {
     const {name, value} = e.target;
 
@@ -470,284 +562,181 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
 
   return (
     <ModalTemplate show={show} onClose={onClose} onSubmit={handleSubmit} title="Crear Nuevo Evento">
-      <div className="modal-body">
+      <div className="modal-body new-event-modal">
         <form onSubmit={handleSubmit}>
-          <div className="mb-3">
-            <label htmlFor="transportes" className="form-label">
-              Transportes
-            </label>
-
-            {bitacora?.transportes
-              ?.filter((transporte) => {
-                const cierreEventos =
-                  bitacora?.eventos?.filter(
-                    (evento) => evento.nombre.toLowerCase() === "cierre de servicio"
-                  ) || [];
-                return !cierreEventos.some((ev) =>
-                  ev.transportes.some((t) => tMatch(t, transporte))
-                );
-              })
-              .map((transporte) => {
-                const isSelected = newEvent.transportes.some((t) => tMatch(t, transporte));
-                return (
-                  <div
-                    className={`transportes-checkbox ${isSelected ? "checked" : ""}`}
-                    key={transporte.internalId || transporte.id}>
-                    <input
-                      type="checkbox"
-                      className={`form-check-input ${isSelected ? "border-success" : ""}`}
-                      id={`transporte-${transporte.internalId || transporte.id}`}
-                      name="transportes"
-                      value={transporte.id}
-                      onChange={handleCheckboxChange}
-                      checked={isSelected}
-                    />
-                    <label className="form-check-label" htmlFor={`transporte-${transporte.internalId || transporte.id}`}>
-                      {`${getTransporteLabel(transporte)}${transporte.tracto?.eco ? ` - ${transporte.tracto.eco}` : ""}`}
-                    </label>
-                  </div>
-                );
-              })}
+          <div className="mb-4">
+            <label className="pselect__label">Transportes vinculados</label>
+            <div className="transport-grid">
+              {bitacora?.transportes
+                ?.filter((transporte) => {
+                  const cierreEventos =
+                    bitacora?.eventos?.filter(
+                      (evento) => evento.nombre.toLowerCase() === "cierre de servicio"
+                    ) || [];
+                  return !cierreEventos.some((ev) =>
+                    ev.transportes.some((t) => tMatch(t, transporte))
+                  );
+                })
+                .map((transporte) => {
+                  const isSelected = newEvent.transportes.some((t) => tMatch(t, transporte));
+                  return (
+                    <div
+                      className={`transportes-checkbox ${isSelected ? "checked" : ""}`}
+                      key={transporte.internalId || transporte.id}
+                      onClick={() => handleCheckboxChange({ 
+                        target: { 
+                          value: String(transporte.id), 
+                          checked: !isSelected 
+                        } 
+                      })}
+                    >
+                      <div className={`pselect__checkbox ${isSelected ? "pselect__checkbox--checked" : ""}`}>
+                        {isSelected && <i className="fa fa-check"></i>}
+                      </div>
+                      <span className="ms-2">
+                        {`${getTransporteLabel(transporte)}${transporte.tracto?.eco ? ` - ${transporte.tracto.eco}` : ""}`}
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
           </div>
-          <div className="mb-3">
-            <label htmlFor="nombre" className="form-label">
-              Tipo de Evento
-            </label>
-            <select
-              id="nombre"
-              name="nombre"
-              className="form-select"
-              value={newEvent.nombre}
-              onChange={handleChange}
-              required>
-              <option value="">Seleccionar tipo de evento</option>
 
-              {newEvent.transportes.length == 0 ? (
-                <option value="">Seleccionar tipo de evento</option>
-              ) : (
-                (() => {
-                  // Filtrar eventos con nombre "Validación"
-                  const eventosValidacion =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "validación") || [];
-
-                  // Filtrar eventos con nombre "Inicio de recorrido"
-                  const eventosInicioRecorrido =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "inicio de recorrido") ||
-                    [];
-
-                  // Filtrar eventos con nombre "Arribo a destino"
-                  const eventosArriboDestino =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "arribo a destino") ||
-                    [];
-
-                  // Build a matcher that checks id OR internalId so renamed transportes stay linked
-                  const transporteInSet = (eventoTransportes, candidate) =>
-                    eventoTransportes.some((et) => {
-                      if (candidate.internalId && et.internalId && candidate.internalId === et.internalId) return true;
-                      return et.id?.toLowerCase() === candidate.id?.toLowerCase();
-                    });
-
-                  const allTransportesInEvento = (candidatos, eventoList) =>
-                    candidatos.every((c) =>
-                      eventoList.some((ev) => transporteInSet(ev.transportes, c))
-                    );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Validación"
-                  const allSelectedTransportesInValidacion = allTransportesInEvento(
-                    newEvent.transportes, eventosValidacion
-                  );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Inicio de recorrido"
-                  const allSelectedTransportesInInicioRecorrido = allTransportesInEvento(
-                    newEvent.transportes, eventosInicioRecorrido
-                  );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Arribo a destino"
-                  allSelectedTransportesInArriboDestino = allTransportesInEvento(
-                    newEvent.transportes, eventosArriboDestino
-                  );
-
-                  if (allSelectedTransportesInValidacion) {
-                    if (allSelectedTransportesInInicioRecorrido) {
-                      // Si todos los transportes están en "Validación" y "Inicio de recorrido"
-                      return eventTypes
-                        .filter(
-                          (eventType) =>
-                            allSelectedTransportesInArriboDestino ||
-                            eventType.evento.toLowerCase() !== "cierre de servicio"
-                        )
-                        .map((eventType) => (
-                          <option key={eventType._id} value={eventType.evento}>
-                            {eventType.evento}
-                          </option>
-                        ));
-                    } else {
-                      // Si todos los transportes están en "Validación" pero no en "Inicio de recorrido", mostrar solo "Inicio de recorrido"
-                      const inicioRecorridoEventType = eventTypes.find(
-                        (et) => et.evento.toLowerCase() === "inicio de recorrido"
-                      );
-                      if (inicioRecorridoEventType) {
-                        return (
-                          <option value={inicioRecorridoEventType.evento}>
-                            {inicioRecorridoEventType.evento}
-                          </option>
-                        );
-                      }
-                      return <option value="">Inicio de recorrido</option>;
-                    }
-                  }
-
-                  // Si algún transporte no está en "Validación", solo permitir "Validación"
-                  const validacionEventType = eventTypes.find(
-                    (et) => et.evento.toLowerCase() === "validación"
-                  );
-                  if (validacionEventType) {
-                    return (
-                      <option value={validacionEventType.evento}>
-                        {validacionEventType.evento}
-                      </option>
-                    );
-                  }
-                  return <option value="">Validación</option>;
-                })()
+          <div className="row">
+            <div className="col-md-7 mb-4">
+              <Select
+                label="Tipo de Evento"
+                options={filteredEventOptions}
+                value={newEvent.nombre}
+                onChange={handleSelectChange}
+                placeholder="Seleccionar..."
+                disabled={newEvent.transportes.length === 0}
+              />
+              {newEvent.transportes.length === 0 && (
+                <div className="mt-1 small text-muted">
+                  Selecciona al menos un transporte para ver los eventos disponibles.
+                </div>
               )}
-            </select>
+            </div>
+
+            <div className="col-md-5 mb-4">
+              <TextInput
+                label="Frecuencia (min)"
+                type="number"
+                name="frecuencia"
+                value={newEvent.frecuencia}
+                onChange={handleChange}
+                disabled={newEvent.nombre.toLowerCase() === "cierre de servicio"}
+                required
+              />
+            </div>
           </div>
 
-          <div className="mb-3">
-            <label htmlFor="descripcion" className="form-label">
-              Descripcion
-            </label>
-            <textarea
-              id="descripcion"
+          <div className="mb-4">
+            <TextArea
+              label="Descripción / Comentario"
               name="descripcion"
-              className="form-control"
               value={newEvent.descripcion}
               onChange={handleChange}
+              rows={3}
+              placeholder="Detalles del evento..."
               required
             />
           </div>
-          <div className="mb-3">
-            <label htmlFor="frecuencia" className="form-label">
-              Frecuencia
-            </label>
-            <input
-              type="number"
-              className="form-control"
-              min="0"
-              max="99"
-              id="frecuencia"
-              name="frecuencia"
-              value={newEvent.frecuencia}
-              onChange={handleChange}
-              disabled={newEvent.nombre.toLowerCase() === "cierre de servicio"}
-              required
-            />
-          </div>
-          <div className="mb-3">
-            <label className="form-label">Fecha de registro</label>
-            <input
-              type="text"
-              className="form-control"
-              value={new Date().toLocaleString("es-MX", {hour12: false})}
+
+          <div className="mb-4">
+            <TextInput
+              label="Fecha de registro"
+              value={new Date().toLocaleString("es-MX", {hour12: false, dateStyle: "medium", timeStyle: "short"})}
               disabled
             />
           </div>
 
-          <hr />
-
-          <div>
-            {newEvent.transportes?.map((t) => {
-              const tKey = t.internalId || t.id;
-              const isManual = isManualTransporte(t);
-              return (
-              <div key={tKey} className="border mb-2 rounded shadow-sm">
-                <div
-                  className="d-flex justify-content-between align-items-center p-2 bg-light border-bottom"
-                  style={{cursor: "pointer"}}
-                  onClick={() => toggleCollapse(tKey)}>
-                  <div className="fw-bold">{getTransporteLabel(t)}</div>
-
-                  <div className="d-flex align-items-center gap-2">
-                    <span className={`badge ${isManual ? "bg-secondary" : "bg-success"}`}>
-                      {isManual ? "Manual" : "GPS"}
-                    </span>
-                    <span className="ms-2 fs-5">{openTransportId === tKey ? "−" : "+"}</span>
-                  </div>
-                </div>
-
-                {openTransportId === tKey && (
-                  <div className="p-3">
-                    {/* Mostrar múltiples GPS si existen */}
-                    {t.gpsData && t.gpsData.length > 0 ? (
-                      <div>
-                        <h6 className="fw-bold mb-3">Datos de GPS</h6>
-                        {t.gpsData.map((gps, index) => (
-                          <div key={index} className="mb-4 p-3 border rounded bg-light">
-                            <h6 className="fw-semibold text-primary mb-2">
-                              {gps.name} (ID: {gps.wialonId})
-                            </h6>
-                            {[
-                              "duracion",
-                              "ubicacion",
-                              "velocidad",
-                              "ultimo_posicionamiento",
-                              "coordenadas",
-                            ].map((field) => (
-                              <div className="mb-2" key={field}>
-                                <label className="form-label fw-bold text-capitalize small">
-                                  {field.replace("_", " ")}:
-                                </label>
-                                <input
-                                  type="text"
-                                  className="form-control form-control-sm"
-                                  value={gps.data?.[field] || ""}
-                                  onChange={(e) =>
-                                    handleGpsDataChange(tKey, index, field, e.target.value)
-                                  }
-                                  placeholder="Datos obtenidos de Wialon (editable)"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        ))}
+          {newEvent.transportes.length > 0 && (
+            <>
+              <hr className="my-4" />
+              <div className="mb-3">
+                <label className="pselect__label">Detalle por unidad</label>
+                {newEvent.transportes?.map((t) => {
+                  const tKey = t.internalId || t.id;
+                  const isManual = isManualTransporte(t);
+                  return (
+                    <div key={tKey} className="modern-unit-card mb-3">
+                      <div
+                        className="modern-unit-card__header"
+                        onClick={() => toggleCollapse(tKey)}
+                      >
+                        <div className="fw-bold text-dark">{getTransporteLabel(t)}</div>
+                        <div className="d-flex align-items-center gap-2">
+                          <span className={`badge ${isManual ? "bg-warning-subtle text-warning-emphasis" : "bg-success-subtle text-success-emphasis"}`}>
+                            {isManual ? "Manual" : "GPS"}
+                          </span>
+                          <i className={`fa fa-chevron-${openTransportId === tKey ? "up" : "down"} ms-2 text-muted small`}></i>
+                        </div>
                       </div>
-                    ) : (
-                      /* Modo manual - campos editables */
-                      <div>
-                        {[
-                          "duracion",
-                          "ubicacion",
-                          "velocidad",
-                          "ultimo_posicionamiento",
-                          "coordenadas",
-                        ].map((field) => (
-                          <div className="mb-3" key={field}>
-                            <label className="form-label fw-bold text-capitalize">
-                              {field.replace("_", " ")}{" "}
-                              {isManual && (
-                                <span className="text-danger fw-normal ms-1">(Requerido)</span>
-                              )}
-                            </label>
-                            <input
-                              type="text"
-                              className={`form-control ${isManual ? "border-danger" : ""}`}
-                              value={t.registro?.[field] || ""}
-                              onChange={(e) =>
-                                handleManualRegistroChange(tKey, field, e.target.value)
-                              }
-                              required={isManual}
-                              placeholder={isManual ? "Ingresa valor manualmente" : ""}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+
+                      {openTransportId === tKey && (
+                        <div className="modern-unit-card__body p-3">
+                          {t.gpsData && t.gpsData.length > 0 ? (
+                            <div className="row g-3">
+                              {t.gpsData.map((gps, index) => (
+                                <div key={index} className="col-12 p-3 border rounded bg-white">
+                                  <div className="d-flex align-items-center mb-3 gap-2">
+                                    <i className="fa fa-satellite-dish text-primary"></i>
+                                    <h6 className="fw-bold mb-0 small">
+                                      {gps.name} (ID: {gps.wialonId})
+                                    </h6>
+                                  </div>
+                                  <div className="row g-2">
+                                    {[
+                                      "duracion",
+                                      "ubicacion",
+                                      "velocidad",
+                                      "ultimo_posicionamiento",
+                                      "coordenadas",
+                                    ].map((field) => (
+                                      <div className="col-md-6" key={field}>
+                                        <TextInput
+                                          label={field.replace("_", " ")}
+                                          value={gps.data?.[field] || ""}
+                                          onChange={(e) => handleGpsDataChange(tKey, index, field, e.target.value)}
+                                          className="mb-2"
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="row g-2">
+                              {[
+                                "duracion",
+                                "ubicacion",
+                                "velocidad",
+                                "ultimo_posicionamiento",
+                                "coordenadas",
+                              ].map((field) => (
+                                <div className="col-md-6" key={field}>
+                                  <TextInput
+                                    label={`${field.replace("_", " ")}${isManual ? " *" : ""}`}
+                                    value={t.registro?.[field] || ""}
+                                    onChange={(e) => handleManualRegistroChange(tKey, field, e.target.value)}
+                                    required={isManual}
+                                    className="mb-2"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );})}
-          </div>
+            </>
+          )}
         </form>
       </div>
     </ModalTemplate>

@@ -40,30 +40,36 @@ const ModalTemplate = ({
       <div className="pm-backdrop" onClick={onClose}></div>
       <div className={containerClasses} style={containerStyle}>
         <div className="pm-header">
-          <h2>{title}</h2>
+          {typeof title === "string" ? <h2>{title}</h2> : title}
           <button className="pm-close" onClick={onClose}>
             ×
           </button>
         </div>
         <hr />
         <div className="modal-scroll-body">
-          <form className="pm-body" onSubmit={onSubmit}>
+          <form id="modal-template-form" className="pm-body" onSubmit={onSubmit}>
             {children}
-            {!hideFooter && (
-              <div className="pm-footer">
-                <button type="button" className={cancelClass} onClick={onClose}>
-                  {cancelText}
-                </button>
-                <button type="submit" className={submitClass} disabled={submitDisabled}>
-                  {submitText}
-                </button>
-              </div>
-            )}
           </form>
         </div>
+        {!hideFooter && (
+          <div className="pm-footer">
+            <button type="button" className={cancelClass} onClick={onClose}>
+              {cancelText}
+            </button>
+            <button 
+              type="submit" 
+              form="modal-template-form" 
+              className={submitClass} 
+              disabled={submitDisabled}
+            >
+              {submitText}
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
+
 };
 
 export default ModalTemplate;

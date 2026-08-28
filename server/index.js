@@ -3433,9 +3433,14 @@ app.get("/wialon/notifications", async (req, res) => {
               bitacora_id: 1,
               cliente: 1,
               status: 1,
+              edited: 1,
               "transportes.id": 1,
               "transportes.gpsUnits.wialonId": 1,
               "transportes.gpsUnits.name": 1,
+              "transportes.tracto.placa": 1,
+              "transportes.tracto.eco": 1,
+              "transportes.remolque.placa": 1,
+              "transportes.remolque.eco": 1,
             },
           }
         )
@@ -3451,9 +3456,12 @@ app.get("/wialon/notifications", async (req, res) => {
               bitacora_id: bit.bitacora_id,
               cliente: bit.cliente,
               status: bit.status,
+              edited: bit.edited || false,
               transporteId: t.id,
               unitName: g.name || null,
               wialonId: wid,
+              placa: t.tracto?.placa || t.remolque?.placa || null,
+              eco: t.tracto?.eco || t.remolque?.eco || null,
             });
           }
         }
