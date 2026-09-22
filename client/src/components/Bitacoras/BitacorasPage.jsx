@@ -22,6 +22,7 @@ import {
   fetchOrigenes,
   fetchDestinos,
   fetchOperadores,
+  fetchOpenBitacorasWithWialonAlerts,
 } from "../../utils/api";
 import {generateAuditoriaForCreation} from "../../utils/auditoria";
 import CellBadge from "../CellBadge";
@@ -114,6 +115,7 @@ const BitacorasPage = () => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [bitacoraToDelete, setBitacoraToDelete] = useState(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [wialonAlertsById, setWialonAlertsById] = useState({});
 
   const todayStr = new Date().toISOString().split("T")[0];
   const lastMonthStr = (() => {
@@ -166,6 +168,7 @@ const BitacorasPage = () => {
           origenesData,
           destinosData,
           operadoresData,
+          wialonAlertsData,
         ] = await Promise.all([
           fetchBitacoras(
             currentPage,
@@ -179,6 +182,7 @@ const BitacorasPage = () => {
           fetchOrigenes(),
           fetchDestinos(),
           fetchOperadores(),
+          fetchOpenBitacorasWithWialonAlerts(),
         ]);
 
         setBitacoras(bitacorasData.bitacoras);
@@ -189,6 +193,7 @@ const BitacorasPage = () => {
         setOrigenes(origenesData);
         setDestinos(destinosData);
         setOperadores(operadoresData);
+        setWialonAlertsById(wialonAlertsData?.byId || {});
 
         // Console log to show Cliente field from one bitacora per client
         console.log("=== CLIENTE FIELD ANALYSIS ===");
@@ -299,6 +304,21 @@ const BitacorasPage = () => {
 
     fetchRolePermissions();
   }, [user, baseUrl]);
+
+  // Light poll (60s) for Wialon alert bell state, aligned with Sidebar summary counts
+  useEffect(() => {
+    if (!user || !roleData) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      const data = await fetchOpenBitacorasWithWialonAlerts();
+      if (!cancelled) setWialonAlertsById(data?.byId || {});
+    };
+    const interval = setInterval(tick, 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, roleData]);
 
   const handleChange = (e) => {
     const {id, value} = e.target;
@@ -420,6 +440,7 @@ const BitacorasPage = () => {
             origenesData,
             destinosData,
             operadoresData,
+            wialonAlertsData,
           ] = await Promise.all([
             fetchBitacoras(
               currentPage,
@@ -433,6 +454,7 @@ const BitacorasPage = () => {
             fetchOrigenes(),
             fetchDestinos(),
             fetchOperadores(),
+            fetchOpenBitacorasWithWialonAlerts(),
           ]);
 
           setBitacoras(bitacorasData.bitacoras);
@@ -443,6 +465,7 @@ const BitacorasPage = () => {
           setOrigenes(origenesData);
           setDestinos(destinosData);
           setOperadores(operadoresData);
+          setWialonAlertsById(wialonAlertsData?.byId || {});
 
           updateFormDataFromUser();
         } catch (e) {
@@ -1030,19 +1053,49 @@ const BitacorasPage = () => {
                   {
                     key: "bitacora_id",
                     header: "ID",
-                    width: "6%",
+                    width: "8%",
                     className: "table-cell",
                     sortable: true,
-                    render: (row) => (
-                      <Tooltip text="Ver Detalles" position="top">
-                        <CellBadge
-                          label={row.bitacora_id}
-                          color={getLatestFrecuenciaColor(row)}
-                          className="cell-badge--nowrap"
-                          onClick={() => window.location.href = `/bitacora/${row._id}`}
-                        />
-                      </Tooltip>
-                    ),
+                    render: (row) => {
+                      const alertNames = wialonAlertsById[row._id];
+                      const hasAlert = Array.isArray(alertNames) && alertNames.length > 0;
+                      return (
+                        <div className="bitacora-id-with-alert">
+                          <Tooltip text="Ver Detalles" position="top">
+                            <CellBadge
+                              label={row.bitacora_id}
+                              color={getLatestFrecuenciaColor(row)}
+                              className="cell-badge--nowrap"
+                              onClick={() => window.location.href = `/bitacora/${row._id}`}
+                            />
+                          </Tooltip>
+                          {hasAlert && (
+                            <Tooltip
+                              text={`Alerta Wialon activa: ${alertNames.join(", ")}`}
+                              position="top"
+                            >
+                              <i
+                                className="fa fa-bell bitacora-wialon-alert-bell"
+                                role="button"
+                                tabIndex={0}
+                                aria-label="Alerta Wialon activa"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.location.href = "/eventos-wialon";
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    window.location.href = "/eventos-wialon";
+                                  }
+                                }}
+                              />
+                            </Tooltip>
+                          )}
+                        </div>
+                      );
+                    },
                   },
                   {
                     key: "cliente",

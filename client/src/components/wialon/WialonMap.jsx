@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState, useCallback} from "react";
+import {useEffect, useMemo, useRef, useState, useCallback} from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -27,7 +27,7 @@ const fmtTimeShort = (ts) => {
 
 const NA = -348201.3876;
 
-const WialonMap = ({searchTerm = ""}) => {
+const WialonMap = ({searchTerm = "", unitIds = null, className = ""}) => {
   const {session: wialonSession, loading: unitsLoading} = useWialon();
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
@@ -54,6 +54,43 @@ const WialonMap = ({searchTerm = ""}) => {
   const [geofenceCount, setGeofenceCount] = useState(0);
   const searchRef = useRef(searchTerm);
   searchRef.current = searchTerm;
+
+  // Stable Set<string> of scoped unit IDs; null → no scope (all units).
+  // Using JSON key to avoid churning identity on every render.
+  const unitIdsKey = useMemo(() => {
+    if (!Array.isArray(unitIds)) return "";
+    return unitIds.map(String).sort().join("|");
+  }, [unitIds]);
+  const unitIdSet = useMemo(() => {
+    if (!Array.isArray(unitIds) || unitIds.length === 0) return null;
+    // Store both the trimmed raw string and its numeric-normalized form so
+    // legacy variants like "012345" or "12345.0" still match live IDs.
+    const set = new Set();
+    for (const raw of unitIds) {
+      if (raw == null) continue;
+      const s = String(raw).trim();
+      if (!s) continue;
+      set.add(s);
+      const n = Number(s);
+      if (!Number.isNaN(n)) set.add(String(n));
+    }
+    return set.size > 0 ? set : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitIdsKey]);
+  const unitIdSetRef = useRef(unitIdSet);
+  unitIdSetRef.current = unitIdSet;
+
+  // Helper: apply the optional wialonId scope on a raw items[] from the session.
+  const scopeItems = useCallback((items) => {
+    const set = unitIdSetRef.current;
+    if (!set) return items;
+    return items.filter((u) => {
+      const id = u.getId?.();
+      if (id == null) return false;
+      const s = String(id);
+      return set.has(s) || set.has(String(Number(s)));
+    });
+  }, []);
 
   // ── Geocoding ──────────────────────────────────────────────
   const getAddress = useCallback((lat, lng) => {
@@ -200,7 +237,8 @@ const WialonMap = ({searchTerm = ""}) => {
 
   const syncSidebar = useCallback(
     (sess) => {
-      const items = sess.getItems("avl_unit") || [];
+      const rawItems = sess.getItems("avl_unit") || [];
+      const items = scopeItems(rawItems);
       const cur = searchRef.current.toLowerCase();
       const filtered = cur
         ? items.filter((u) => (u.getName?.() ?? "").toLowerCase().includes(cur))
@@ -219,7 +257,7 @@ const WialonMap = ({searchTerm = ""}) => {
       }
       return filtered;
     },
-    [buildUnitsJson]
+    [buildUnitsJson, scopeItems]
   );
 
   // ── Live trace (trail polyline) ────────────────────────────
@@ -331,8 +369,9 @@ const WialonMap = ({searchTerm = ""}) => {
 
       if (filtered.length > 0 && !map._wialonFitted) {
         const allBounds = filtered
-          .filter((u) => u.pos)
-          .map((u) => L.latLng(u.pos.y, u.pos.x));
+          .map((u) => u.getPosition?.())
+          .filter((p) => p && typeof p.y === "number" && typeof p.x === "number")
+          .map((p) => L.latLng(p.y, p.x));
         if (allBounds.length > 0) {
           map.fitBounds(L.latLngBounds(allBounds).pad(0.1));
           map._wialonFitted = true;
@@ -349,7 +388,7 @@ const WialonMap = ({searchTerm = ""}) => {
     if (!map || !sess || !map._wialonFitted) return;
 
     const bounds = map.getBounds().pad(0.2);
-    const items = sess.getItems("avl_unit") || [];
+    const items = scopeItems(sess.getItems("avl_unit") || []);
     const inView = new Set();
 
     items.forEach((unit) => {
@@ -378,23 +417,25 @@ const WialonMap = ({searchTerm = ""}) => {
         markersRef.current[selectedUnitId.current].addTo(map);
       }
     }
-  }, []);
+  }, [scopeItems]);
 
   // ── Search filter ──────────────────────────────────────────
   const applySearchFilter = useCallback(
     (sess) => {
-      const items = sess.getItems("avl_unit") || [];
+      const rawItems = sess.getItems("avl_unit") || [];
+      const scopedIds = new Set(scopeItems(rawItems).map((u) => u.getId()));
       const cur = searchRef.current.toLowerCase();
 
       syncSidebar(sess);
 
-      items.forEach((unit) => {
+      rawItems.forEach((unit) => {
         const id = unit.getId();
         const marker = markersRef.current[id];
         if (!marker) return;
 
         const name = (unit.getName?.() ?? "").toLowerCase();
-        const matches = !cur || name.includes(cur);
+        const inScope = scopedIds.has(id);
+        const matches = inScope && (!cur || name.includes(cur));
 
         if (matches && !mapInstance.current?.hasLayer(marker)) {
           marker.addTo(mapInstance.current);
@@ -410,7 +451,7 @@ const WialonMap = ({searchTerm = ""}) => {
         }
       });
     },
-    [syncSidebar]
+    [syncSidebar, scopeItems]
   );
 
   // ── Load geofences ─────────────────────────────────────────
@@ -637,6 +678,17 @@ const WialonMap = ({searchTerm = ""}) => {
     }
   }, [searchTerm, applySearchFilter]);
 
+  // Re-scope on unitIds change: reset the "fitted" flag so the map re-fits
+  // to the new scope, then rebuild markers (adds new, removes out-of-scope).
+  useEffect(() => {
+    const sess = sessionRef.current;
+    const map = mapInstance.current;
+    if (!sess || !map) return;
+    map._wialonFitted = false;
+    refreshAllMarkers(sess);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitIdsKey]);
+
   // ── Handlers ───────────────────────────────────────────────
   const handleSelectUnit = useCallback(
     (u) => {
@@ -685,7 +737,7 @@ const WialonMap = ({searchTerm = ""}) => {
   }, []);
 
   return (
-    <div className="wialon-map-wrapper">
+    <div className={`wialon-map-wrapper${className ? ` ${className}` : ""}`}>
       {status && (
         <div className="wialon-map-status">
           <i className="fa fa-spinner fa-spin"></i> {status}

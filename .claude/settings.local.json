@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs ls)",
+      "Bash(grep -n '^// ─── PageHeader\\\\|^\\\\.ph-\\\\|^$ph-' /home/ubuntu/projects/apps/intacsep-stg/client/src/App.scss)",
+      "Bash(awk NR==6847{start=NR} NR==7410{end=NR} END{print start, end} *)",
+      "Bash(grep -n '$ph-\\\\|\\\\.ph-\\\\|@extend \\\\.ph-' /home/ubuntu/projects/apps/intacsep-stg/client/src/App.scss)",
+      "Bash(sed -i 's|<i className=\"fas fa-plus\"></i>Nuevo|<i className=\"fas fa-plus\"></i>Nueva|g' /home/ubuntu/projects/apps/intacsep-stg/client/src/components/Integraciones/IntegracionesPage.jsx /home/ubuntu/projects/apps/intacsep-stg/client/src/components/Settings/LineaTransportePage.jsx)",
+      "Bash(sed -i 's|<i className=\"fa fa-plus\"></i>Nuevo|<i className=\"fa fa-plus\"></i>Nueva|g' /home/ubuntu/projects/apps/intacsep-stg/client/src/components/Bitacoras/BitacorasPage.jsx)",
+      "Bash(xargs sed -i 's|></i>Nuevo|></i>Crear|g; s|></i>Nueva|></i>Crear|g')",
+      "Bash(sed -i 's|<div className=\"col-12 col-sm-6 col-md-3 col-lg-2 d-flex align-items-end\">|<div>|g' /home/ubuntu/projects/apps/intacsep-stg/client/src/components/Bitacoras/BitacorasPage.jsx)",
+      "Bash(sed -i 's|<div className=\"col-12 col-sm-6 col-md-3 col-lg-2\">|<div>|g' /home/ubuntu/projects/apps/intacsep-stg/client/src/components/Bitacoras/BitacorasPage.jsx)",
+      "Bash(npx vite *)",
+      "Bash(awk NR>=4120 && NR<=4140 {print NR\": \"$0} *)",
+      "Bash(awk NR>=4141 && NR<=4160 {print NR\": \"$0} *)"
+    ]
+  }
+}

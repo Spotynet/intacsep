@@ -8938,6 +8938,25 @@ td:has(.action-buttons) {
     flex-shrink: 0;
     cursor: default;
   }
+
+  .bitacora-id-with-alert {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+  }
+
+  .bitacora-wialon-alert-bell {
+    color: #f59e0b;
+    font-size: 0.95rem;
+    cursor: pointer;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: transform 0.15s ease, color 0.15s ease;
+
+    &:hover { color: #d97706; transform: scale(1.15); }
+    &:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; border-radius: 2px; }
+  }
 }
 
 // ── Patio tab bar ────────────────────────────────────────────
@@ -11591,6 +11610,63 @@ td:has(.action-buttons) {
   overflow: hidden;
   border: 1px solid #e5e7eb;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+
+  // Scoped embed used inside BitacoraDetailPage's Mapa Wialon tab.
+  // Trim the height so the map coexists with the detail tabs / header.
+  &--embedded {
+    height: calc(100vh - 320px);
+    min-height: 480px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+  }
+}
+
+// Container inside the Mapa Wialon tab (toolbar + map wrapper).
+.wialon-tab-mapa {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+
+  &__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+}
+
+// ── Alertas Wialon panel (embedded in BitacoraDetailPage tab) ──
+.eventos-wialon-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  &--embedded {
+    min-height: 520px;
+  }
+
+  &__toolbar {
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+
+    .eventos-wialon-panel__filters {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .eventos-wialon-panel__actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+  }
+
+  // Inside the tab, the table shell shouldn't fight for viewport height with
+  // the outer #eventosWialonPage rules — let it grow naturally.
+  .bits-table-shell {
+    height: auto;
+    min-height: 420px;
+  }
 }
 
 .wialon-map-container {

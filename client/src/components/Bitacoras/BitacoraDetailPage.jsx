@@ -1,7 +1,9 @@
-import React, {useState, useEffect} from "react";
+import React, {useState, useEffect, useMemo} from "react";
 import {useParams, useNavigate} from "react-router-dom";
 import {useWialon} from "../../context/WialonProvider";
 import Sidebar from "../Sidebar";
+import WialonMap from "../wialon/WialonMap";
+import EventosWialonPanel from "../Wialon/EventosWialonPanel";
 import {FontAwesomeIcon} from "@fortawesome/react-fontawesome";
 import {faPlus} from "@fortawesome/free-solid-svg-icons";
 import {useAuth} from "../../context/AuthContext";
@@ -327,6 +329,7 @@ const BitacoraDetailPage = ({edited}) => {
   const [activeTab, setActiveTab] = useState("detalles");
   const [selectedTransporte, setSelectedTransporte] = useState(null);
   const [transportes, setTransportes] = useState(bitacora?.transportes || []);
+  const [mapaWialonSearch, setMapaWialonSearch] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [isEditTransporteModalVisible, setEditTransporteModalVisible] = useState(false);
   const [editedTransporte, setEditedTransporte] = useState(null);
@@ -360,6 +363,20 @@ const BitacoraDetailPage = ({edited}) => {
     // Debe ser exactamente 10 dígitos seguidos
     return phoneRegex.test(phone);
   };
+
+  // Unique Wialon unit IDs across every transporte's gpsUnits. Used to scope
+  // the Mapa Wialon and Alertas Wialon tabs to just this bitácora.
+  const bitacoraUnitIds = useMemo(() => {
+    const ids = new Set();
+    for (const t of bitacora?.transportes || []) {
+      for (const g of t?.gpsUnits || []) {
+        if (g && g.wialonId != null && String(g.wialonId).trim() !== "") {
+          ids.add(String(g.wialonId));
+        }
+      }
+    }
+    return Array.from(ids);
+  }, [bitacora?.transportes]);
 
   const handleEditTransporte = async () => {
     const selected = selectedTransporte;
@@ -1527,6 +1544,24 @@ const BitacoraDetailPage = ({edited}) => {
                   <span className="tab-subtitle">{bitacora.eventos.length} registrados</span>
                 </button>
               )}
+
+              {roleData?.map_wialon?.read && (
+                <button
+                  className={`tab-button ${activeTab === "mapa_wialon" ? "active" : ""}`}
+                  onClick={() => handleTabClick("mapa_wialon")}>
+                  <span className="tab-title">Mapa Wialon</span>
+                  <span className="tab-subtitle">{bitacoraUnitIds.length} GPS</span>
+                </button>
+              )}
+
+              {roleData?.eventos_wialon?.read && (
+                <button
+                  className={`tab-button ${activeTab === "alertas_wialon" ? "active" : ""}`}
+                  onClick={() => handleTabClick("alertas_wialon")}>
+                  <span className="tab-title">Alertas Wialon</span>
+                  <span className="tab-subtitle">{bitacoraUnitIds.length} GPS</span>
+                </button>
+              )}
             </div>
 
             <div className="tab-content-modern">
@@ -1985,6 +2020,53 @@ const BitacoraDetailPage = ({edited}) => {
                         ))
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* Mapa Wialon Tab (scoped to this bitácora's GPS units) */}
+              {roleData?.map_wialon?.read && (
+                <div className={`tab-pane-modern ${activeTab === "mapa_wialon" ? "active" : ""}`}>
+                  {bitacoraUnitIds.length === 0 ? (
+                    <div className="eventos-empty">
+                      <i className="fa fa-map-marked-alt"></i>
+                      <p>Sin GPS asociados a los transportes de esta bitácora.</p>
+                    </div>
+                  ) : activeTab === "mapa_wialon" ? (
+                    <div className="wialon-tab-mapa">
+                      <div className="wialon-tab-mapa__toolbar">
+                        <input
+                          type="text"
+                          className="wialon-map-search"
+                          placeholder="Buscar unidad..."
+                          value={mapaWialonSearch}
+                          onChange={(e) => setMapaWialonSearch(e.target.value)}
+                        />
+                      </div>
+                      <WialonMap
+                        searchTerm={mapaWialonSearch}
+                        unitIds={bitacoraUnitIds}
+                        className="wialon-map-wrapper--embedded"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Alertas Wialon Tab (scoped to this bitácora's GPS units) */}
+              {roleData?.eventos_wialon?.read && (
+                <div className={`tab-pane-modern ${activeTab === "alertas_wialon" ? "active" : ""}`}>
+                  {bitacoraUnitIds.length === 0 ? (
+                    <div className="eventos-empty">
+                      <i className="fa fa-bell"></i>
+                      <p>Sin GPS asociados; no hay alertas Wialon que mostrar.</p>
+                    </div>
+                  ) : activeTab === "alertas_wialon" ? (
+                    <EventosWialonPanel
+                      embedded
+                      unitIds={bitacoraUnitIds}
+                      bitacoraId={bitacora?._id}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>

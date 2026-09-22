@@ -133,6 +133,24 @@ export const fetchBitacoras = async (
   return data;
 };
 
+// Returns { byId: { <bitacoraMongoId>: [enabledAlertName, ...] } } for OPEN
+// bitácoras whose transporte GPS units are covered by any ENABLED Wialon
+// notification rule. Soft-fails to { byId: {} } on error.
+export const fetchOpenBitacorasWithWialonAlerts = async () => {
+  try {
+    const response = await authFetch(`${baseUrl}/wialon/open-bitacoras-with-alerts`, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) return { byId: {} };
+    const data = await response.json();
+    return data && typeof data.byId === "object" && data.byId !== null ? data : { byId: {} };
+  } catch (e) {
+    console.error("Error fetching open bitácoras with Wialon alerts:", e);
+    return { byId: {} };
+  }
+};
+
 
 export const fetchClients = async (userRoleData = null) => {
   try {

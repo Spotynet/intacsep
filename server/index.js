@@ -3493,6 +3493,143 @@ app.get("/wialon/notifications", async (req, res) => {
   }
 });
 
+// Process-level cache for /wialon/open-bitacoras-with-alerts (refreshed every 60s)
+let _openBitAlertsCache = null;
+let _openBitAlertsCacheTime = 0;
+const OPEN_BIT_ALERTS_CACHE_TTL = 60 * 1000;
+
+// GET /wialon/open-bitacoras-with-alerts
+// Returns { byId: { <bitacoraMongoId>: [enabledAlertName, ...] } } for OPEN bitácoras
+// whose transportes[].gpsUnits[].wialonId is covered by at least one ENABLED Wialon
+// notification rule. Soft-fails to { byId: {} } when the Wialon token is missing
+// or the Wialon API errors, so the list page can still render.
+app.get("/wialon/open-bitacoras-with-alerts", async (req, res) => {
+  try {
+    const now = Date.now();
+    if (_openBitAlertsCache && now - _openBitAlertsCacheTime < OPEN_BIT_ALERTS_CACHE_TTL) {
+      return res.json(_openBitAlertsCache);
+    }
+
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+    const sid = loginData.eid;
+
+    let searchData;
+    try {
+      searchData = await wialonApiCall(
+        "core/search_items",
+        {
+          spec: {
+            itemsType: "avl_resource",
+            propName: "*",
+            propValueMask: "*",
+            sortType: "sys_name",
+          },
+          force: 1,
+          flags: 0x0400,
+          from: 0,
+          to: 1000,
+        },
+        sid
+      );
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+
+    if (!searchData || searchData.error || !searchData.items) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    // unitId (string) -> Set of enabled alert names covering it
+    const unitAlertsMap = {};
+    for (const resItem of searchData.items) {
+      const unf = resItem.unf;
+      if (!unf || typeof unf !== "object") continue;
+      for (const n of Object.values(unf)) {
+        if (!n || n.error) continue;
+        // Enabled = bit 0x2 NOT set
+        if (n.fl & 0x2) continue;
+        const name = n.n || "Sin nombre";
+        const unitIds = n.un || [];
+        for (const uid of unitIds) {
+          const key = String(uid);
+          if (!unitAlertsMap[key]) unitAlertsMap[key] = new Set();
+          unitAlertsMap[key].add(name);
+        }
+      }
+    }
+
+    const enabledUnitIds = Object.keys(unitAlertsMap);
+    if (enabledUnitIds.length === 0) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    const col = mongoose.connection.db.collection("bitacoras");
+    const openBits = await col
+      .find(
+        {
+          deleted: false,
+          status: { $nin: ["cerrada", "cerrada (e)", "finalizada"] },
+          "transportes.gpsUnits.wialonId": { $in: enabledUnitIds },
+        },
+        {
+          projection: {
+            _id: 1,
+            bitacora_id: 1,
+            "transportes.id": 1,
+            "transportes.gpsUnits.wialonId": 1,
+          },
+        }
+      )
+      .toArray();
+
+    const byId = {};
+    for (const bit of openBits) {
+      const names = new Set();
+      for (const t of bit.transportes || []) {
+        for (const g of t.gpsUnits || []) {
+          const wid = String(g.wialonId);
+          const hits = unitAlertsMap[wid];
+          if (hits) {
+            for (const nm of hits) names.add(nm);
+          }
+        }
+      }
+      if (names.size > 0) {
+        byId[bit._id.toString()] = Array.from(names);
+      }
+    }
+
+    const result = { byId };
+    _openBitAlertsCache = result;
+    _openBitAlertsCacheTime = now;
+    return res.json(result);
+  } catch (err) {
+    console.error("open-bitacoras-with-alerts error:", err);
+    // Soft-fail so bitácoras list keeps working
+    return res.json({ byId: {} });
+  }
+});
+
 // ── Notification Action Labels Map ──
 const NOTIFICATION_ACTION_LABELS = {
   "notify_popup": "Popup",
