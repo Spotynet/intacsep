@@ -292,8 +292,39 @@ app.use((req, res, next) => {
   next(); // Proceed to the next middleware
 });
 
-//mongoose connection
-mongoose.connect(process.env.MONGO_URI);
+// A transient DNS failure (EAI_AGAIN) rejects the driver connection as an
+// unhandled promise and exits the process. node --watch then waits for a
+// file change instead of starting again, which takes the API offline.
+const isMongoNetworkError = (err) => {
+  const name = err?.name || "";
+  const code = err?.code || err?.cause?.code || "";
+  return name === "MongoNetworkError" || name === "MongoServerSelectionError" || code === "EAI_AGAIN";
+};
+
+const connectMongo = () => {
+  mongoose
+    .connect(process.env.MONGO_URI)
+    .then(() => console.log("MongoDB connected"))
+    .catch((err) => {
+      console.error("MongoDB connect failed, retrying in 5s:", err?.message || err);
+      setTimeout(connectMongo, 5000);
+    });
+};
+
+mongoose.connection.on("error", (err) => {
+  console.error("MongoDB connection error:", err?.message || err);
+});
+
+process.on("unhandledRejection", (err) => {
+  if (isMongoNetworkError(err)) {
+    console.error("MongoDB network error (process kept alive):", err?.message || err);
+    return;
+  }
+  console.error("Unhandled rejection:", err);
+  process.exit(1);
+});
+
+connectMongo();
 
 app.get("/", (req, res) => {
   res.send(`Node.js versionn: ${process.version}`);
@@ -8383,7 +8414,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
       query,
       { bitacora_id: 1, cliente: 1, operador: 1, createdAt: 1, eventos: 1,
         edited_bitacora: 1, origen: 1, destino: 1, status: 1, transportes: 1,
-        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1 }
+        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1, tracto: 1 }
     ).lean();
 
     // Batch-resolve linked PlanDeEmbarque docs (source of truth for citas/carrierMove).
@@ -8450,6 +8481,8 @@ app.get("/reporte-estadisticas", async (req, res) => {
     };
     const getFirstLineaTransporte = (transportes = []) =>
       transportes.find((t) => t?.lineaTransporte)?.lineaTransporte || "";
+    const getFirstTractoTipo = (transportes = []) =>
+      transportes.find((t) => t?.tracto?.tipo)?.tracto.tipo || "";
 
     // Filtering in-memory based on resolved names
     let bitacorasToProcess = bitacoras;
@@ -8541,6 +8574,12 @@ app.get("/reporte-estadisticas", async (req, res) => {
         || cleanLinea(bit.edited_bitacora?.linea_transporte)
         || cleanLinea(plan?.transporte)
         || "";
+      const tipoTransporte =
+        cleanLinea(getFirstTractoTipo(bit.transportes))
+        || cleanLinea(bit.tracto?.tipo)
+        || cleanLinea(getFirstTractoTipo(bit.edited_bitacora?.transportes))
+        || cleanLinea(bit.edited_bitacora?.tracto?.tipo)
+        || "";
       const origenNombre =
         getResolvedLocationName(bit.origen, origenMap)
         || getResolvedLocationName(bit.edited_bitacora?.origen, origenMap)
@@ -8573,6 +8612,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
         destino_nombre:      destinoNombre,
         carrierMove,
         lineaTransporte,
+        tipoTransporte,
         status:              bit.status,
         createdAt:           bit.createdAt,
         citaCarga,

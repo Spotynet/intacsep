@@ -363,6 +363,7 @@ const ReporteEstadisticasPage = () => {
         {key: "origen_nombre", label: "Origen", width: 14},
         {key: "destino_nombre", label: "Destino", width: 14},
         {key: "lineaTransporte", label: "Linea", width: 14},
+        {key: "tipoTransporte", label: "Tipo unidad", width: 14},
         {key: "status", label: "Estatus", width: 12},
         {key: "citaCarga", label: "Cita Carga", width: 16},
         {key: "planEmbarqueAt", label: "Pres. origen", width: 13},
@@ -420,6 +421,7 @@ const ReporteEstadisticasPage = () => {
           origen_nombre: servicio.origen_nombre || "—",
           destino_nombre: servicio.destino_nombre || "—",
           lineaTransporte: servicio.lineaTransporte || "—",
+          tipoTransporte: servicio.tipoTransporte || "—",
           status: servicio.status || "—",
           citaCarga: formatDateTime(servicio.citaCarga),
           planEmbarqueAt: formatDateTime(servicio.planEmbarqueAt),
@@ -722,6 +724,7 @@ const ReporteEstadisticasPage = () => {
                           <th>Origen</th>
                           <th>Destino</th>
                           <th>Línea de transporte</th>
+                          <th>Tipo unidad</th>
                           <th>Estatus</th>
                           <th>Cita de Carga</th>
                           <th>Presencia de origen</th>
@@ -752,6 +755,7 @@ const ReporteEstadisticasPage = () => {
                             <td>{s.origen_nombre || "—"}</td>
                             <td>{s.destino_nombre || "—"}</td>
                             <td>{s.lineaTransporte || "—"}</td>
+                            <td>{s.tipoTransporte || "—"}</td>
                             <td>
                               <span className={`reporte-est-badge reporte-est-badge--${(s.status || "").replace(/\s+/g, "-").replace(/[()]/g, "")}`}>
                                 {s.status || "—"}
