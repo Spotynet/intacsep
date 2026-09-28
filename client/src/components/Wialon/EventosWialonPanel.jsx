@@ -13,77 +13,18 @@ import {useToast} from "../../hooks/useToast";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
+import {TRIGGER_LABELS, TRIGGER_COLORS, TRIGGER_ICONS} from "../../utils/wialonNotifications";
 
 const fmtTime = (ts) => {
   if (!ts) return "—";
   return new Date(ts * 1000).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"});
 };
 
-const TRIGGER_LABELS = {
-  speed: "Velocidad",
-  speeding_gis: "Exceso de velocidad",
-  geozone: "Geocerca",
-  sensor_value: "Sensor",
-  alarm: "Alarma",
-  digital_input: "Entrada digital",
-  msg_param: "Parámetro de mensaje",
-  outage: "Desconexión",
-  driver: "Conductor",
-  route_control: "Ruta",
-  service_intervals: "Mantenimiento",
-  interposition: "Distancia",
-  msgs_counter: "Mensajes",
-  sms: "SMS",
-  address: "Dirección",
-  expression: "Expresión",
-  tag: "Etiqueta",
-  tag_alarm: "Alarma de etiqueta",
-  fuel_filling: "Carga de combustible",
-};
-
-const TRIGGER_COLORS = {
-  speed: "#ef4444",
-  speeding_gis: "#dc2626",
-  geozone: "#6366f1",
-  sensor_value: "#f59e0b",
-  alarm: "#dc2626",
-  digital_input: "#8b5cf6",
-  msg_param: "#3b82f6",
-  outage: "#6b7280",
-  driver: "#10b981",
-  route_control: "#14b8a6",
-  service_intervals: "#f97316",
-  interposition: "#ec4899",
-  msgs_counter: "#06b6d4",
-  sms: "#a855f7",
-  address: "#84cc16",
-  expression: "#0ea5e9",
-  tag: "#a3a3a3",
-  tag_alarm: "#b91c1c",
-  fuel_filling: "#16a34a",
-};
-
-const TRIGGER_ICONS = {
-  speed: "fa-tachometer-alt",
-  speeding_gis: "fa-tachometer-alt",
-  geozone: "fa-draw-polygon",
-  sensor_value: "fa-microchip",
-  alarm: "fa-exclamation-triangle",
-  digital_input: "fa-plug",
-  msg_param: "fa-code",
-  outage: "fa-wifi-slash",
-  driver: "fa-user-tie",
-  route_control: "fa-route",
-  service_intervals: "fa-wrench",
-  interposition: "fa-arrows-alt-h",
-  msgs_counter: "fa-envelope",
-  sms: "fa-comment-alt",
-  address: "fa-map-marker-alt",
-  expression: "fa-equals",
-  tag: "fa-tag",
-  tag_alarm: "fa-bell",
-  fuel_filling: "fa-gas-pump",
-};
+// Wialon puede quedar inalcanzable desde el servidor; evita exponer el error crudo de fetch.
+const friendlyWialonError = (msg) =>
+  /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|network/i.test(msg || "")
+    ? "No se pudo conectar con la API de Wialon. El servidor puede estar sin salida a Wialon o Wialon no responde. Intenta de nuevo en unos segundos."
+    : msg;
 
 // Reusable Alertas Wialon panel.
 // Props:
@@ -243,7 +184,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
       setNotifications(mapped);
     } catch (err) {
       console.error("Error fetching notifications:", err);
-      setError(err.message || "Error al cargar alertas");
+      setError(friendlyWialonError(err.message) || "Error al cargar alertas");
     } finally {
       setLoading(false);
     }

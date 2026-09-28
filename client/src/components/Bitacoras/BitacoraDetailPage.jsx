@@ -674,8 +674,10 @@ const BitacoraDetailPage = ({edited}) => {
       // Assuming the updatedBitacora contains the updated transportes array
       setTransportes(updatedBitacora.transportes);
       fetchBitacora();
+      return updatedBitacora;
     } catch (error) {
       console.error("Error adding transporte:", error);
+      return null;
     }
   };
 

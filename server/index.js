@@ -41,7 +41,9 @@ import PatioExitEvent from "./models/PatioExitEvent.js";
 import PatioAnomaly from "./models/PatioAnomaly.js";
 import wialonIntegrationService from "./services/wialonIntegrationService.js";
 import telemetryService from "./services/telemetryService.js";
+import { getCatalog as getWialonNotificationCatalog, applySelections as applyWialonSelections, invalidateCatalogCache } from "./services/wialonNotificationService.js";
 import { readPlateFromImage } from "./services/plateRecognitionService.js";
+import { wialonApiCall, wialonLogout } from "./utils/wialonClient.js";
 import { auditCreation, auditUpdate, auditDeletion } from "./auditoriaUtils.js";
 import { convertToUpperCase } from "./utils/textUtils.js";
 import multer from "multer";
@@ -190,6 +192,31 @@ const normalizeGpsUnits = (gpsUnits) => {
   return gpsUnits
     .filter((u) => u && u.wialonId != null && String(u.wialonId).trim() !== "")
     .map((u) => ({ ...u, wialonId: String(u.wialonId).trim() }));
+};
+
+// Normalize notificaciones array: keep only valid {resourceId, notifId} pairs, deduped
+const normalizeNotificaciones = (notificaciones) => {
+  if (!Array.isArray(notificaciones)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const n of notificaciones) {
+    if (!n) continue;
+    const resourceId = Number(n.resourceId);
+    const notifId = Number(n.notifId);
+    if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
+    const key = `${resourceId}_${notifId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      resourceId,
+      notifId,
+      name: String(n.name || ""),
+      triggerType: String(n.triggerType || ""),
+      kind: n.kind === "canonica" ? "canonica" : "vinculada",
+      appliedAt: n.appliedAt ? new Date(n.appliedAt) : new Date(),
+    });
+  }
+  return out;
 };
 
 dotenv.config();
@@ -2432,7 +2459,7 @@ app.patch("/bitacora/:id", async (req, res) => {
 app.post("/bitacoras/:id/transportes", async (req, res) => {
   try {
     const bitacoraId = req.params.id;
-    const { id, internalId, tracto, remolque, operador, lineaTransporte, telefono, gpsUnits } = req.body;
+    const { id, internalId, tracto, remolque, operador, lineaTransporte, telefono, gpsUnits, notificaciones } = req.body;
 
     // Find the bitacora by ID (exclude deleted)
     const bitacora = await Bitacora.findOne({
@@ -2443,6 +2470,9 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
       return res.status(404).json({ message: "Bitacora not found" });
     }
 
+    const normalizedUnits = normalizeGpsUnits(gpsUnits);
+    const normalizedNotifs = normalizeNotificaciones(notificaciones);
+
     // Create a new Transporte object (internalId auto-assigned by schema default)
     const newTransporte = {
       id,
@@ -2451,7 +2481,8 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
       lineaTransporte,
       operador,
       telefono,
-      gpsUnits: normalizeGpsUnits(gpsUnits),
+      gpsUnits: normalizedUnits,
+      notificaciones: normalizedNotifs,
     };
 
     // Add the new Transporte to the bitacora's transportes array
@@ -2460,8 +2491,52 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
     // Save the updated bitacora
     await bitacora.save();
 
+    // Link/enable the selected Wialon notifications for these GPS units.
+    // Best effort: the transporte is already saved, so failures are reported
+    // instead of aborting the request.
+    let wialonSync = null;
+    if (normalizedUnits.length > 0 && normalizedNotifs.length > 0) {
+      try {
+        wialonSync = await applyWialonSelections({
+          unitIds: normalizedUnits.map((u) => u.wialonId),
+          selections: normalizedNotifs.map((n) => ({
+            resourceId: n.resourceId,
+            notifId: n.notifId,
+            action: "link",
+          })),
+        });
+      } catch (err) {
+        console.error("Wialon notification sync failed:", err);
+        wialonSync = {
+          applied: [],
+          failed: normalizedNotifs.map((n) => ({
+            resourceId: n.resourceId,
+            notifId: n.notifId,
+            action: "link",
+            error: err.message,
+          })),
+          pruned: [],
+          prunedEnabled: false,
+          skippedUnits: [],
+          error: err.message,
+        };
+      }
+    }
+
+    if (wialonSync && (wialonSync.failed.length || wialonSync.skippedUnits.length)) {
+      console.warn("[wialon-sync]", JSON.stringify({
+        bitacora: bitacoraId,
+        transporte: id,
+        failed: wialonSync.failed,
+        skippedUnits: wialonSync.skippedUnits,
+        applied: wialonSync.applied.length,
+      }));
+    }
+
     // Return the updated bitacora
-    res.status(200).json(bitacora);
+    const payload = bitacora.toObject();
+    payload.wialonSync = wialonSync;
+    res.status(200).json(payload);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
@@ -3207,26 +3282,12 @@ app.post("/integrations/:id/import-to-wialon", async (req, res) => {
 });
 
 // ── Wialon API Proxy (avoids JS SDK execute limitations) ──
-const WIALON_BASE = "https://hst-api.wialon.com/wialon/ajax.html";
-
-async function wialonApiCall(svc, params, sid = null) {
-  const url = new URL(WIALON_BASE);
-  url.searchParams.append("svc", svc);
-  if (sid) url.searchParams.append("sid", sid);
-
-  const formData = new URLSearchParams();
-  formData.append("params", JSON.stringify(params));
-
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    body: formData,
-  });
-  return response.json();
-}
+// wialonApiCall se importa de utils/wialonClient.js (con reintentos + mensajes claros).
 
 // GET /wialon/notifications - fetch notification rules from all resources
 // Data flag 0x0400 = Resource.dataFlag.notifications — field is 'unf' (dict keyed by notif id)
 app.get("/wialon/notifications", async (req, res) => {
+  let sid = null;
   try {
     const token = process.env.WIALON_API_TOKEN;
     if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
@@ -3235,7 +3296,7 @@ app.get("/wialon/notifications", async (req, res) => {
     if (loginData.error) {
       return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
     }
-    const sid = loginData.eid;
+    sid = loginData.eid;
 
     const searchData = await wialonApiCall(
       "core/search_items",
@@ -3486,9 +3547,11 @@ app.get("/wialon/notifications", async (req, res) => {
     }
 
     await wialonApiCall("core/logout", {}, sid);
+    sid = null;
     res.json({ notifications: allNotifications });
   } catch (err) {
-    console.error("Wialon notifications proxy error:", err);
+    console.error("[wialon/notifications] falló:", err.message);
+    if (sid) await wialonLogout(sid);
     res.status(500).json({ error: err.message });
   }
 });
@@ -3668,7 +3731,7 @@ app.post("/wialon/notifications/:resourceId/:notifId/toggle", async (req, res) =
       {
         itemId: parseInt(resourceId),
         id: parseInt(notifId),
-        callMode: "update",
+        callMode: "enable",
         e: enabled ? 1 : 0,
       },
       sid
@@ -3711,7 +3774,7 @@ app.post("/wialon/notifications/toggle-bulk", async (req, res) => {
         {
           itemId: parseInt(item.resourceId),
           id: parseInt(item.notifId),
-          callMode: "update",
+          callMode: "enable",
           e: item.enabled ? 1 : 0,
         },
         sid
@@ -3899,6 +3962,87 @@ app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
   } catch (err) {
     console.error("Wialon notification log error:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Auth guard for privileged Wialon endpoints (the global middleware skips /wialon/*)
+const requireAppAuth = (req, res, next) => {
+  const token = req.cookies.access_token;
+  if (!token) return res.status(401).json({ message: "Unauthorized: Token missing" });
+  try {
+    req.session.user = jwt.verify(token, JWT_SECRET).user;
+    next();
+  } catch (e) {
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+};
+
+// nginx (reverse proxy) closes the request after 60s. A response that late comes
+// from nginx itself, which does NOT add the CORS headers — the browser then
+// reports a CORS error instead of the real failure. Every long Wialon call is
+// therefore raced against a deadline so we always answer first, with headers.
+const WIALON_DEADLINE_MS = Number(process.env.WIALON_DEADLINE_MS || 50000);
+
+function withDeadline(promise, ms = WIALON_DEADLINE_MS, message = null) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(
+        message ||
+          "Wialon tardó demasiado en responder. Intenta de nuevo en unos segundos."
+      );
+      err.code = "WIALON_DEADLINE";
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+const upstreamStatus = (err) => (err?.code === "WIALON_DEADLINE" ? 504 : 502);
+
+// GET /wialon/notifications/catalog?unitIds=1,2&hint=ECO&q=texto
+// Catalog for the transporte wizard: which GPS units exist, which notifications
+// already cover them, and free candidates for the 4 canonical alert types.
+app.get("/wialon/notifications/catalog", requireAppAuth, async (req, res) => {
+  try {
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (unitIds.length === 0) return res.status(400).json({ error: "unitIds is required" });
+
+    const catalog = await withDeadline(
+      getWialonNotificationCatalog({
+        unitIds,
+        hint: String(req.query.hint || ""),
+        q: String(req.query.q || ""),
+      })
+    );
+    res.json(catalog);
+  } catch (err) {
+    console.error("Wialon notification catalog error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// POST /wialon/notifications/apply
+// body: { unitIds: ["123"], selections: [{resourceId, notifId, action: "link"|"unlink"}] }
+app.post("/wialon/notifications/apply", requireAppAuth, async (req, res) => {
+  try {
+    const { unitIds, selections } = req.body || {};
+    if (!Array.isArray(unitIds) || unitIds.length === 0)
+      return res.status(400).json({ error: "unitIds is required" });
+    if (!Array.isArray(selections) || selections.length === 0)
+      return res.status(400).json({ error: "selections is required" });
+
+    const results = await withDeadline(applyWialonSelections({ unitIds, selections }));
+    invalidateCatalogCache();
+    res.json(results);
+  } catch (err) {
+    // Writes may have partially landed before the failure: never leave a stale cache.
+    invalidateCatalogCache();
+    console.error("Wialon notification apply error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
   }
 });
 

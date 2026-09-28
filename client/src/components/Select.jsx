@@ -25,6 +25,12 @@ const useClickOutside = (ref, handler) => {
  *   disabled     — bool
  *   clearable    — bool (default true)
  *   searchable   — bool (default true)
+ *   onSearch     — (text) => void — fired on every keystroke of the built-in
+ *                  search box. Let a caller drive its own search (e.g. a remote
+ *                  catalogue) while this component keeps filtering locally.
+ *   loading      — bool — replaces the empty row with "Buscando…" so an in-flight
+ *                  search is not mistaken for "no results".
+ *   emptyText    — string — message for the empty row (default "Sin resultados").
  */
 export const Select = ({
   options = [],
@@ -37,6 +43,9 @@ export const Select = ({
   searchable = true,
   className,
   direction = "down",
+  onSearch,
+  loading = false,
+  emptyText = "Sin resultados",
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -130,13 +139,19 @@ export const Select = ({
             className="pselect__search-input"
             placeholder="Buscar..."
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              onSearch?.(e.target.value);
+            }}
           />
         </div>
       )}
       <ul className="pselect__options">
         {filtered.length === 0 ? (
-          <li className="pselect__option pselect__option--empty">Sin resultados</li>
+          <li className="pselect__option pselect__option--empty">
+            {loading && <i className="fa fa-spinner fa-spin pselect__spinner"></i>}
+            {loading ? "Buscando…" : emptyText}
+          </li>
         ) : (
           filtered.map((opt) => (
             <li

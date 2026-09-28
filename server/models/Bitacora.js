@@ -33,6 +33,15 @@ const TransporteSchema = new mongoose.Schema(
       name: { type: String },
       data: { type: Object }
     }],
+    // Wialon notifications selected for this transporte (applied on creation)
+    notificaciones: [{
+      resourceId: { type: Number, required: true },
+      notifId: { type: Number, required: true },
+      name: { type: String, default: "" },
+      triggerType: { type: String, default: "" },
+      kind: { type: String, enum: ["vinculada", "canonica"], default: "vinculada" },
+      appliedAt: { type: Date, default: Date.now },
+    }],
     registro: {
       ubicacion: { type: String, default: "" },
       ultimo_posicionamiento: { type: String, default: "" },
