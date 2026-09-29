@@ -8414,7 +8414,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
       query,
       { bitacora_id: 1, cliente: 1, operador: 1, createdAt: 1, eventos: 1,
         edited_bitacora: 1, origen: 1, destino: 1, status: 1, transportes: 1,
-        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1, tracto: 1 }
+        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1, tipoUnidad: 1 }
     ).lean();
 
     // Batch-resolve linked PlanDeEmbarque docs (source of truth for citas/carrierMove).
@@ -8427,7 +8427,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
     const planDocs = planIds.length
       ? await PlanDeEmbarque.find(
           { _id: { $in: planIds } },
-          { carrierMove: 1, citaCarga: 1, horaSalida: 1, citaEntrega: 1, destino: 1, transporte: 1 }
+          { carrierMove: 1, citaCarga: 1, horaSalida: 1, citaEntrega: 1, destino: 1, transporte: 1, tipoUnidad: 1 }
         ).lean()
       : [];
     const planMap = Object.fromEntries(planDocs.map((p) => [p._id.toString(), p]));
@@ -8481,8 +8481,6 @@ app.get("/reporte-estadisticas", async (req, res) => {
     };
     const getFirstLineaTransporte = (transportes = []) =>
       transportes.find((t) => t?.lineaTransporte)?.lineaTransporte || "";
-    const getFirstTractoTipo = (transportes = []) =>
-      transportes.find((t) => t?.tracto?.tipo)?.tracto.tipo || "";
 
     // Filtering in-memory based on resolved names
     let bitacorasToProcess = bitacoras;
@@ -8575,10 +8573,9 @@ app.get("/reporte-estadisticas", async (req, res) => {
         || cleanLinea(plan?.transporte)
         || "";
       const tipoTransporte =
-        cleanLinea(getFirstTractoTipo(bit.transportes))
-        || cleanLinea(bit.tracto?.tipo)
-        || cleanLinea(getFirstTractoTipo(bit.edited_bitacora?.transportes))
-        || cleanLinea(bit.edited_bitacora?.tracto?.tipo)
+        cleanLinea(bit.tipoUnidad)
+        || cleanLinea(getMetadataValue(presenciaOrigenEvento?.metadata, ["tipoUnidad", "tipo_unidad"]))
+        || cleanLinea(plan?.tipoUnidad)
         || "";
       const origenNombre =
         getResolvedLocationName(bit.origen, origenMap)
