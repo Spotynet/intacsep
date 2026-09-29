@@ -8,7 +8,9 @@ import {Select} from "../Select";
 import Toast from "../Toast";
 import ModalTemplate from "../ModalTemplate";
 import NewEventModal from "../Bitacoras/Eventos/NewEventModal";
-import QuickPatchForm from "./QuickPatchForm";
+import QuickPatchForm, {enrichTransportWithGps} from "./QuickPatchForm";
+import {useWialon} from "../../context/WialonProvider";
+import {findBestEventMatch} from "../../utils/wialonUtils";
 import {useToast} from "../../hooks/useToast";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
@@ -31,8 +33,10 @@ const friendlyWialonError = (msg) =>
 //  - embedded: when true, render without Sidebar/PageHeader/full-viewport shell.
 //  - unitIds: string[] — optional, restrict notifications to those touching any of these Wialon unit IDs.
 //  - bitacoraId: string — optional, when set trims each row's activeBitacoras to that bitácora.
-const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null}) => {
+//  - onEventSaved: optional, called after an alert event is stored (auto or manual).
+const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null, onEventSaved = null}) => {
   const {user, verifyToken, setUser} = useAuth();
+  const {getUnitById} = useWialon();
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const navigate = useNavigate();
   const baseUrl = import.meta.env.VITE_BASE_URL;
@@ -41,6 +45,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
 
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState(null);
   const [error, setError] = useState(null);
 
   const [search, setSearch] = useState("");
@@ -150,7 +155,12 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     setError(null);
 
     try {
-      const res = await fetch(`${baseUrl}/wialon/notifications`, {
+      const params = new URLSearchParams();
+      if (Array.isArray(unitIds) && unitIds.length > 0) {
+        params.set("unitIds", unitIds.map(String).join(","));
+      }
+      const query = params.toString();
+      const res = await fetch(`${baseUrl}/wialon/notifications${query ? `?${query}` : ""}`, {
         headers: {"x-wialon-token": token},
       });
 
@@ -188,7 +198,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     } finally {
       setLoading(false);
     }
-  }, [token, baseUrl]);
+  }, [token, baseUrl, unitIds]);
 
   useEffect(() => {
     // In embedded mode we don't wait for verifyToken; fetch as soon as we can.
@@ -302,38 +312,61 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     setResourceFilter(null);
   };
 
-  const handleAutoEvent = (notification) => {
+  const handleAutoEvent = async (notification) => {
+    if (savingKey) return;
     if (!notification.activeBitacoras?.length) {
       showToast("No hay bitácoras activas vinculadas a esta alerta.", "warning");
       return;
     }
 
-    // Pick the first unit that has an active bitacora
-    const uId = notification.units[0];
-    const bit = notification.activeBitacoras.find(b => String(b.wialonId) === String(uId)) || notification.activeBitacoras[0];
+    const best = findBestEventMatch(notification.name, eventTypes);
+    if (!best?.match?.evento) {
+      showToast("No hay un tipo de evento que corresponda a esta alerta.", "warning");
+      return;
+    }
 
-    // If the first unit doesn't have a bitacora, find the first one that does
-    const targetUnitId = bit.wialonId;
-    const targetIdx = notification.units.indexOf(targetUnitId);
-    const targetName = notification.unitNames?.[targetIdx] || `ID: ${targetUnitId}`;
+    // Embedded view is already limited to this bitácora. Standalone uses the first open one.
+    const targetBitId = bitacoraId || notification.activeBitacoras[0]._id;
+    const bits = notification.activeBitacoras.filter((b) => String(b._id) === String(targetBitId));
+    const transporteIds = new Set(bits.map((b) => String(b.transporteId)));
+    if (!transporteIds.size) {
+      showToast("No hay transportes vinculados a esta alerta.", "warning");
+      return;
+    }
 
-    const unitObj = {
-      id: targetUnitId,
-      name: targetName,
-      bitacora_id: bit.bitacora_id,
-      bitacora_raw_id: bit._id,
-      transporte_id: bit.transporteId,
-      status: bit.status,
-      edited: bit.edited,
-      placa: bit.placa,
-      eco: bit.eco,
-      eventName: notification.name,
-      _key: `unit-${targetUnitId}-${targetIdx}`
-    };
+    setSavingKey(notification._key);
+    try {
+      const res = await fetch(`${baseUrl}/bitacora/${targetBitId}`, {credentials: "include"});
+      if (!res.ok) throw new Error("No se pudo cargar la bitácora");
+      const data = await res.json();
+      const transportes = (data.transportes || []).filter((t) => transporteIds.has(String(t.id)));
+      if (!transportes.length) throw new Error("No hay transportes vinculados a esta alerta.");
 
-    setSelectedNotifForUnits(notification);
-    setSelectedUnitInModal(unitObj);
-    setUnitModalVisible(true);
+      const enriched = await Promise.all(
+        transportes.map((t) => enrichTransportWithGps(t, getUnitById))
+      );
+
+      const patchRes = await fetch(`${baseUrl}/bitacora/${targetBitId}/event`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        credentials: "include",
+        body: JSON.stringify({
+          nombre: best.match.evento,
+          descripcion: `Alerta Wialon: ${notification.name}`,
+          registrado_por: user ? `${user.firstName} ${user.lastName}` : "Sistema",
+          frecuencia: 10,
+          transportes: enriched,
+        }),
+      });
+      if (!patchRes.ok) throw new Error("Error al guardar el evento");
+
+      showToast("Evento registrado en bitácora", "success");
+      if (onEventSaved) await onEventSaved();
+    } catch (err) {
+      showToast(err.message || "Error al guardar el evento", "error");
+    } finally {
+      setSavingKey(null);
+    }
   };
 
   const unitColumns = [
@@ -586,7 +619,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
                 backgroundColor: row.activeBitacoras?.length ? "#10b981" : "#e5e7eb",
                 border: "none",
                 color: "white",
-                cursor: row.activeBitacoras?.length ? "pointer" : "not-allowed",
+                cursor: row.activeBitacoras?.length && !savingKey ? "pointer" : "not-allowed",
                 padding: "6px",
                 fontSize: "0.9rem",
                 borderRadius: "6px",
@@ -598,9 +631,9 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
                 transition: "all 0.2s ease",
                 boxShadow: row.activeBitacoras?.length ? "0 2px 4px rgba(16, 185, 129, 0.2)" : "none"
               }}
-              disabled={loading || !row.activeBitacoras?.length}
+              disabled={loading || !!savingKey || !row.activeBitacoras?.length}
             >
-              <i className={`fa ${loading ? "fa-spinner fa-spin" : "fa-magic"}`}></i>
+              <i className={`fa ${savingKey === row._key ? "fa-spinner fa-spin" : "fa-magic"}`}></i>
             </button>
           </Tooltip>
         </div>
@@ -749,9 +782,10 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
                 ref={quickPatchRef}
                 unit={selectedUnitInModal}
                 eventTypes={eventTypes}
-                onSuccess={() => {
+                onSuccess={async () => {
                   fetchNotifications();
                   setSelectedUnitInModal(null);
+                  if (onEventSaved) await onEventSaved();
                 }}
               />
             </div>

@@ -7,6 +7,89 @@ import { TextInput } from "../TextInput";
 import { TextArea } from "../TextArea";
 import { findBestEventMatch } from "../../utils/wialonUtils";
 
+const formatDuration = (seconds) => {
+  if (seconds < 60) return `Hace ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Hace ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Hace ${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `Hace ${days}d`;
+};
+
+const getAddressFromCoordinates = (lon, lat) => {
+  return new Promise((resolve, reject) => {
+    if (!lon || !lat) return reject("Invalid coordinates");
+    if (!window.wialon?.util?.Gis?.getLocations) return reject("Wialon GIS not available");
+
+    window.wialon.util.Gis.getLocations([{lon, lat}], (code, res) => {
+      if (code === 0) resolve(res[0]);
+      else reject("No se pudo obtener la dirección.");
+    });
+  });
+};
+
+export async function getGpsSnapshot(wialonId, getUnitById) {
+  const unitObj = getUnitById(wialonId);
+  if (!unitObj || typeof unitObj.getPosition !== "function") return null;
+
+  const pos = unitObj.getPosition();
+  if (!pos) return null;
+
+  let ubicacion = "";
+  try {
+    const address = await getAddressFromCoordinates(pos.x, pos.y);
+    ubicacion = Array.isArray(address) ? address.join(", ") : address;
+  } catch (e) {
+    console.warn("⚠️ Dirección no encontrada:", e);
+  }
+
+  return {
+    duracion: formatDuration(Math.floor(Date.now() / 1000) - pos.t),
+    velocidad: pos.s,
+    coordenadas: `${pos.y}, ${pos.x}`,
+    ultimo_posicionamiento: window.wialon?.util?.DateTime?.formatTime(pos.t) || "—",
+    ubicacion,
+  };
+}
+
+export async function enrichTransportWithGps(transporte, getUnitById) {
+  if (!transporte) return null;
+  const transporteCopy = {...transporte};
+
+  let gpsData = [];
+  if (!transporte.gpsUnits || transporte.gpsUnits.length === 0) {
+    const formattedId = transporte.id?.split("_")[0];
+    if (formattedId && formattedId !== "0" && formattedId !== "blank") {
+      const data = await getGpsSnapshot(formattedId, getUnitById);
+      if (data) gpsData = [{wialonId: formattedId, name: `GPS ${formattedId}`, data}];
+    }
+  } else {
+    gpsData = await Promise.all(
+      transporte.gpsUnits.map(async (gpsUnit) => ({
+        wialonId: gpsUnit.wialonId,
+        name: gpsUnit.name,
+        data: (await getGpsSnapshot(gpsUnit.wialonId, getUnitById)) || {},
+      }))
+    );
+  }
+
+  if (gpsData.length === 0) {
+    transporteCopy.registro = transporteCopy.registro || {
+      ubicacion: "",
+      duracion: "",
+      ultimo_posicionamiento: "",
+      velocidad: "",
+      coordenadas: "",
+    };
+  } else {
+    transporteCopy.gpsData = gpsData;
+    transporteCopy.registro = gpsData[0].data || {};
+  }
+
+  return transporteCopy;
+}
+
 const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, ref) => {
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -33,53 +116,6 @@ const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, re
     isLoading: loading
   }));
 
-  // Helper functions for GPS data (synced with NewEventModal.jsx)
-  const formatDuration = (seconds) => {
-    if (seconds < 60) return `Hace ${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `Hace ${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `Hace ${hours}h`;
-    const days = Math.floor(hours / 24);
-    return `Hace ${days}d`;
-  };
-
-  const getAddressFromCoordinates = (lon, lat) => {
-    return new Promise((resolve, reject) => {
-      if (!lon || !lat) return reject("Invalid coordinates");
-      if (!window.wialon?.util?.Gis?.getLocations) return reject("Wialon GIS not available");
-
-      window.wialon.util.Gis.getLocations([{lon, lat}], (code, res) => {
-        if (code === 0) resolve(res[0]);
-        else reject("No se pudo obtener la dirección.");
-      });
-    });
-  };
-
-  const getUnitInfo = useCallback(async (wialonId) => {
-    const unitObj = getUnitById(wialonId);
-    if (!unitObj || typeof unitObj.getPosition !== "function") return null;
-
-    const pos = unitObj.getPosition();
-    if (!pos) return null;
-
-    let ubicacion = "";
-    try {
-      const address = await getAddressFromCoordinates(pos.x, pos.y);
-      ubicacion = Array.isArray(address) ? address.join(", ") : address;
-    } catch (e) {
-      console.warn("⚠️ Dirección no encontrada:", e);
-    }
-
-    return {
-      duracion: formatDuration(Math.floor(Date.now() / 1000) - pos.t),
-      velocidad: pos.s,
-      coordenadas: `${pos.y}, ${pos.x}`,
-      ultimo_posicionamiento: window.wialon?.util?.DateTime?.formatTime(pos.t) || "—",
-      ubicacion,
-    };
-  }, [getUnitById]);
-
   const getTransporteLabel = (transporte) => {
     const id = transporte.id || "";
     if (!id) return "Sin ID";
@@ -89,46 +125,6 @@ const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, re
     if (parts.length === 2) return `${parts[0]} - ${parts[1]}`;
     return id;
   };
-
-  const getMultipleGpsData = useCallback(async (transporte) => {
-    // Compatibility with older transport versions
-    if (!transporte.gpsUnits || transporte.gpsUnits.length === 0) {
-      const formattedId = transporte.id?.split("_")[0];
-      if (!formattedId || formattedId === "0" || formattedId === "blank") {
-        return []; 
-      }
-      const data = await getUnitInfo(formattedId);
-      return data ? [{ wialonId: formattedId, name: `GPS ${formattedId}`, data }] : [];
-    }
-
-    const gpsDataPromises = transporte.gpsUnits.map(async (gpsUnit) => {
-      const data = await getUnitInfo(gpsUnit.wialonId);
-      return {
-        wialonId: gpsUnit.wialonId,
-        name: gpsUnit.name,
-        data: data || {},
-      };
-    });
-    return await Promise.all(gpsDataPromises);
-  }, [getUnitInfo]);
-
-  const enrichTransportWithGps = useCallback(async (transporte) => {
-    if (!transporte) return null;
-    const transporteCopy = { ...transporte };
-
-    const gpsData = await getMultipleGpsData(transporteCopy);
-    if (gpsData.length === 0) {
-      // Fallback to manual or empty if enrichment fails or it's manual
-      transporteCopy.registro = transporteCopy.registro || {
-        ubicacion: "", duracion: "", ultimo_posicionamiento: "", velocidad: "", coordenadas: "",
-      };
-    } else {
-      transporteCopy.gpsData = gpsData;
-      transporteCopy.registro = gpsData[0].data || {};
-    }
-    
-    return transporteCopy;
-  }, [getMultipleGpsData]);
 
   const fetchBitacora = useCallback(async () => {
     try {
@@ -164,7 +160,7 @@ const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, re
     const runEnrichment = async () => {
       if (!transportData || transportData.gpsEnriched) return;
       
-      const enriched = await enrichTransportWithGps(transportData);
+      const enriched = await enrichTransportWithGps(transportData, getUnitById);
       if (active && enriched && enriched.gpsData?.length > 0) {
         setTransportData({ ...enriched, gpsEnriched: true });
       }
@@ -172,7 +168,7 @@ const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, re
     
     runEnrichment();
     return () => { active = false; };
-  }, [transportData, enrichTransportWithGps]);
+  }, [transportData, getUnitById]);
 
   // Autofill and Match Logic
   useEffect(() => {

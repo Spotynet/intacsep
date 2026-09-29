@@ -41,7 +41,7 @@ import PatioExitEvent from "./models/PatioExitEvent.js";
 import PatioAnomaly from "./models/PatioAnomaly.js";
 import wialonIntegrationService from "./services/wialonIntegrationService.js";
 import telemetryService from "./services/telemetryService.js";
-import { getCatalog as getWialonNotificationCatalog, applySelections as applyWialonSelections, invalidateCatalogCache } from "./services/wialonNotificationService.js";
+import { getCatalog as getWialonNotificationCatalog, applySelections as applyWialonSelections, invalidateCatalogCache, listNotifications as listWialonNotifications } from "./services/wialonNotificationService.js";
 import { readPlateFromImage } from "./services/plateRecognitionService.js";
 import { wialonApiCall, wialonLogout } from "./utils/wialonClient.js";
 import { auditCreation, auditUpdate, auditDeletion } from "./auditoriaUtils.js";
@@ -328,8 +328,20 @@ app.use((req, res, next) => {
   next(); // Proceed to the next middleware
 });
 
-//mongoose connection
-mongoose.connect(process.env.MONGO_URI);
+// Transient DNS failures (EAI_AGAIN) reject this promise. Left unhandled, Node exits.
+const connectMongo = () => {
+  mongoose
+    .connect(process.env.MONGO_URI)
+    .then(() => console.log("MongoDB connected"))
+    .catch((err) => {
+      console.error(`MongoDB connection failed (${err.code || err.name}): ${err.message}. Retrying in 5s.`);
+      setTimeout(connectMongo, 5000);
+    });
+};
+mongoose.connection.on("error", (err) => {
+  console.error("MongoDB error:", err.message);
+});
+connectMongo();
 
 app.get("/", (req, res) => {
   res.send(`Node.js versionn: ${process.version}`);
@@ -2260,7 +2272,7 @@ app.patch("/bitacora/:id", async (req, res) => {
   }
 
   // Convertir campos de texto a mayúsculas antes de procesar
-  const excludeFields = ['status', 'inicioMonitoreo', 'finalMonitoreo', 'telefono', '_id', 'createdAt', 'updatedAt', 'bitacora_id', 'capacidad', 'gpsUnits', 'origen', 'destino', 'eventos'];
+  const excludeFields = ['status', 'inicioMonitoreo', 'finalMonitoreo', 'telefono', '_id', 'createdAt', 'updatedAt', 'bitacora_id', 'capacidad', 'gpsUnits', 'origen', 'destino', 'eventos', 'notificaciones'];
   const updatedData = convertToUpperCase(validatedData, excludeFields);
   console.log(updatedData);
 
@@ -2279,11 +2291,13 @@ app.patch("/bitacora/:id", async (req, res) => {
     // Preserve internalId across transporte updates — it must never change once assigned.
     // Match incoming transportes to existing ones by: internalId → current id → _originalId (id changed).
     // Evento transporte copies also get their internalId stamped so future matches work.
+    const wialonJobs = [];
     if (updatedData.transportes) {
       const existingById = new Map(bitacora.transportes.map((t) => [t.id, t]));
       const existingByInternalId = new Map(
         bitacora.transportes.filter((t) => t.internalId).map((t) => [t.internalId, t])
       );
+      const notifKeyOf = (n) => `${Number(n.resourceId)}_${Number(n.notifId)}`;
 
       updatedData.transportes = updatedData.transportes.map((t) => {
         const existing =
@@ -2291,8 +2305,30 @@ app.patch("/bitacora/:id", async (req, res) => {
           existingById.get(t.id) ||
           (t._originalId && existingById.get(t._originalId));
         const { _originalId, ...rest } = t;
+        const units = normalizeGpsUnits(rest.gpsUnits);
+        const stored = existing?.notificaciones || [];
+        const nextNotifs = Array.isArray(rest.notificaciones)
+          ? normalizeNotificaciones(rest.notificaciones)
+          : normalizeNotificaciones(stored.map((n) => (n.toObject ? n.toObject() : n)));
+        const prevKeys = new Set(stored.map(notifKeyOf));
+        const added = nextNotifs.filter((n) => !prevKeys.has(notifKeyOf(n)));
+        if (added.length && units.length) {
+          wialonJobs.push({
+            unitIds: units.map((u) => u.wialonId),
+            selections: added.map((n) => ({
+              resourceId: n.resourceId,
+              notifId: n.notifId,
+              action: "link",
+            })),
+          });
+        }
         // Use existing internalId (immutable), or incoming one, or let schema default generate one
-        return { ...rest, gpsUnits: normalizeGpsUnits(rest.gpsUnits), internalId: existing?.internalId || t.internalId || undefined };
+        return {
+          ...rest,
+          gpsUnits: units,
+          notificaciones: nextNotifs,
+          internalId: existing?.internalId || t.internalId || undefined,
+        };
       });
 
       // Build old-id → resolved transporte map for evento copy repair
@@ -2448,7 +2484,27 @@ app.patch("/bitacora/:id", async (req, res) => {
       }
     ]);
 
-    res.json(resolvedBitacora[0]);
+    let wialonSync = null;
+    if (wialonJobs.length) {
+      wialonSync = { applied: [], failed: [], skippedUnits: [], pruned: [] };
+      for (const job of wialonJobs) {
+        try {
+          const part = await withDeadline(applyWialonSelections(job));
+          wialonSync.applied.push(...(part.applied || []));
+          wialonSync.failed.push(...(part.failed || []));
+          wialonSync.skippedUnits.push(...(part.skippedUnits || []));
+          wialonSync.pruned.push(...(part.pruned || []));
+        } catch (err) {
+          console.error("Wialon notification sync failed:", err);
+          wialonSync.failed.push(...job.selections.map((n) => ({ ...n, error: err.message })));
+        }
+      }
+      invalidateCatalogCache();
+    }
+
+    const payload = resolvedBitacora[0];
+    if (payload && wialonSync) payload.wialonSync = wialonSync;
+    res.json(payload);
   } catch (error) {
     console.error("Error updating bitacora:", error);
     res.status(500).json({ message: "Internal server error" });
@@ -3287,272 +3343,20 @@ app.post("/integrations/:id/import-to-wialon", async (req, res) => {
 // GET /wialon/notifications - fetch notification rules from all resources
 // Data flag 0x0400 = Resource.dataFlag.notifications — field is 'unf' (dict keyed by notif id)
 app.get("/wialon/notifications", async (req, res) => {
-  let sid = null;
   try {
     const token = process.env.WIALON_API_TOKEN;
     if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
 
-    const loginData = await wialonApiCall("token/login", { token });
-    if (loginData.error) {
-      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
-    }
-    sid = loginData.eid;
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
 
-    const searchData = await wialonApiCall(
-      "core/search_items",
-      {
-        spec: {
-          itemsType: "avl_resource",
-          propName: "*",
-          propValueMask: "*",
-          sortType: "sys_name",
-        },
-        force: 1,
-        flags: 0x0400 | 0x0800 | 0x1000 | 0x01,
-        from: 0,
-        to: 1000,
-      },
-      sid
-    );
-
-    if (searchData.error || !searchData.items) {
-      await wialonApiCall("core/logout", {}, sid);
-      return res.status(500).json({ error: `Search error: ${searchData.error || "no items"}` });
-    }
-
-    // Fetch all units to build id→name lookup
-    const unitSearchData = await wialonApiCall(
-      "core/search_items",
-      {
-        spec: {
-          itemsType: "avl_unit",
-          propName: "*",
-          propValueMask: "*",
-          sortType: "sys_name",
-        },
-        force: 1,
-        flags: 0x1,
-        from: 0,
-        to: 1000,
-      },
-      sid
-    );
-
-    const unitNameMap = {};
-    if (!unitSearchData.error && unitSearchData.items) {
-      for (const u of unitSearchData.items) {
-        unitNameMap[u.id] = u.nm || `Unit ${u.id}`;
-      }
-    }
-
-    // Build geofence ID -> Name map from all resources
-    const geofenceMap = {};
-    for (const resItem of searchData.items) {
-      if (resItem.zl && typeof resItem.zl === "object") {
-        for (const [zid, z] of Object.entries(resItem.zl)) {
-          geofenceMap[zid] = z.n || `Geozona ${zid}`;
-        }
-      }
-    }
-
-    const allNotifications = [];
-    for (const resItem of searchData.items) {
-      const unf = resItem.unf;
-      if (!unf || typeof unf !== "object") continue;
-
-      for (const [nid, n] of Object.entries(unf)) {
-        if (!n || n.error) continue;
-        const unitIds = n.un || [];
-        const unitNames = unitIds.map((id) => unitNameMap[id] || `ID: ${id}`);
-        const rawActions = n.act || [];
-        const actionLabels = rawActions
-          .map((a) => {
-            if (typeof a === "string") return NOTIFICATION_ACTION_LABELS[a] || a;
-            if (a && a.t) return NOTIFICATION_ACTION_LABELS[a.t] || a.t;
-            return null;
-          })
-          .filter(Boolean);
-
-        // Build detailed action descriptions
-        const actionDescriptions = rawActions.map(a => {
-          const type = typeof a === "string" ? a : (a.t || "");
-          const p = a.p || {};
-          
-          switch(type) {
-            case "notify_email":
-            case "email":
-              return `Enviar email a: ${p.email || p.email_to || "N/A"}`;
-            case "notify_popup":
-              return "Mostrar notificación en ventana emergente";
-            case "notify_mobile":
-            case "mobile_apps":
-              return "Enviar notificación a aplicación móvil";
-            case "notify_sms":
-            case "sms":
-              return `Enviar SMS a: ${p.phones || p.sms_to || "N/A"}`;
-            case "notify_command":
-            case "exec_command":
-              return `Ejecutar comando: ${p.c || p.command_name || "N/A"}`;
-            case "notify_http":
-              return `Petición HTTP a: ${p.u || p.url || "URL"}`;
-            case "notify_event":
-              return "Registrar evento en la unidad";
-            case "notify_telegram":
-              return "Enviar mensaje a Telegram";
-            case "notify_whatsapp":
-              return "Enviar mensaje a WhatsApp";
-            case "message":
-              // In Wialon, 'message' action often means "Online notification" if no specific message text is provided
-              if (typeof a === "string" || !p.message) {
-                return "Mostrar notificación en ventana emergente";
-              }
-              return `Mensaje: ${p.message}`;
-            default:
-              // For unknown types, capitalize and replace underscores
-              const label = NOTIFICATION_ACTION_LABELS[type];
-              if (label) return label;
-              return type.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-          }
-        });
-
-        // Build human-readable description
-        let description = n.d || ""; // Some versions might provide a direct description
-        
-        // 1. Try to build description from trigger parameters (Geozones, Speed, etc.)
-        if (!description && n.p) {
-          // Geozones can be part of many trigger types (speed, stationary, etc.)
-          if (Array.isArray(n.p.geos) && n.p.geos.length > 0) {
-            const names = n.p.geos.map((id) => geofenceMap[id] || `ID: ${id}`);
-            const checkType = n.p.type === 0 ? "Fuera de" : "Dentro de";
-            description = `${checkType}: ${names.join(", ")}`;
-          }
-          
-          // Append specific trigger details
-          if (n.trg === "speed") {
-            const speedInfo = `Velocidad: ${n.p.min || 0} a ${n.p.max || "∞"} km/h`;
-            description = description ? `${description} (${speedInfo})` : speedInfo;
-          } else if (n.trg === "sensor_value") {
-            const sensorInfo = `Sensor: ${n.p.s || "N/A"} (${n.p.min || 0} a ${n.p.max || "∞"})`;
-            description = description ? `${description} (${sensorInfo})` : sensorInfo;
-          } else if (n.trg === "alarm") {
-            description = description ? `${description} (Alarma)` : "Alarma / Botón de pánico";
-          } else if (n.trg === "digital_input") {
-            const diInfo = `Entrada digital: ${n.p.in || "N/A"}`;
-            description = description ? `${description} (${diInfo})` : diInfo;
-          } else if (n.trg === "outage") {
-            description = "Pérdida de conexión";
-          }
-        }
-        
-        // 2. Fallback priority: Name (n.n) is usually the "ESTADIA..." text you expect.
-        // We only use Text (n.txt) if Name is missing and Text isn't the generic template.
-        if (!description || description === "—") {
-          const isGenericText = !n.txt || n.txt === "%UNIT% %NOTIFICATION%";
-          description = n.n || (!isGenericText ? n.txt : "—");
-        }
-
-        allNotifications.push({
-          _key: `${resItem.id}_${nid}`,
-          id: parseInt(nid),
-          resourceId: resItem.id,
-          name: n.n || "Sin nombre",
-          triggerType: n.trg || "unknown",
-          text: n.txt || "",
-          description: description || "—",
-          units: unitIds,
-          unitNames,
-          enabled: !(n.fl & 0x2),
-          alarmCount: n.ac || 0,
-          createdAt: n.ct,
-          resourceName: resItem.nm || "—",
-          actions: rawActions,
-          actionLabels,
-          actionDescriptions,
-          raw: n,
-        });
-      }
-    }
-
-    // Cross-reference: find active bitácoras using any of the notification unit IDs
-    // Use both String and Number variants in $in to handle mixed-type historical data
-    const allUnitIdsRaw = [...new Set(allNotifications.flatMap((n) => n.units).map(String))];
-    const allUnitIdsNum = allUnitIdsRaw.map(Number).filter((n) => !Number.isNaN(n));
-    const allUnitIds = [...allUnitIdsRaw, ...allUnitIdsNum];
-    const unitActivityMap = {};
-    if (allUnitIds.length > 0) {
-      const col = mongoose.connection.db.collection("bitacoras");
-      const activeBits = await col
-        .find(
-          {
-            deleted: false,
-            status: { $nin: ["cerrada", "cerrada (e)", "finalizada"] },
-            "transportes.gpsUnits.wialonId": { $in: allUnitIds },
-          },
-          {
-            projection: {
-              _id: 1,
-              bitacora_id: 1,
-              cliente: 1,
-              status: 1,
-              edited: 1,
-              "transportes.id": 1,
-              "transportes.gpsUnits.wialonId": 1,
-              "transportes.gpsUnits.name": 1,
-              "transportes.tracto.placa": 1,
-              "transportes.tracto.eco": 1,
-              "transportes.remolque.placa": 1,
-              "transportes.remolque.eco": 1,
-            },
-          }
-        )
-        .toArray();
-
-      for (const bit of activeBits) {
-        for (const t of bit.transportes || []) {
-          for (const g of t.gpsUnits || []) {
-            const wid = String(g.wialonId);
-            if (!unitActivityMap[wid]) unitActivityMap[wid] = [];
-            unitActivityMap[wid].push({
-              _id: bit._id?.toString?.() || String(bit._id),
-              bitacora_id: bit.bitacora_id,
-              cliente: bit.cliente,
-              status: bit.status,
-              edited: bit.edited || false,
-              transporteId: t.id,
-              unitName: g.name || null,
-              wialonId: wid,
-              placa: t.tracto?.placa || t.remolque?.placa || null,
-              eco: t.tracto?.eco || t.remolque?.eco || null,
-            });
-          }
-        }
-      }
-    }
-
-    // Attach activeBitacoras to each notification
-    for (const n of allNotifications) {
-      const matches = [];
-      for (const uid of n.units) {
-        const hits = unitActivityMap[String(uid)];
-        if (hits) matches.push(...hits);
-      }
-      // Deduplicate by bitacora_id + transporteId
-      const seen = new Set();
-      n.activeBitacoras = matches.filter((m) => {
-        const k = `${m.bitacora_id}_${m.transporteId}`;
-        if (seen.has(k)) return false;
-        seen.add(k);
-        return true;
-      });
-    }
-
-    await wialonApiCall("core/logout", {}, sid);
-    sid = null;
-    res.json({ notifications: allNotifications });
+    const notifications = await withDeadline(listWialonNotifications({ unitIds }));
+    res.json({ notifications });
   } catch (err) {
     console.error("[wialon/notifications] falló:", err.message);
-    if (sid) await wialonLogout(sid);
-    res.status(500).json({ error: err.message });
+    res.status(upstreamStatus(err)).json({ error: err.message });
   }
 });
 
@@ -3693,25 +3497,6 @@ app.get("/wialon/open-bitacoras-with-alerts", async (req, res) => {
   }
 });
 
-// ── Notification Action Labels Map ──
-const NOTIFICATION_ACTION_LABELS = {
-  "notify_popup": "Popup",
-  "notify_email": "Email",
-  "notify_sms": "SMS",
-  "notify_command": "Comando",
-  "notify_http": "HTTP",
-  "notify_event": "Evento",
-  "notify_mobile": "Móvil",
-  "notify_telegram": "Telegram",
-  "notify_whatsapp": "WhatsApp",
-  "exec_command": "Ejecutar comando",
-  "message": "Notificación en línea",
-  "mobile_apps": "Notificación móvil",
-  "email": "Email",
-  "sms": "SMS",
-};
-
-// POST /wialon/notifications/:resourceId/:notifId/toggle - enable/disable a notification
 app.post("/wialon/notifications/:resourceId/:notifId/toggle", async (req, res) => {
   try {
     const token = process.env.WIALON_API_TOKEN;
@@ -3743,6 +3528,7 @@ app.post("/wialon/notifications/:resourceId/:notifId/toggle", async (req, res) =
       return res.status(500).json({ error: `Toggle error: ${result.error}` });
     }
 
+    invalidateCatalogCache();
     res.json({ success: true, enabled: !!enabled });
   } catch (err) {
     console.error("Wialon notification toggle error:", err);
@@ -3783,6 +3569,7 @@ app.post("/wialon/notifications/toggle-bulk", async (req, res) => {
     }
 
     await wialonApiCall("core/logout", {}, sid);
+    invalidateCatalogCache();
     res.json({ success: true, updated });
   } catch (err) {
     console.error("Wialon notification bulk toggle error:", err);

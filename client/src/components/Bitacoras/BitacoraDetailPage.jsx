@@ -10,6 +10,7 @@ import {useAuth} from "../../context/AuthContext";
 import {Form, Tabs, Tab} from "react-bootstrap";
 import "bootstrap/dist/js/bootstrap.bundle.min.js";
 import CreateTransporteModal from "./Transportes/CreateTransporteModal";
+import WialonNotifPicker, {mergeNotificaciones, reportWialonSync} from "./Transportes/WialonNotifPicker";
 import NewEventModal from "./Eventos/NewEventModal";
 import {generateAuditoriasFromChanges} from "../../utils/auditoria";
 import {getLocationText} from "../../utils/api";
@@ -21,6 +22,8 @@ import CellBadge from "../CellBadge";
 import TextInput from "../TextInput";
 import {Select} from "../Select";
 import TextArea from "../TextArea";
+import Toast from "../Toast";
+import {useToast} from "../../hooks/useToast";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -354,6 +357,9 @@ const BitacoraDetailPage = ({edited}) => {
   const [editIsPlanDraft, setEditIsPlanDraft] = useState(false);
   const [editTransporteStep, setEditTransporteStep] = useState(0);
   const [editTransporteSlide, setEditTransporteSlide] = useState("forward");
+  const [editNotificaciones, setEditNotificaciones] = useState([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const {toasts, showToast, removeToast} = useToast();
 
   const validatePhoneNumber = (phone) => {
     // Regex para validar número de teléfono mexicano de exactamente 10 dígitos seguidos
@@ -420,6 +426,8 @@ const BitacoraDetailPage = ({edited}) => {
 
     setEditDraftLineaText("");
     setEditDraftOperadorText("");
+    setEditNotificaciones([]);
+    setEditSaving(false);
     setEditTransporteStep(0);
     setEditTransporteSlide("forward");
     setEditTransporteModalVisible(true);
@@ -462,6 +470,13 @@ const BitacoraDetailPage = ({edited}) => {
       setSelectedGpsUnits((prev) => [...prev, ...newSelections]);
     }
   };
+
+  const editUnitIds = useMemo(
+    () => selectedGpsUnits.map((u) => String(u.id)).sort(),
+    [selectedGpsUnits]
+  );
+  const editCatalogHint =
+    editedTransporte?.tracto?.eco || editedTransporte?.lineaTransporte || bitacora?.cliente || "";
 
   //TRANSPORTES LOGIC
   const handleClose = () => setShowModal(false);
@@ -556,12 +571,17 @@ const BitacoraDetailPage = ({edited}) => {
         name: unit.name,
         data: {}, // Se llenará cuando se obtengan los datos
       })),
+      notificaciones:
+        idMethod === "wialon" && selectedGpsUnits.length > 0
+          ? mergeNotificaciones(editedTransporte.notificaciones, editNotificaciones)
+          : editedTransporte.notificaciones || [],
     };
 
     const updatedTransportes = bitacora.transportes.map((transporte) =>
       transporte.id === editedTransporte.originalId ? updatedEditedTransporte : transporte
     );
 
+    setEditSaving(true);
     try {
       const response = await fetch(`${baseUrl}/bitacora/${bitacora._id}`, {
         method: "PATCH",
@@ -577,7 +597,9 @@ const BitacoraDetailPage = ({edited}) => {
       }
 
       const data = await response.json();
-      setBitacora(data);
+      const {wialonSync, ...bitacoraData} = data;
+      reportWialonSync(wialonSync, showToast);
+      setBitacora(bitacoraData);
 
       // Check for draft values in edited transporte (skip for plan drafts — values already confirmed)
       if (!editIsPlanDraft && roleData?.crear_draft_transporte) {
@@ -640,6 +662,8 @@ const BitacoraDetailPage = ({edited}) => {
     } catch (error) {
       console.error("Error al guardar transporte editado:", error);
       alert("No se pudo guardar el transporte. Intenta nuevamente.");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -2067,6 +2091,7 @@ const BitacoraDetailPage = ({edited}) => {
                       embedded
                       unitIds={bitacoraUnitIds}
                       bitacoraId={bitacora?._id}
+                      onEventSaved={fetchEventos}
                     />
                   ) : null}
                 </div>
@@ -2513,6 +2538,16 @@ const BitacoraDetailPage = ({edited}) => {
 
           </div>{/* end step content wrapper */}
 
+          <div style={{display: currentKey === "gps" ? undefined : "none"}}>
+            <WialonNotifPicker
+              open={isEditTransporteModalVisible}
+              active={idMethod === "wialon" && selectedGpsUnits.length > 0}
+              unitIds={editUnitIds}
+              hint={editCatalogHint}
+              onChange={setEditNotificaciones}
+            />
+          </div>
+
           {/* Wizard footer */}
           <div className="wizard-footer">
             <button type="button" className="btn btn-outline-secondary"
@@ -2522,8 +2557,12 @@ const BitacoraDetailPage = ({edited}) => {
                 : <><i className="fa-solid fa-arrow-left me-1"></i>Anterior</>}
             </button>
             {isLastEditStep ? (
-              <button type="button" className="btn btn-success" onClick={handleTransportEdit}>
-                <i className="fa-solid fa-check me-1"></i>Guardar
+              <button type="button" className="btn btn-success" onClick={handleTransportEdit} disabled={editSaving}>
+                {editSaving ? (
+                  <><i className="fa fa-spinner fa-spin me-1"></i>Guardando y activando alertas…</>
+                ) : (
+                  <><i className="fa-solid fa-check me-1"></i>Guardar</>
+                )}
               </button>
             ) : (
               <button type="button" className="btn btn-primary" onClick={goEditNext}>
@@ -2705,6 +2744,7 @@ const BitacoraDetailPage = ({edited}) => {
           )}
         </ModalTemplate>
       )}
+      <Toast toasts={toasts} removeToast={removeToast} />
     </section>
   );
 };

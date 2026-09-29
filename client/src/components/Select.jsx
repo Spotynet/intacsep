@@ -88,6 +88,10 @@ export const Select = ({
       position: "fixed",
       left: rect.left,
       width: rect.width,
+      maxWidth: rect.width,
+      minWidth: 0,
+      boxSizing: "border-box",
+      overflow: "hidden",
       ...(openUp
         ? { bottom: window.innerHeight - rect.top + 5, top: "auto" }
         : { top: rect.bottom + 5, bottom: "auto" }),
@@ -160,9 +164,12 @@ export const Select = ({
               onClick={() => handleSelect(opt)}
             >
               {opt.value === value && <i className="fa fa-check pselect__check"></i>}
-              <div className="d-flex align-items-center justify-content-between w-100 gap-2">
+              <span
+                className="pselect__option-text"
+                title={typeof opt.label === "string" ? opt.label : undefined}
+              >
                 {opt.display || opt.label}
-              </div>
+              </span>
             </li>
           ))
         )}
@@ -175,7 +182,10 @@ export const Select = ({
     <div className={`pselect${open ? " pselect--open" : ""}${disabled ? " pselect--disabled" : ""}${className ? ` ${className}` : ""}`} ref={wrapRef}>
       {label && <span className="pselect__label">{label}</span>}
       <div className="pselect__control" onClick={handleToggle}>
-        <span className={`pselect__value${!selected ? " pselect__value--placeholder" : ""}`}>
+        <span
+          className={`pselect__value${!selected ? " pselect__value--placeholder" : ""}`}
+          title={selected && typeof selected.label === "string" ? selected.label : undefined}
+        >
           {selected ? (selected.display || selected.label) : placeholder}
         </span>
         <div className="pselect__indicators">
@@ -262,6 +272,10 @@ export const MultiSelect = ({
       position: "fixed",
       left: rect.left,
       width: rect.width,
+      maxWidth: rect.width,
+      minWidth: 0,
+      boxSizing: "border-box",
+      overflow: "hidden",
       ...(openUp
         ? { bottom: window.innerHeight - rect.top + 5, top: "auto" }
         : { top: rect.bottom + 5, bottom: "auto" }),
@@ -328,9 +342,12 @@ export const MultiSelect = ({
                 <span className={`pselect__checkbox${sel ? " pselect__checkbox--checked" : ""}`}>
                   {sel && <i className="fa fa-check"></i>}
                 </span>
-                <div className="d-flex align-items-center justify-content-between w-100 gap-2">
+                <span
+                  className="pselect__option-text"
+                  title={typeof opt.label === "string" ? opt.label : undefined}
+                >
                   {opt.display || opt.label}
-                </div>
+                </span>
               </li>
             );
           })

@@ -96,6 +96,8 @@ async function getCatalogSnapshot() {
 export function invalidateCatalogCache() {
   catalogSnapshot = null;
   catalogGeneration += 1;
+  listSnapshot = null;
+  listGeneration += 1;
 }
 
 function flattenNotifications(resources) {
@@ -411,4 +413,266 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
   });
 
   return results;
+}
+
+// Alerts panel list. Separate from the wizard snapshot: it needs geofence names
+// (heavy), so the wizard catalog stays on the lighter flags.
+const LIST_RESOURCE_FLAGS = 0x0400 | 0x0800 | 0x1000 | 0x01;
+const ACTION_LABELS = {
+  notify_popup: "Popup",
+  notify_email: "Email",
+  notify_sms: "SMS",
+  notify_command: "Comando",
+  notify_http: "HTTP",
+  notify_event: "Evento",
+  notify_mobile: "Móvil",
+  notify_telegram: "Telegram",
+  notify_whatsapp: "WhatsApp",
+  exec_command: "Ejecutar comando",
+  message: "Notificación en línea",
+  mobile_apps: "Notificación móvil",
+  email: "Email",
+  sms: "SMS",
+};
+
+let listSnapshot = null;
+let listSnapshotPending = null;
+let listGeneration = 0;
+
+async function fetchListResources(sid) {
+  const res = await wialonApiCall(
+    "core/search_items",
+    {
+      spec: { itemsType: "avl_resource", propName: "*", propValueMask: "*", sortType: "sys_name" },
+      force: 1,
+      flags: LIST_RESOURCE_FLAGS,
+      from: 0,
+      to: SEARCH_LIMIT,
+    },
+    sid
+  );
+  if (res.error || !res.items) throw new Error(`Wialon resource search error: ${res.error || "no items"}`);
+  return res.items;
+}
+
+function describeAction(action) {
+  const type = typeof action === "string" ? action : action?.t || "";
+  const p = action?.p || {};
+  switch (type) {
+    case "notify_email":
+    case "email":
+      return `Enviar email a: ${p.email || p.email_to || "N/A"}`;
+    case "notify_popup":
+      return "Mostrar notificación en ventana emergente";
+    case "notify_mobile":
+    case "mobile_apps":
+      return "Enviar notificación a aplicación móvil";
+    case "notify_sms":
+    case "sms":
+      return `Enviar SMS a: ${p.phones || p.sms_to || "N/A"}`;
+    case "notify_command":
+    case "exec_command":
+      return `Ejecutar comando: ${p.c || p.command_name || "N/A"}`;
+    case "notify_http":
+      return `Petición HTTP a: ${p.u || p.url || "URL"}`;
+    case "notify_event":
+      return "Registrar evento en la unidad";
+    case "notify_telegram":
+      return "Enviar mensaje a Telegram";
+    case "notify_whatsapp":
+      return "Enviar mensaje a WhatsApp";
+    case "message":
+      if (typeof action === "string" || !p.message) return "Mostrar notificación en ventana emergente";
+      return `Mensaje: ${p.message}`;
+    default: {
+      const label = ACTION_LABELS[type];
+      if (label) return label;
+      return type.split("_").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+    }
+  }
+}
+
+function buildListRows(resources, unitMap) {
+  const geofenceMap = {};
+  for (const resItem of resources) {
+    if (resItem.zl && typeof resItem.zl === "object") {
+      for (const [zid, z] of Object.entries(resItem.zl)) {
+        geofenceMap[zid] = z.n || `Geozona ${zid}`;
+      }
+    }
+  }
+
+  const rows = [];
+  for (const resItem of resources) {
+    const unf = resItem.unf;
+    if (!unf || typeof unf !== "object") continue;
+    for (const [nid, n] of Object.entries(unf)) {
+      if (!n || n.error) continue;
+      const units = n.un || [];
+      const unitNames = units.map((id) => unitMap[String(id)] || `ID: ${id}`);
+      const rawActions = n.act || [];
+      const actionLabels = rawActions
+        .map((a) => {
+          if (typeof a === "string") return ACTION_LABELS[a] || a;
+          if (a && a.t) return ACTION_LABELS[a.t] || a.t;
+          return null;
+        })
+        .filter(Boolean);
+
+      let description = n.d || "";
+      if (!description && n.p) {
+        if (Array.isArray(n.p.geos) && n.p.geos.length > 0) {
+          const names = n.p.geos.map((id) => geofenceMap[id] || `ID: ${id}`);
+          const checkType = n.p.type === 0 ? "Fuera de" : "Dentro de";
+          description = `${checkType}: ${names.join(", ")}`;
+        }
+        if (n.trg === "speed") {
+          const speedInfo = `Velocidad: ${n.p.min || 0} a ${n.p.max || "∞"} km/h`;
+          description = description ? `${description} (${speedInfo})` : speedInfo;
+        } else if (n.trg === "sensor_value") {
+          const sensorInfo = `Sensor: ${n.p.s || "N/A"} (${n.p.min || 0} a ${n.p.max || "∞"})`;
+          description = description ? `${description} (${sensorInfo})` : sensorInfo;
+        } else if (n.trg === "alarm") {
+          description = description ? `${description} (Alarma)` : "Alarma / Botón de pánico";
+        } else if (n.trg === "digital_input") {
+          const diInfo = `Entrada digital: ${n.p.in || "N/A"}`;
+          description = description ? `${description} (${diInfo})` : diInfo;
+        } else if (n.trg === "outage") {
+          description = "Pérdida de conexión";
+        }
+      }
+      if (!description || description === "—") {
+        const isGenericText = !n.txt || n.txt === "%UNIT% %NOTIFICATION%";
+        description = n.n || (!isGenericText ? n.txt : "—");
+      }
+
+      rows.push({
+        _key: `${resItem.id}_${nid}`,
+        id: parseInt(nid, 10),
+        resourceId: resItem.id,
+        name: n.n || "Sin nombre",
+        triggerType: n.trg || "unknown",
+        text: n.txt || "",
+        description: description || "—",
+        units,
+        unitNames,
+        enabled: !(n.fl & 0x2),
+        alarmCount: n.ac || 0,
+        createdAt: n.ct,
+        resourceName: resItem.nm || "—",
+        actions: rawActions,
+        actionLabels,
+        actionDescriptions: rawActions.map(describeAction),
+      });
+    }
+  }
+  return rows;
+}
+
+async function getListSnapshot() {
+  const ttl = snapshotTtlMs();
+  if (ttl > 0 && listSnapshot && Date.now() - listSnapshot.at < ttl) return listSnapshot.rows;
+  if (listSnapshotPending) return listSnapshotPending;
+
+  const generation = listGeneration;
+  const pending = withWialonSession(async (sid) => {
+    const [resources, unitMap] = await Promise.all([fetchListResources(sid), fetchUnitMap(sid)]);
+    return buildListRows(resources, unitMap);
+  })
+    .then((rows) => {
+      if (ttl > 0 && generation === listGeneration) listSnapshot = { rows, at: Date.now() };
+      return rows;
+    })
+    .finally(() => {
+      if (listSnapshotPending === pending) listSnapshotPending = null;
+    });
+
+  listSnapshotPending = pending;
+  return pending;
+}
+
+async function attachActiveBitacoras(rows) {
+  const allUnitIdsRaw = [...new Set(rows.flatMap((n) => n.units || []).map(String))];
+  const allUnitIdsNum = allUnitIdsRaw.map(Number).filter((n) => !Number.isNaN(n));
+  const allUnitIds = [...allUnitIdsRaw, ...allUnitIdsNum];
+  const unitActivityMap = {};
+
+  if (allUnitIds.length > 0) {
+    const col = mongoose.connection.db.collection("bitacoras");
+    const activeBits = await col
+      .find(
+        {
+          deleted: false,
+          status: { $nin: CLOSED_STATUSES },
+          "transportes.gpsUnits.wialonId": { $in: allUnitIds },
+        },
+        {
+          projection: {
+            _id: 1,
+            bitacora_id: 1,
+            cliente: 1,
+            status: 1,
+            edited: 1,
+            "transportes.id": 1,
+            "transportes.gpsUnits.wialonId": 1,
+            "transportes.gpsUnits.name": 1,
+            "transportes.tracto.placa": 1,
+            "transportes.tracto.eco": 1,
+            "transportes.remolque.placa": 1,
+            "transportes.remolque.eco": 1,
+          },
+        }
+      )
+      .toArray();
+
+    for (const bit of activeBits) {
+      for (const t of bit.transportes || []) {
+        for (const g of t.gpsUnits || []) {
+          const wid = String(g.wialonId);
+          if (!unitActivityMap[wid]) unitActivityMap[wid] = [];
+          unitActivityMap[wid].push({
+            _id: bit._id?.toString?.() || String(bit._id),
+            bitacora_id: bit.bitacora_id,
+            cliente: bit.cliente,
+            status: bit.status,
+            edited: bit.edited || false,
+            transporteId: t.id,
+            unitName: g.name || null,
+            wialonId: wid,
+            placa: t.tracto?.placa || t.remolque?.placa || null,
+            eco: t.tracto?.eco || t.remolque?.eco || null,
+          });
+        }
+      }
+    }
+  }
+
+  return rows.map((n) => {
+    const matches = [];
+    for (const uid of n.units || []) {
+      const hits = unitActivityMap[String(uid)];
+      if (hits) matches.push(...hits);
+    }
+    const seen = new Set();
+    const activeBitacoras = matches.filter((m) => {
+      const k = `${m.bitacora_id}_${m.transporteId}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    return { ...n, activeBitacoras };
+  });
+}
+
+/**
+ * Rows for the alerts panel. The Wialon payload is cached; bitácora links are
+ * looked up on every call. `unitIds` keeps only notifications covering those GPS.
+ */
+export async function listNotifications({ unitIds = [] } = {}) {
+  const rows = await getListSnapshot();
+  const wanted = new Set(unitIds.map(String).filter(Boolean));
+  const scoped = wanted.size
+    ? rows.filter((n) => (n.units || []).some((u) => wanted.has(String(u))))
+    : rows;
+  return attachActiveBitacoras(scoped);
 }

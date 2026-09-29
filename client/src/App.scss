@@ -8497,6 +8497,8 @@ $gray: #223b53;
 .notif-picker {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
   margin-top: 16px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
@@ -8653,7 +8655,13 @@ $gray: #223b53;
     color: #fff;
     font-size: 0.72rem;
   }
-  &__body { display: flex; flex-direction: column; min-width: 0; }
+  &__body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  &__name,
+  &__meta {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   &__name { font-size: 0.78rem; font-weight: 600; color: #111827; }
   &__meta { font-size: 0.68rem; color: #6b7280; }
 }
@@ -8666,19 +8674,36 @@ $gray: #223b53;
 
 .notif-canonical__row {
   display: grid;
-  grid-template-columns: 190px 1fr auto;
+  grid-template-columns: minmax(0, 190px) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
+  min-width: 0;
 }
 
 .notif-canonical__label {
   display: flex;
   align-items: center;
   gap: 7px;
+  min-width: 0;
+  overflow: hidden;
   font-size: 0.76rem;
   font-weight: 600;
   color: #374151;
-  i { color: #6366f1; width: 14px; text-align: center; }
+  i { color: #6366f1; width: 14px; text-align: center; flex-shrink: 0; }
+}
+
+.notif-canonical__text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.notif-canonical__select {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 // Power switch: icon plus text so the state is never conveyed by colour alone.
@@ -8741,7 +8766,7 @@ $gray: #223b53;
 
 @media (max-width: 576px) {
   // Label spans its own line; select and power switch share the next one.
-  .notif-canonical__row { grid-template-columns: 1fr auto; gap: 4px 6px; }
+  .notif-canonical__row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 6px; }
   .notif-canonical__label { grid-column: 1 / -1; }
   .notif-group__title { flex-wrap: wrap; }
   .notif-group__search {
@@ -11015,6 +11040,8 @@ td:has(.action-buttons) {
 .pselect {
   position: relative;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 0.825rem;
 
@@ -11033,6 +11060,8 @@ td:has(.action-buttons) {
     align-items: center;
     justify-content: space-between;
     gap: 6px;
+    min-width: 0;
+    overflow: hidden;
     height: 36px;
     padding: 0 10px 0 12px;
     background: #fff;
@@ -11058,6 +11087,7 @@ td:has(.action-buttons) {
 
   &__value {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -11250,6 +11280,7 @@ td:has(.action-buttons) {
   margin: 0;
   padding: 4px 0;
   max-height: 220px;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(99, 102, 241, 0.15) transparent;
@@ -11259,6 +11290,8 @@ td:has(.action-buttons) {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  overflow: hidden;
   padding: 7px 12px;
   font-size: 0.825rem;
   color: #374151;
@@ -11289,6 +11322,14 @@ td:has(.action-buttons) {
 .pselect__spinner {
   margin-right: 6px;
   color: #6366f1;
+}
+
+.pselect__option-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .pselect__check {
