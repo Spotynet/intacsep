@@ -64,6 +64,31 @@ export const TRIGGER_ICONS = {
   fuel_filling: "fa-gas-pump",
 };
 
+export const TRIGGER_HINTS = {
+  speed: "Aviso al superar un límite de velocidad.",
+  speeding_gis: "Aviso al rebasar el límite de velocidad del mapa.",
+  geozone: "Aviso al entrar, salir o permanecer en una zona.",
+  sensor_value: "Aviso cuando un sensor sale del rango permitido.",
+  alarm: "Aviso del botón de pánico o alarma.",
+  digital_input: "Aviso al cambiar una entrada digital.",
+  msg_param: "Aviso cuando un parámetro del equipo cumple una condición.",
+  outage: "Aviso si el GPS deja de reportar.",
+  driver: "Aviso al asignar o retirar un conductor.",
+  route_control: "Aviso si la unidad se desvía de la ruta.",
+  service_intervals: "Aviso de mantenimiento pendiente.",
+  interposition: "Aviso por la distancia entre unidades.",
+  msgs_counter: "Aviso según la cantidad de mensajes.",
+  sms: "Aviso al recibir un SMS.",
+  address: "Aviso al llegar a una dirección.",
+  expression: "Aviso cuando se cumple una expresión.",
+  tag: "Aviso asociado a una etiqueta.",
+  tag_alarm: "Aviso de alarma de etiqueta.",
+  fuel_filling: "Aviso al cargar combustible.",
+};
+
 export const getTriggerLabel = (triggerType) => TRIGGER_LABELS[triggerType] || triggerType || "Desconocido";
+
+export const getTriggerHint = (triggerType) =>
+  TRIGGER_HINTS[triggerType] || "Aviso configurado en Wialon.";
 
 export const getTriggerIcon = (triggerType) => TRIGGER_ICONS[triggerType] || "fa-bell";

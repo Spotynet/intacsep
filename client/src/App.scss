@@ -8553,6 +8553,16 @@ $gray: #223b53;
 
 .notif-group + .notif-group { margin-top: 14px; }
 
+.notif-group__lead {
+  margin: -4px 0 8px;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: #6b7280;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .notif-group__title {
   display: flex;
   align-items: center;
@@ -8622,48 +8632,96 @@ $gray: #223b53;
 .notif-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 230px;
+  gap: 3px;
+  max-height: 132px;
   overflow-y: auto;
   padding-right: 2px;
 }
 
-.notif-item {
-  display: flex;
+.notif-chip {
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #4b5563;
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+
+  &.is-on { background: #ecfdf5; color: #047857; }
+  &.is-off { background: #f3f4f6; color: #9ca3af; }
+}
+
+// .pm-body label forces a column and styles every input as a text field.
+// This row has to win that, or the checkbox, name and chips stack.
+.pm-body label.notif-item,
+.notif-item {
+  display: grid;
+  grid-template-columns: 14px 18px minmax(0, 1fr) max-content;
+  align-items: center;
+  column-gap: 8px;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  width: 100%;
+  height: auto;
   background: #fff;
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-radius: 6px;
+  padding: 4px 8px;
   cursor: pointer;
   margin: 0;
+  min-width: 0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #111827;
   transition: border-color 0.15s, background 0.15s;
 
-  input { margin: 0; accent-color: #6366f1; }
+  input[type="checkbox"] {
+    margin: 0;
+    padding: 0;
+    width: 14px;
+    height: 14px;
+    min-height: 0;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    box-shadow: none;
+    accent-color: #6366f1;
+  }
   &:hover { border-color: #c7d2fe; }
   &.selected { border-color: #6366f1; background: #eef2ff; }
 
   &__icon {
-    width: 26px;
-    height: 26px;
-    border-radius: 7px;
-    flex: 0 0 26px;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    flex: 0 0 18px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     color: #fff;
-    font-size: 0.72rem;
+    font-size: 0.58rem;
   }
-  &__body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
-  &__name,
-  &__meta {
+  &__name {
+    min-width: 0;
+    flex: 1;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #111827;
   }
-  &__name { font-size: 0.78rem; font-weight: 600; color: #111827; }
-  &__meta { font-size: 0.68rem; color: #6b7280; }
+  &__aside {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
 }
 
 .notif-canonical {

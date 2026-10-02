@@ -1,6 +1,23 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Select} from "../../Select";
-import {TRIGGER_LABELS, TRIGGER_COLORS, TRIGGER_ICONS} from "../../../utils/wialonNotifications";
+import {
+  TRIGGER_LABELS,
+  TRIGGER_COLORS,
+  TRIGGER_ICONS,
+  getTriggerHint,
+} from "../../../utils/wialonNotifications";
+
+const explainLinked = (n) => {
+  const type = TRIGGER_LABELS[n.triggerType] || n.triggerType || "Alerta";
+  const state = n.enabled
+    ? "Está encendida en Wialon."
+    : "Está apagada en Wialon; al marcarla se enciende al guardar.";
+  const cover =
+    n.unitCount === 1
+      ? "Solo vigila este GPS."
+      : `La misma alerta vigila ${n.unitCount} GPS, incluido este.`;
+  return `${type}: ${getTriggerHint(n.triggerType)} ${state} ${cover}`;
+};
 
 const notifKey = (n) => `${n.resourceId}_${n.notifId}`;
 
@@ -260,20 +277,30 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
 
       {notifCatalog && !notifError && (
         <>
-          <div className="notif-group">
+          <div className="notif-group notif-group--linked">
             <div className="notif-group__title">
               Vinculadas a este GPS
               <span className="notif-group__count">{(notifCatalog.linked || []).length}</span>
             </div>
+            <p className="notif-group__lead">
+              Alertas que este GPS ya tiene en Wialon, antes de elegir nuevas. Márcalas para
+              dejarlas encendidas en este transporte.
+            </p>
             {(notifCatalog.linked || []).length === 0 ? (
-              <div className="notif-empty">Este GPS no tiene notificaciones vinculadas todavía.</div>
+              <div className="notif-empty">Este GPS no tiene alertas vinculadas todavía.</div>
             ) : (
               <div className="notif-list">
                 {notifCatalog.linked.map((n) => {
                   const key = notifKey(n);
                   const checked = !!selectedLinked[key];
+                  const typeLabel = TRIGGER_LABELS[n.triggerType] || n.triggerType || "Alerta";
+                  const detail = explainLinked(n);
                   return (
-                    <label key={key} className={`notif-item ${checked ? "selected" : ""}`}>
+                    <label
+                      key={key}
+                      className={`notif-item ${checked ? "selected" : ""}`}
+                      title={detail}
+                    >
                       <input
                         type="checkbox"
                         checked={checked}
@@ -282,15 +309,20 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
                       <span
                         className="notif-item__icon"
                         style={{background: TRIGGER_COLORS[n.triggerType] || "#94a3b8"}}
+                        aria-hidden="true"
                       >
                         <i className={`fa-solid ${TRIGGER_ICONS[n.triggerType] || "fa-bell"}`}></i>
                       </span>
-                      <span className="notif-item__body">
-                        <span className="notif-item__name" title={n.name}>{n.name}</span>
-                        <span className="notif-item__meta">
-                          {TRIGGER_LABELS[n.triggerType] || n.triggerType} ·{" "}
-                          {n.enabled ? "activa" : "inactiva"} · {n.unitCount} unidad
-                          {n.unitCount === 1 ? "" : "es"}
+                      <span className="notif-item__name" title={n.name}>
+                        {n.name}
+                      </span>
+                      <span className="notif-item__aside">
+                        <span className="notif-chip">{typeLabel}</span>
+                        <span className={`notif-chip ${n.enabled ? "is-on" : "is-off"}`}>
+                          {n.enabled ? "Encendida" : "Apagada"}
+                        </span>
+                        <span className="notif-chip">
+                          {n.unitCount === 1 ? "1 GPS" : `${n.unitCount} GPS`}
                         </span>
                       </span>
                     </label>
