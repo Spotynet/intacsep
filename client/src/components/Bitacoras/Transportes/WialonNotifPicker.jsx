@@ -39,20 +39,34 @@ export const mergeNotificaciones = (existing, incoming) => {
 export const reportWialonSync = (sync, showToast) => {
   if (!sync || !showToast) return;
   const {applied = [], failed = [], skippedUnits = []} = sync;
+  const linked = applied.filter((a) => a.action !== "unlink");
+  const unlinked = applied.filter((a) => a.action === "unlink");
 
   if (failed.length > 0) {
     const reasons = [...new Set(failed.map((f) => f.error).filter(Boolean))];
     const detail = reasons.slice(0, 2).join("  ·  ") || "error desconocido";
     const more = reasons.length > 2 ? ` (+${reasons.length - 2} motivo(s) más)` : "";
-    const ok = applied.length > 0 ? ` Sí se activaron ${applied.length}.` : "";
-    showToast(`${failed.length} alerta(s) NO activadas: ${detail}${more}.${ok}`, "error", 15000);
+    const ok =
+      linked.length > 0
+        ? ` Sí se activaron ${linked.length}.`
+        : unlinked.length > 0
+        ? ` Sí se desvincularon ${unlinked.length}.`
+        : "";
+    showToast(
+      `${failed.length} alerta(s) con error en Wialon: ${detail}${more}.${ok}`,
+      "error",
+      15000
+    );
   }
-  if (applied.length > 0) {
-    showToast(`${applied.length} notificación(es) activada(s) en Wialon.`, "success");
+  if (linked.length > 0) {
+    showToast(`${linked.length} notificación(es) activada(s) en Wialon.`, "success");
+  }
+  if (unlinked.length > 0) {
+    showToast(`${unlinked.length} notificación(es) desvinculada(s) del GPS.`, "success");
   }
   if (skippedUnits.length > 0) {
     showToast(
-      `GPS no encontrado en Wialon: ${skippedUnits.join(", ")}. No se activaron alertas.`,
+      `GPS no encontrado en Wialon: ${skippedUnits.join(", ")}.`,
       "warning",
       8000
     );

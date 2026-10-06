@@ -22,6 +22,36 @@ const fmtTime = (ts) => {
   return new Date(ts * 1000).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"});
 };
 
+const ALERT_EVENT_PREFIX = "Alerta Wialon: ";
+const REGISTERED_SKEW_SEC = 120;
+
+/**
+ * Whether this Wialon alert already has a matching bitácora evento for its latest trigger.
+ * - registrado: evento covers lastTriggeredAt (or any match if no trigger time)
+ * - pendiente: triggered but no covering evento yet
+ * - sin_disparos: no last trigger in the lookback window
+ */
+const getAlertRegistration = (row, bitacoraEventos = []) => {
+  const expected = `${ALERT_EVENT_PREFIX}${row.name}`;
+  const matches = (bitacoraEventos || []).filter(
+    (e) => String(e.descripcion || "") === expected
+  );
+  const sortNewest = (list) =>
+    [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  if (!row.lastTriggeredAt) {
+    return {status: "sin_disparos", event: null, label: "Sin disparos", variant: "gray"};
+  }
+
+  const thresholdMs = (Number(row.lastTriggeredAt) - REGISTERED_SKEW_SEC) * 1000;
+  const covering = matches.filter((e) => new Date(e.createdAt || 0).getTime() >= thresholdMs);
+  if (covering.length) {
+    const event = sortNewest(covering)[0];
+    return {status: "registrado", event, label: "Registrado", variant: "green"};
+  }
+  return {status: "pendiente", event: null, label: "Pendiente", variant: "yellow"};
+};
+
 // Wialon puede quedar inalcanzable desde el servidor; evita exponer el error crudo de fetch.
 const friendlyWialonError = (msg) =>
   /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|network/i.test(msg || "")
@@ -33,8 +63,15 @@ const friendlyWialonError = (msg) =>
 //  - embedded: when true, render without Sidebar/PageHeader/full-viewport shell.
 //  - unitIds: string[] — optional, restrict notifications to those touching any of these Wialon unit IDs.
 //  - bitacoraId: string — optional, when set trims each row's activeBitacoras to that bitácora.
+//  - bitacoraEventos: array — bitácora eventos used to show Registrado/Pendiente status.
 //  - onEventSaved: optional, called after an alert event is stored (auto or manual).
-const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null, onEventSaved = null}) => {
+const EventosWialonPanel = ({
+  embedded = false,
+  unitIds = null,
+  bitacoraId = null,
+  bitacoraEventos = null,
+  onEventSaved = null,
+}) => {
   const {user, verifyToken, setUser} = useAuth();
   const {getUnitById} = useWialon();
   const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
@@ -53,8 +90,9 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
   const [statusFilter, setStatusFilter] = useState(null);
   const [resourceFilter, setResourceFilter] = useState(null);
 
-  // Sorting state
-  const [sortField, setSortField] = useState("createdAt");
+  // Scoped bitácora tab sorts by last fire; global page keeps rule creation time.
+  const scopedMode = Array.isArray(unitIds) && unitIds.length > 0;
+  const [sortField, setSortField] = useState(scopedMode || embedded ? "lastTriggeredAt" : "createdAt");
   const [sortOrder, setSortOrder] = useState("desc");
 
   // Unit modal state
@@ -158,6 +196,8 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
       const params = new URLSearchParams();
       if (Array.isArray(unitIds) && unitIds.length > 0) {
         params.set("unitIds", unitIds.map(String).join(","));
+        // Bitácora tab: enrich with last Wialon fire so operators see the newest alert.
+        params.set("includeLastTrigger", "1");
       }
       const query = params.toString();
       const res = await fetch(`${baseUrl}/wialon/notifications${query ? `?${query}` : ""}`, {
@@ -188,8 +228,17 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
           hasActiveBitacora: (n.activeBitacoras && n.activeBitacoras.length > 0) ? 1 : 0,
           actionLabels: n.actionLabels || [],
           actionDescriptions: n.actionDescriptions || [],
+          lastTriggeredAt: n.lastTriggeredAt || null,
+          lastTriggerUnitId: n.lastTriggerUnitId || null,
+          lastTriggerUnitName: n.lastTriggerUnitName || null,
+          lastTriggerText: n.lastTriggerText || null,
         }))
-        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        .sort((a, b) => {
+          const ta = a.lastTriggeredAt || 0;
+          const tb = b.lastTriggeredAt || 0;
+          if (tb !== ta) return tb - ta;
+          return (b.createdAt || 0) - (a.createdAt || 0);
+        });
 
       setNotifications(mapped);
     } catch (err) {
@@ -245,6 +294,20 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
         });
     }
 
+    // Attach registration status vs bitácora eventos (embedded Alertas tab).
+    if (Array.isArray(bitacoraEventos)) {
+      result = result.map((n) => {
+        const reg = getAlertRegistration(n, bitacoraEventos);
+        return {
+          ...n,
+          eventStatus: reg.status,
+          eventStatusLabel: reg.label,
+          eventStatusVariant: reg.variant,
+          registeredEvent: reg.event,
+        };
+      });
+    }
+
     // 1. Search
     if (search) {
       const q = search.toLowerCase();
@@ -254,6 +317,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
           (n.description || "").toLowerCase().includes(q) ||
           (n.resourceName || "").toLowerCase().includes(q) ||
           (n.triggerLabel || "").toLowerCase().includes(q) ||
+          (n.eventStatusLabel || "").toLowerCase().includes(q) ||
           (n.unitNames || []).some((u) => u.toLowerCase().includes(q))
       );
     }
@@ -270,13 +334,21 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
         let valA = a[sortField];
         let valB = b[sortField];
 
-        // Handle specific fields if needed
         if (sortField === "unitsText") {
           valA = a.units?.length || 0;
           valB = b.units?.length || 0;
         }
+        if (sortField === "eventStatusLabel") {
+          valA = a.eventStatus || "";
+          valB = b.eventStatus || "";
+        }
 
-        if (valA === valB) return 0;
+        if (valA === valB) {
+          // Stable secondary: newest last trigger, then rule creation.
+          const tb = (b.lastTriggeredAt || 0) - (a.lastTriggeredAt || 0);
+          if (tb) return tb;
+          return (b.createdAt || 0) - (a.createdAt || 0);
+        }
         if (valA == null) return 1;
         if (valB == null) return -1;
 
@@ -292,14 +364,27 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     }
 
     return result;
-  }, [notifications, unitIdSet, bitacoraId, search, typeFilter, statusFilter, resourceFilter, sortField, sortOrder]);
+  }, [
+    notifications,
+    unitIdSet,
+    bitacoraId,
+    bitacoraEventos,
+    search,
+    typeFilter,
+    statusFilter,
+    resourceFilter,
+    sortField,
+    sortOrder,
+    matchesScope,
+  ]);
 
   const handleSortChange = (field) => {
     if (sortField === field) {
       setSortOrder(sortOrder === "asc" ? "desc" : "asc");
     } else {
       setSortField(field);
-      setSortOrder("asc");
+      // Newest-first for time fields; A→Z for text.
+      setSortOrder(field === "lastTriggeredAt" || field === "createdAt" ? "desc" : "asc");
     }
   };
 
@@ -314,6 +399,10 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
 
   const handleAutoEvent = async (notification) => {
     if (savingKey) return;
+    if (notification.eventStatus === "registrado") {
+      showToast("Esta alerta ya está registrada en los eventos de la bitácora.", "warning");
+      return;
+    }
     if (!notification.activeBitacoras?.length) {
       showToast("No hay bitácoras activas vinculadas a esta alerta.", "warning");
       return;
@@ -362,6 +451,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
 
       showToast("Evento registrado en bitácora", "success");
       if (onEventSaved) await onEventSaved();
+      await fetchNotifications();
     } catch (err) {
       showToast(err.message || "Error al guardar el evento", "error");
     } finally {
@@ -473,7 +563,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     {
       key: "name",
       header: "Nombre",
-      width: "15%",
+      width: embedded ? "18%" : "14%",
       sortable: true,
       render: (row) => {
         const icon = TRIGGER_ICONS[row.triggerType] || "fa-bell";
@@ -505,18 +595,75 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
       ),
     },
     {
-      key: "createdAt",
-      header: "Creada",
-      width: "8%",
+      key: "lastTriggeredAt",
+      header: "Último disparo",
+      width: "12%",
       sortable: true,
       render: (row) => (
-        <span style={{fontSize: "0.8rem", color: "#6b7280"}}>{fmtTime(row.createdAt)}</span>
+        <div style={{display: "flex", flexDirection: "column", gap: "2px"}}>
+          <span style={{fontSize: "0.8rem", color: row.lastTriggeredAt ? "#111827" : "#9ca3af", fontWeight: row.lastTriggeredAt ? 600 : 400}}>
+            {fmtTime(row.lastTriggeredAt)}
+          </span>
+          {row.lastTriggerUnitName && (
+            <span style={{fontSize: "0.72rem", color: "#6b7280"}} title={row.lastTriggerText || ""}>
+              {row.lastTriggerUnitName}
+            </span>
+          )}
+        </div>
       ),
     },
+    ...(Array.isArray(bitacoraEventos)
+      ? [
+          {
+            key: "eventStatusLabel",
+            header: "Estatus",
+            width: "10%",
+            sortable: true,
+            render: (row) => {
+              const tip = row.registeredEvent
+                ? `${row.registeredEvent.nombre || "Evento"} · ${row.registeredEvent.registrado_por || "—"} · ${
+                    row.registeredEvent.createdAt
+                      ? new Date(row.registeredEvent.createdAt).toLocaleString("es-MX", {
+                          dateStyle: "short",
+                          timeStyle: "short",
+                        })
+                      : "—"
+                  }`
+                : row.eventStatus === "pendiente"
+                ? "Disparada en Wialon; aún no hay evento en la bitácora"
+                : "Sin disparos recientes en Wialon";
+              return (
+                <Tooltip text={tip} position="top">
+                  <span>
+                    <CellBadge
+                      label={row.eventStatusLabel || "Sin disparos"}
+                      variant={row.eventStatusVariant || "gray"}
+                    />
+                  </span>
+                </Tooltip>
+              );
+            },
+          },
+        ]
+      : []),
+    // Rule creation time — hidden in embedded bitácora tab (confused with last fire).
+    ...(!embedded
+      ? [
+          {
+            key: "createdAt",
+            header: "Creada",
+            width: "8%",
+            sortable: true,
+            render: (row) => (
+              <span style={{fontSize: "0.8rem", color: "#6b7280"}}>{fmtTime(row.createdAt)}</span>
+            ),
+          },
+        ]
+      : []),
     {
       key: "actionDescriptions",
       header: "Acciones",
-      width: "30%",
+      width: embedded ? "22%" : "24%",
       render: (row) => {
         const descriptions = row.actionDescriptions || [];
         if (descriptions.length === 0) return <span style={{color: "#9ca3af", fontSize: "0.78rem"}}>—</span>;
@@ -535,7 +682,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     {
       key: "resourceName",
       header: "Recurso",
-      width: "10%",
+      width: "9%",
       sortable: true,
       render: (row) => (
         <span style={{fontSize: "0.82rem", color: "#6b7280"}} title={row.resourceName}>
@@ -548,7 +695,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     {
       key: "description",
       header: "Descripción",
-      width: "15%",
+      width: embedded ? "12%" : "13%",
       sortable: true,
       render: (row) => (
         <span style={{color: "#6b7280", fontSize: "0.82rem"}} title={row.description}>
@@ -564,7 +711,7 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
       render: (row) => {
         // In scoped mode, count only the in-scope units.
         const scopedCount = unitIdSet
-          ? (row.units || []).filter((u) => unitIdSet.has(String(u))).length
+          ? (row.units || []).filter((u) => unitIdSet.has(String(u)) || unitIdSet.has(String(Number(u)))).length
           : (row.units?.length || 0);
         const hasActive = row.activeBitacoras?.length > 0;
 
@@ -603,41 +750,51 @@ const EventosWialonPanel = ({embedded = false, unitIds = null, bitacoraId = null
     {
       key: "botones",
       header: "Controles",
-      width: "8%",
+      width: "7%",
       className: "text-center",
 
-      render: (row) => (
-        <div style={{display: "flex", alignItems: "center", justifyContent: "center", gap: "8px"}}>
-          <Tooltip text="Auto-evento" position="left">
-            <button
-              className="action-icon-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleAutoEvent(row);
-              }}
-              style={{
-                backgroundColor: row.activeBitacoras?.length ? "#10b981" : "#e5e7eb",
-                border: "none",
-                color: "white",
-                cursor: row.activeBitacoras?.length && !savingKey ? "pointer" : "not-allowed",
-                padding: "6px",
-                fontSize: "0.9rem",
-                borderRadius: "6px",
-                width: "30px",
-                height: "30px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                transition: "all 0.2s ease",
-                boxShadow: row.activeBitacoras?.length ? "0 2px 4px rgba(16, 185, 129, 0.2)" : "none"
-              }}
-              disabled={loading || !!savingKey || !row.activeBitacoras?.length}
-            >
-              <i className={`fa ${savingKey === row._key ? "fa-spinner fa-spin" : "fa-magic"}`}></i>
-            </button>
-          </Tooltip>
-        </div>
-      ),
+      render: (row) => {
+        const alreadyRegistered = row.eventStatus === "registrado";
+        const canAuto =
+          !alreadyRegistered && row.activeBitacoras?.length > 0 && !savingKey && !loading;
+        const tip = alreadyRegistered
+          ? "Ya registrada en eventos"
+          : row.activeBitacoras?.length
+          ? "Auto-evento"
+          : "Sin bitácora activa";
+        return (
+          <div style={{display: "flex", alignItems: "center", justifyContent: "center", gap: "8px"}}>
+            <Tooltip text={tip} position="left">
+              <button
+                className="action-icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleAutoEvent(row);
+                }}
+                style={{
+                  backgroundColor: canAuto ? "#10b981" : "#e5e7eb",
+                  border: "none",
+                  color: "white",
+                  cursor: canAuto ? "pointer" : "not-allowed",
+                  padding: "6px",
+                  fontSize: "0.9rem",
+                  borderRadius: "6px",
+                  width: "30px",
+                  height: "30px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  transition: "all 0.2s ease",
+                  boxShadow: canAuto ? "0 2px 4px rgba(16, 185, 129, 0.2)" : "none",
+                }}
+                disabled={!canAuto}
+              >
+                <i className={`fa ${savingKey === row._key ? "fa-spinner fa-spin" : "fa-magic"}`}></i>
+              </button>
+            </Tooltip>
+          </div>
+        );
+      },
     },
   ];
 

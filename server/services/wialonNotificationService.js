@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 import { wialonApiCall, withWialonSession } from "../utils/wialonClient.js";
 
-const CLOSED_STATUSES = ["cerrada", "cerrada (e)", "finalizada"];
+export const CLOSED_STATUSES = ["cerrada", "cerrada (e)", "finalizada"];
 const RESOURCE_FLAGS = 0x0400 | 0x01; // notifications + basic
 const UNIT_FLAGS = 0x01;
 const SEARCH_LIMIT = 1000;
@@ -415,6 +415,139 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
   return results;
 }
 
+/**
+ * Unit↔notification bindings still needed by any open (non-deleted, non-closed) bitácora.
+ * Keys: `${unitId}_${resourceId}_${notifId}`.
+ */
+async function getOpenUnitNotifKeys() {
+  const keys = new Set();
+  try {
+    const col = mongoose.connection.db.collection("bitacoras");
+    const docs = await col
+      .find(
+        { deleted: { $ne: true }, status: { $nin: CLOSED_STATUSES } },
+        {
+          projection: {
+            "transportes.gpsUnits.wialonId": 1,
+            "transportes.notificaciones.resourceId": 1,
+            "transportes.notificaciones.notifId": 1,
+          },
+        }
+      )
+      .toArray();
+    for (const d of docs) {
+      for (const t of d.transportes || []) {
+        const unitIds = (t.gpsUnits || [])
+          .map((u) => (u?.wialonId != null ? String(u.wialonId).trim() : ""))
+          .filter(Boolean);
+        for (const n of t.notificaciones || []) {
+          if (n?.resourceId == null || n?.notifId == null) continue;
+          for (const uid of unitIds) {
+            keys.add(`${uid}_${n.resourceId}_${n.notifId}`);
+          }
+        }
+      }
+    }
+    return { keys, ok: true };
+  } catch (e) {
+    console.error("getOpenUnitNotifKeys failed:", e.message);
+    return { keys: new Set(), ok: false };
+  }
+}
+
+/**
+ * Unlink GPS units of a bitácora from its selected Wialon notifications.
+ * Keeps Mongo `transportes.notificaciones` as history; only removes unit IDs
+ * from Wialon notification `un` arrays (never disables the rule).
+ *
+ * Skips any unit↔notification pair still required by another open bitácora
+ * (shared GPS across trips).
+ */
+export async function unlinkBitacoraNotifications(bitacora) {
+  // Collect unit↔notif bindings for this bitácora (transporte-local pairs).
+  const bindings = []; // { unitId, resourceId, notifId }
+  const seenBinding = new Set();
+
+  for (const t of bitacora?.transportes || []) {
+    const unitIds = [];
+    for (const u of t.gpsUnits || []) {
+      const id = u?.wialonId != null ? String(u.wialonId).trim() : "";
+      if (id) unitIds.push(id);
+    }
+    for (const n of t.notificaciones || []) {
+      if (n?.resourceId == null || n?.notifId == null) continue;
+      for (const unitId of unitIds) {
+        const key = `${unitId}_${n.resourceId}_${n.notifId}`;
+        if (seenBinding.has(key)) continue;
+        seenBinding.add(key);
+        bindings.push({
+          unitId,
+          resourceId: Number(n.resourceId),
+          notifId: Number(n.notifId),
+        });
+      }
+    }
+  }
+
+  if (!bindings.length) {
+    return { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared: [] };
+  }
+
+  // After close/delete this bitácora is already excluded from "open", so any
+  // remaining keys belong to other open trips that still need the binding.
+  const { keys: stillNeeded, ok } = await getOpenUnitNotifKeys();
+  const skippedShared = [];
+  const toUnlink = [];
+  for (const b of bindings) {
+    const key = `${b.unitId}_${b.resourceId}_${b.notifId}`;
+    if (ok && stillNeeded.has(key)) {
+      skippedShared.push(b);
+      continue;
+    }
+    toUnlink.push(b);
+  }
+
+  if (!toUnlink.length) {
+    return {
+      applied: [],
+      failed: [],
+      pruned: [],
+      prunedEnabled: false,
+      skippedUnits: [],
+      skippedShared,
+    };
+  }
+
+  // Group by notification so each Wialon update only removes the units that
+  // are safe to drop from that specific rule.
+  const byNotif = new Map();
+  for (const b of toUnlink) {
+    const nk = `${b.resourceId}_${b.notifId}`;
+    if (!byNotif.has(nk)) {
+      byNotif.set(nk, {
+        resourceId: b.resourceId,
+        notifId: b.notifId,
+        unitIds: new Set(),
+      });
+    }
+    byNotif.get(nk).unitIds.add(b.unitId);
+  }
+
+  const merged = { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared };
+  for (const group of byNotif.values()) {
+    const part = await applySelections({
+      unitIds: [...group.unitIds],
+      selections: [{ resourceId: group.resourceId, notifId: group.notifId, action: "unlink" }],
+    });
+    merged.applied.push(...(part.applied || []));
+    merged.failed.push(...(part.failed || []));
+    merged.pruned.push(...(part.pruned || []));
+    merged.skippedUnits.push(...(part.skippedUnits || []));
+    if (part.prunedEnabled) merged.prunedEnabled = true;
+  }
+  return merged;
+}
+
 // Alerts panel list. Separate from the wizard snapshot: it needs geofence names
 // (heavy), so the wizard catalog stays on the lighter flags.
 const LIST_RESOURCE_FLAGS = 0x0400 | 0x0800 | 0x1000 | 0x01;
@@ -602,7 +735,7 @@ async function attachActiveBitacoras(rows) {
     const activeBits = await col
       .find(
         {
-          deleted: false,
+          deleted: { $ne: true },
           status: { $nin: CLOSED_STATUSES },
           "transportes.gpsUnits.wialonId": { $in: allUnitIds },
         },
@@ -628,9 +761,9 @@ async function attachActiveBitacoras(rows) {
     for (const bit of activeBits) {
       for (const t of bit.transportes || []) {
         for (const g of t.gpsUnits || []) {
+          if (g?.wialonId == null) continue;
           const wid = String(g.wialonId);
-          if (!unitActivityMap[wid]) unitActivityMap[wid] = [];
-          unitActivityMap[wid].push({
+          const hit = {
             _id: bit._id?.toString?.() || String(bit._id),
             bitacora_id: bit.bitacora_id,
             cliente: bit.cliente,
@@ -641,7 +774,15 @@ async function attachActiveBitacoras(rows) {
             wialonId: wid,
             placa: t.tracto?.placa || t.remolque?.placa || null,
             eco: t.tracto?.eco || t.remolque?.eco || null,
-          });
+          };
+          // Index both raw and numeric-normalized forms so Wialon integer IDs match.
+          const keys = new Set([wid]);
+          const n = Number(wid);
+          if (!Number.isNaN(n)) keys.add(String(n));
+          for (const k of keys) {
+            if (!unitActivityMap[k]) unitActivityMap[k] = [];
+            unitActivityMap[k].push(hit);
+          }
         }
       }
     }
@@ -664,15 +805,174 @@ async function attachActiveBitacoras(rows) {
   });
 }
 
+const LAST_TRIGGER_LOOKBACK_SEC = 30 * 24 * 3600;
+const LAST_TRIGGER_CONCURRENCY = 3;
+const EMPTY_TRIGGER = {
+  lastTriggeredAt: null,
+  lastTriggerUnitId: null,
+  lastTriggerUnitName: null,
+  lastTriggerText: null,
+};
+
+/**
+ * Primary: resource/get_notifications_log (when the account supports it).
+ * Fallback: resource messages (email_notification / p.notification) — works on this host.
+ */
+async function fetchLastTriggerFromLog(sid, resourceId, notifId) {
+  const now = Math.floor(Date.now() / 1000);
+  const logData = await wialonApiCall(
+    "resource/get_notifications_log",
+    {
+      itemId: Number(resourceId),
+      col: [Number(notifId)],
+      from: now - LAST_TRIGGER_LOOKBACK_SEC,
+      to: now,
+    },
+    sid
+  );
+  if (!logData || logData.error) return null;
+
+  const key = String(notifId);
+  let entries = [];
+  if (logData[key] && Array.isArray(logData[key].log)) entries = logData[key].log;
+  else if (logData[notifId] && Array.isArray(logData[notifId].log)) entries = logData[notifId].log;
+  else {
+    const firstKey = Object.keys(logData).find((k) => logData[k] && Array.isArray(logData[k].log));
+    if (firstKey) entries = logData[firstKey].log;
+  }
+  if (!entries.length) return { ...EMPTY_TRIGGER };
+
+  let latest = entries[0];
+  for (const e of entries) {
+    if (Number(e.t || e.tm || 0) > Number(latest.t || latest.tm || 0)) latest = e;
+  }
+  const unitId = latest.u != null && Number(latest.u) > 0 ? String(latest.u) : null;
+  return {
+    lastTriggeredAt: Number(latest.t || latest.tm || 0) || null,
+    lastTriggerUnitId: unitId,
+    lastTriggerUnitName: latest.unit_name || (unitId ? `ID: ${unitId}` : null),
+    lastTriggerText: latest.txt || null,
+  };
+}
+
+/**
+ * Load recent resource messages once and index the latest fire per notification name.
+ * Message shape: { t, p: { notification, unit, ... } }
+ */
+async function loadResourceTriggerIndex(sid, resourceId) {
+  const now = Math.floor(Date.now() / 1000);
+  const messagesData = await wialonApiCall(
+    "messages/load_interval",
+    {
+      itemId: Number(resourceId),
+      timeFrom: now - LAST_TRIGGER_LOOKBACK_SEC,
+      timeTo: now,
+      flags: 0,
+      flagsMask: 0,
+      loadCount: 5000,
+    },
+    sid
+  );
+  const index = new Map(); // notifName -> { t, unitName, text }
+  if (!messagesData || messagesData.error || !Array.isArray(messagesData.messages)) return index;
+
+  for (const m of messagesData.messages) {
+    const name = m?.p?.notification;
+    if (!name) continue;
+    const t = Number(m.t || 0);
+    if (!t) continue;
+    const prev = index.get(name);
+    if (prev && prev.t >= t) continue;
+    index.set(name, {
+      t,
+      unitName: m.p.unit || null,
+      text: m.p.notification || null,
+    });
+  }
+  return index;
+}
+
+async function mapPool(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length || 1) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Attach last-trigger fields to each row (scoped lists only — N is small).
+ * Batches the message fallback by resource so N alerts on one resource share one fetch.
+ */
+async function enrichWithLastTriggers(rows) {
+  if (!rows.length) return rows;
+
+  return withWialonSession(async (sid) => {
+    // 1) Try the dedicated log API per notification (fast when supported).
+    const fromLog = await mapPool(rows, LAST_TRIGGER_CONCURRENCY, async (row) => {
+      try {
+        return await fetchLastTriggerFromLog(sid, row.resourceId, row.id);
+      } catch {
+        return null;
+      }
+    });
+
+    // 2) For rows the log API can't serve, batch-load resource messages by resourceId.
+    const needFallback = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (fromLog[i] == null) needFallback.push(i);
+    }
+
+    const resourceIds = [
+      ...new Set(needFallback.map((i) => Number(rows[i].resourceId)).filter(Boolean)),
+    ];
+    const resourceIndexes = new Map();
+    await mapPool(resourceIds, LAST_TRIGGER_CONCURRENCY, async (resourceId) => {
+      try {
+        resourceIndexes.set(resourceId, await loadResourceTriggerIndex(sid, resourceId));
+      } catch (err) {
+        console.warn(`[wialon-last-trigger] messages fallback failed for ${resourceId}:`, err.message);
+        resourceIndexes.set(resourceId, new Map());
+      }
+    });
+
+    return rows.map((row, i) => {
+      if (fromLog[i]) return { ...row, ...fromLog[i] };
+      const idx = resourceIndexes.get(Number(row.resourceId));
+      const hit = idx?.get(row.name);
+      if (!hit) return { ...row, ...EMPTY_TRIGGER };
+      return {
+        ...row,
+        lastTriggeredAt: hit.t,
+        lastTriggerUnitId: null,
+        lastTriggerUnitName: hit.unitName,
+        lastTriggerText: hit.text,
+      };
+    });
+  });
+}
+
 /**
  * Rows for the alerts panel. The Wialon payload is cached; bitácora links are
  * looked up on every call. `unitIds` keeps only notifications covering those GPS.
+ * Pass `includeLastTrigger: true` (with unitIds) to attach last fire timestamps.
  */
-export async function listNotifications({ unitIds = [] } = {}) {
+export async function listNotifications({ unitIds = [], includeLastTrigger = false } = {}) {
   const rows = await getListSnapshot();
   const wanted = new Set(unitIds.map(String).filter(Boolean));
   const scoped = wanted.size
     ? rows.filter((n) => (n.units || []).some((u) => wanted.has(String(u))))
     : rows;
-  return attachActiveBitacoras(scoped);
+  const withBits = await attachActiveBitacoras(scoped);
+
+  // Only enrich scoped lists (bitácora tab ~4 alerts). Global page skips this.
+  if (includeLastTrigger && wanted.size > 0 && withBits.length > 0) {
+    return enrichWithLastTriggers(withBits);
+  }
+  return withBits;
 }

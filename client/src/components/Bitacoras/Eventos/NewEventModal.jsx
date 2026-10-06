@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from "react";
+import React, {useEffect, useMemo, useState} from "react";
 import {useAuth} from "../../../context/AuthContext";
 import {useWialon} from "../../../context/WialonProvider";
 import {useParams} from "react-router-dom";
@@ -6,6 +6,7 @@ import ModalTemplate from "../../ModalTemplate";
 import {Select} from "../../Select";
 import TextInput from "../../TextInput";
 import TextArea from "../../TextArea";
+import WialonMap from "../../wialon/WialonMap";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -560,10 +561,37 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
 
   let allSelectedTransportesInArriboDestino = false;
 
+  // Map scopes to selected transportes' GPS; falls back to all bitácora GPS.
+  const mapUnitIds = useMemo(() => {
+    const source =
+      newEvent.transportes?.length > 0
+        ? newEvent.transportes
+        : bitacora?.transportes || [];
+    const ids = [];
+    const seen = new Set();
+    for (const t of source) {
+      for (const g of t.gpsUnits || []) {
+        if (g?.wialonId == null) continue;
+        const id = String(g.wialonId).trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }, [newEvent.transportes, bitacora?.transportes]);
+
   return (
-    <ModalTemplate show={show} onClose={onClose} onSubmit={handleSubmit} title="Crear Nuevo Evento">
-      <div className="modal-body new-event-modal">
-        <form onSubmit={handleSubmit}>
+    <ModalTemplate
+      show={show}
+      onClose={onClose}
+      onSubmit={handleSubmit}
+      title="Crear Nuevo Evento"
+      extraWide
+      className="split-view-modal new-event-modal--with-map"
+    >
+      <div className="new-event-modal-split">
+        <div className="new-event-modal-split__form new-event-modal">
           <div className="mb-4">
             <label className="pselect__label">Transportes vinculados</label>
             <div className="transport-grid">
@@ -737,7 +765,27 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
               </div>
             </>
           )}
-        </form>
+        </div>
+
+        <div className="new-event-modal-split__map">
+          <div className="new-event-modal-split__map-label">
+            Mapa Wialon
+            {mapUnitIds.length > 0
+              ? ` · ${mapUnitIds.length} GPS`
+              : ""}
+          </div>
+          {mapUnitIds.length > 0 ? (
+            <WialonMap
+              unitIds={mapUnitIds}
+              className="wialon-map-wrapper--embedded"
+            />
+          ) : (
+            <div className="new-event-modal-split__map-empty">
+              <i className="fa fa-map-marked-alt"></i>
+              <p>Selecciona un transporte con GPS para verlo en el mapa.</p>
+            </div>
+          )}
+        </div>
       </div>
     </ModalTemplate>
   );

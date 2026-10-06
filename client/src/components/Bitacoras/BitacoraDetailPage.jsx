@@ -24,6 +24,7 @@ import {Select} from "../Select";
 import TextArea from "../TextArea";
 import Toast from "../Toast";
 import {useToast} from "../../hooks/useToast";
+import {TRIGGER_LABELS, TRIGGER_COLORS, TRIGGER_ICONS} from "../../utils/wialonNotifications";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -316,6 +317,7 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
 
 const BitacoraDetailPage = ({edited}) => {
   const {id} = useParams();
+  const baseUrl = import.meta.env.VITE_BASE_URL;
   const {user, verifyToken, setUser} = useAuth();
   const [bitacora, setBitacora] = useState(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -359,7 +361,77 @@ const BitacoraDetailPage = ({edited}) => {
   const [editTransporteSlide, setEditTransporteSlide] = useState("forward");
   const [editNotificaciones, setEditNotificaciones] = useState([]);
   const [editSaving, setEditSaving] = useState(false);
+  const [gpsNotifModal, setGpsNotifModal] = useState(null); // { gps, transporte }
+  const [unlinkingKey, setUnlinkingKey] = useState(null);
   const {toasts, showToast, removeToast} = useToast();
+
+  const openGpsNotificaciones = (gps, transporte) => {
+    setGpsNotifModal({gps, transporte});
+  };
+
+  const handleUnlinkNotificacion = async (notif) => {
+    if (!gpsNotifModal || !bitacora?._id || unlinkingKey) return;
+    const {gps, transporte} = gpsNotifModal;
+    const key = `${notif.resourceId}_${notif.notifId}`;
+    const label = notif.name || `Alerta ${notif.notifId}`;
+    if (!window.confirm(`¿Desvincular "${label}" del GPS ${gps.name || gps.wialonId}?`)) {
+      return;
+    }
+
+    setUnlinkingKey(key);
+    try {
+      const transporteKey = transporte.internalId || transporte.id;
+      const res = await fetch(
+        `${baseUrl}/bitacoras/${bitacora._id}/transportes/${encodeURIComponent(transporteKey)}/notificaciones/unlink`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          credentials: "include",
+          body: JSON.stringify({
+            unitId: gps.wialonId,
+            resourceId: notif.resourceId,
+            notifId: notif.notifId,
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+
+      const updatedT = data.transporte;
+      if (updatedT) {
+        setBitacora((prev) => {
+          if (!prev) return prev;
+          const transportesNext = (prev.transportes || []).map((t) =>
+            (t.internalId && updatedT.internalId && t.internalId === updatedT.internalId) ||
+            t.id === updatedT.id
+              ? {...t, ...updatedT}
+              : t
+          );
+          return {...prev, transportes: transportesNext};
+        });
+        setSelectedTransporte((prev) =>
+          prev &&
+          ((prev.internalId && updatedT.internalId && prev.internalId === updatedT.internalId) ||
+            prev.id === updatedT.id)
+            ? {...prev, ...updatedT}
+            : prev
+        );
+        setGpsNotifModal((prev) =>
+          prev ? {...prev, transporte: {...prev.transporte, ...updatedT}} : prev
+        );
+      }
+
+      if (data.wialonSync) {
+        reportWialonSync(data.wialonSync, showToast);
+      } else {
+        showToast("Notificación desvinculada.", "success");
+      }
+    } catch (err) {
+      showToast(err.message || "No se pudo desvincular la notificación", "error");
+    } finally {
+      setUnlinkingKey(null);
+    }
+  };
 
   const validatePhoneNumber = (phone) => {
     // Regex para validar número de teléfono mexicano de exactamente 10 dígitos seguidos
@@ -711,7 +783,6 @@ const BitacoraDetailPage = ({edited}) => {
   };
 
   const [eventTypes, setEventTypes] = useState([]);
-  const baseUrl = import.meta.env.VITE_BASE_URL;
 
   // Helper function to process bitacora data for edited_bitacora
   const processBitacoraForEdit = (bitacoraData) => {
@@ -1531,7 +1602,7 @@ const BitacoraDetailPage = ({edited}) => {
                 <i className="fa fa-plus"></i> Nuevo
               </button>
             )}
-            {activeTab === "eventos" && roleData?.bit_eventos?.create && (
+            {activeTab === "mapa_eventos" && roleData?.bit_eventos?.create && (
               <button
                 className="new-btn"
                 disabled={areAllTransportesClosed()}
@@ -1562,21 +1633,14 @@ const BitacoraDetailPage = ({edited}) => {
                 </button>
               )}
 
-              {roleData?.bit_eventos.read && (
+              {(roleData?.bit_eventos?.read || roleData?.map_wialon?.read) && (
                 <button
-                  className={`tab-button ${activeTab === "eventos" ? "active" : ""}`}
-                  onClick={() => handleTabClick("eventos")}>
-                  <span className="tab-title">Eventos</span>
-                  <span className="tab-subtitle">{bitacora.eventos.length} registrados</span>
-                </button>
-              )}
-
-              {roleData?.map_wialon?.read && (
-                <button
-                  className={`tab-button ${activeTab === "mapa_wialon" ? "active" : ""}`}
-                  onClick={() => handleTabClick("mapa_wialon")}>
-                  <span className="tab-title">Mapa Wialon</span>
-                  <span className="tab-subtitle">{bitacoraUnitIds.length} GPS</span>
+                  className={`tab-button ${activeTab === "mapa_eventos" ? "active" : ""}`}
+                  onClick={() => handleTabClick("mapa_eventos")}>
+                  <span className="tab-title">Mapa & Eventos</span>
+                  <span className="tab-subtitle">
+                    {bitacora.eventos.length} eventos · {bitacoraUnitIds.length} GPS
+                  </span>
                 </button>
               )}
 
@@ -1812,6 +1876,11 @@ const BitacoraDetailPage = ({edited}) => {
                                             <span className="transporte-item__gps">
                                               <i className="fa-solid fa-satellite-dish"></i>
                                               {transporte.gpsUnits.length} GPS
+                                              {(transporte.notificaciones?.length || 0) > 0
+                                                ? ` · ${transporte.notificaciones.length} alerta${
+                                                    transporte.notificaciones.length === 1 ? "" : "s"
+                                                  }`
+                                                : ""}
                                             </span>
                                           )}
                                         </div>
@@ -1951,7 +2020,7 @@ const BitacoraDetailPage = ({edited}) => {
                                     </div>
                                   </div>
 
-                                  {/* GPS Asociados - Compatible con versiones anteriores y nuevas */}
+                                  {/* GPS Asociados - click to view/unlink notifications */}
                                   {selectedTransporte.gpsUnits &&
                                   selectedTransporte.gpsUnits.length > 0 ? (
                                     <div className="gps-asociados-section">
@@ -1963,9 +2032,23 @@ const BitacoraDetailPage = ({edited}) => {
                                             <div className="info-value">
                                               <div className="d-flex flex-wrap gap-2">
                                                 {selectedTransporte.gpsUnits.map((gps, index) => (
-                                                  <span key={index} className="gps-tag">
+                                                  <button
+                                                    type="button"
+                                                    key={index}
+                                                    className="gps-tag gps-tag--clickable"
+                                                    onClick={() =>
+                                                      openGpsNotificaciones(gps, selectedTransporte)
+                                                    }
+                                                    title="Ver notificaciones vinculadas"
+                                                  >
                                                     {gps.name} (ID: {gps.wialonId})
-                                                  </span>
+                                                    {(selectedTransporte.notificaciones?.length || 0) >
+                                                      0 && (
+                                                      <span className="gps-tag__badge">
+                                                        {selectedTransporte.notificaciones.length}
+                                                      </span>
+                                                    )}
+                                                  </button>
                                                 ))}
                                               </div>
                                             </div>
@@ -1982,10 +2065,19 @@ const BitacoraDetailPage = ({edited}) => {
                                 selectedTransporte.gpsUnits.length > 0 && (
                                   <div className="gps-section">
                                     <h6>GPS Asociados</h6>
+                                    <p className="gps-section__hint">
+                                      Haz clic en un GPS para ver y desvincular sus notificaciones.
+                                    </p>
                                     <div className="row">
                                       {selectedTransporte.gpsUnits.map((gps, index) => (
                                         <div key={index} className="col-md-6 mb-3">
-                                          <div className="gps-card">
+                                          <button
+                                            type="button"
+                                            className="gps-card gps-card--clickable"
+                                            onClick={() =>
+                                              openGpsNotificaciones(gps, selectedTransporte)
+                                            }
+                                          >
                                             <h6 className="gps-card__name">
                                               {gps.name}
                                             </h6>
@@ -1995,7 +2087,18 @@ const BitacoraDetailPage = ({edited}) => {
                                                 {gps.wialonId}
                                               </span>
                                             </div>
-                                          </div>
+                                            <div className="gps-card__footer">
+                                              <span className="gps-card__alerts">
+                                                <i className="fa fa-bell"></i>
+                                                {selectedTransporte.notificaciones?.length || 0}{" "}
+                                                alerta
+                                                {(selectedTransporte.notificaciones?.length || 0) === 1
+                                                  ? ""
+                                                  : "s"}
+                                              </span>
+                                              <span className="gps-card__cta">Ver detalles</span>
+                                            </div>
+                                          </button>
                                         </div>
                                       ))}
                                     </div>
@@ -2019,60 +2122,78 @@ const BitacoraDetailPage = ({edited}) => {
                 </div>
               )}
 
-              {/* Eventos Tab Content */}
-              {roleData?.bit_eventos.read && (
-                <div className={`tab-pane-modern ${activeTab === "eventos" ? "active" : ""}`}>
-                  <div className="eventos-container">
-                    {eventos.length === 0 ? (
-                      <div className="eventos-empty">
-                        <i className="fa-regular fa-calendar-xmark"></i>
-                        <p>No hay eventos registrados aún</p>
-                      </div>
-                    ) : (
-                      eventos
-                        .slice()
-                        .reverse()
-                        .map((event, index) => (
-                          <EventCard
-                            key={event._id || index}
-                            event={event}
-                            events={events}
-                            bitacora={bitacora}
-                            setBitacora={setBitacora}
-                            setEventos={setEventos}
-                            handleEditSubmit={handleEditSubmit}
-                            roleData={roleData}
-                          />
-                        ))
-                    )}
-                  </div>
-                </div>
-              )}
+              {/* Mapa & Eventos — split: map left, event list right */}
+              {(roleData?.bit_eventos?.read || roleData?.map_wialon?.read) && (
+                <div className={`tab-pane-modern ${activeTab === "mapa_eventos" ? "active" : ""}`}>
+                  {activeTab === "mapa_eventos" ? (
+                    <div
+                      className={`mapa-eventos-split${
+                        roleData?.map_wialon?.read && roleData?.bit_eventos?.read
+                          ? ""
+                          : " mapa-eventos-split--single"
+                      }`}>
+                      {roleData?.map_wialon?.read && (
+                        <div className="mapa-eventos-split__map">
+                          {bitacoraUnitIds.length === 0 ? (
+                            <div className="eventos-empty">
+                              <i className="fa fa-map-marked-alt"></i>
+                              <p>Sin GPS asociados a los transportes de esta bitácora.</p>
+                            </div>
+                          ) : (
+                            <div className="wialon-tab-mapa">
+                              <div className="wialon-tab-mapa__toolbar">
+                                <input
+                                  type="text"
+                                  className="wialon-map-search"
+                                  placeholder="Buscar unidad..."
+                                  value={mapaWialonSearch}
+                                  onChange={(e) => setMapaWialonSearch(e.target.value)}
+                                />
+                              </div>
+                              <WialonMap
+                                searchTerm={mapaWialonSearch}
+                                unitIds={bitacoraUnitIds}
+                                className="wialon-map-wrapper--embedded"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
 
-              {/* Mapa Wialon Tab (scoped to this bitácora's GPS units) */}
-              {roleData?.map_wialon?.read && (
-                <div className={`tab-pane-modern ${activeTab === "mapa_wialon" ? "active" : ""}`}>
-                  {bitacoraUnitIds.length === 0 ? (
-                    <div className="eventos-empty">
-                      <i className="fa fa-map-marked-alt"></i>
-                      <p>Sin GPS asociados a los transportes de esta bitácora.</p>
-                    </div>
-                  ) : activeTab === "mapa_wialon" ? (
-                    <div className="wialon-tab-mapa">
-                      <div className="wialon-tab-mapa__toolbar">
-                        <input
-                          type="text"
-                          className="wialon-map-search"
-                          placeholder="Buscar unidad..."
-                          value={mapaWialonSearch}
-                          onChange={(e) => setMapaWialonSearch(e.target.value)}
-                        />
-                      </div>
-                      <WialonMap
-                        searchTerm={mapaWialonSearch}
-                        unitIds={bitacoraUnitIds}
-                        className="wialon-map-wrapper--embedded"
-                      />
+                      {roleData?.bit_eventos?.read && (
+                        <div className="mapa-eventos-split__eventos">
+                          <div className="mapa-eventos-split__eventos-header">
+                            <h5 className="mb-0">Eventos</h5>
+                            <span className="text-muted small">
+                              {eventos.length} registrado{eventos.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          <div className="eventos-container">
+                            {eventos.length === 0 ? (
+                              <div className="eventos-empty">
+                                <i className="fa-regular fa-calendar-xmark"></i>
+                                <p>No hay eventos registrados aún</p>
+                              </div>
+                            ) : (
+                              eventos
+                                .slice()
+                                .reverse()
+                                .map((event, index) => (
+                                  <EventCard
+                                    key={event._id || index}
+                                    event={event}
+                                    events={events}
+                                    bitacora={bitacora}
+                                    setBitacora={setBitacora}
+                                    setEventos={setEventos}
+                                    handleEditSubmit={handleEditSubmit}
+                                    roleData={roleData}
+                                  />
+                                ))
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -2091,7 +2212,10 @@ const BitacoraDetailPage = ({edited}) => {
                       embedded
                       unitIds={bitacoraUnitIds}
                       bitacoraId={bitacora?._id}
-                      onEventSaved={fetchEventos}
+                      bitacoraEventos={eventos}
+                      onEventSaved={async () => {
+                        await fetchEventos();
+                      }}
                     />
                   ) : null}
                 </div>
@@ -2744,6 +2868,87 @@ const BitacoraDetailPage = ({edited}) => {
           )}
         </ModalTemplate>
       )}
+
+      {gpsNotifModal && (
+        <ModalTemplate
+          show
+          title={`Notificaciones · ${gpsNotifModal.gps.name || "GPS"}`}
+          onClose={() => setGpsNotifModal(null)}
+          hideFooter
+          wide
+          className="gps-notif-modal"
+        >
+          <div className="gps-notif-modal__body">
+            <div className="gps-notif-modal__meta">
+              <span>
+                <i className="fa fa-satellite-dish me-1"></i>
+                ID Wialon: <strong>{gpsNotifModal.gps.wialonId}</strong>
+              </span>
+              <span>
+                Transporte:{" "}
+                <strong>{getTransporteLabel(gpsNotifModal.transporte)}</strong>
+              </span>
+            </div>
+
+            {(gpsNotifModal.transporte.notificaciones || []).length === 0 ? (
+              <div className="gps-notif-modal__empty">
+                <i className="fa fa-bell-slash"></i>
+                <p>Sin notificaciones vinculadas</p>
+              </div>
+            ) : (
+              <ul className="gps-notif-list">
+                {(gpsNotifModal.transporte.notificaciones || []).map((notif) => {
+                  const key = `${notif.resourceId}_${notif.notifId}`;
+                  const icon = TRIGGER_ICONS[notif.triggerType] || "fa-bell";
+                  const color = TRIGGER_COLORS[notif.triggerType] || "#6b7280";
+                  const typeLabel =
+                    TRIGGER_LABELS[notif.triggerType] || notif.triggerType || "Alerta";
+                  const busy = unlinkingKey === key;
+                  return (
+                    <li key={key} className="gps-notif-list__item">
+                      <div className="gps-notif-list__info">
+                        <i className={`fa ${icon}`} style={{color}}></i>
+                        <div>
+                          <div className="gps-notif-list__name">
+                            {notif.name || `Notificación ${notif.notifId}`}
+                          </div>
+                          <div className="gps-notif-list__meta">
+                            {typeLabel}
+                            {notif.kind ? ` · ${notif.kind}` : ""}
+                            {notif.appliedAt
+                              ? ` · vinculada ${new Date(notif.appliedAt).toLocaleString("es-MX", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}`
+                              : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="gps-notif-list__unlink"
+                        disabled={!!unlinkingKey}
+                        onClick={() => handleUnlinkNotificacion(notif)}
+                      >
+                        {busy ? (
+                          <>
+                            <i className="fa fa-spinner fa-spin"></i> Desvinculando…
+                          </>
+                        ) : (
+                          <>
+                            <i className="fa fa-unlink"></i> Desvincular
+                          </>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </ModalTemplate>
+      )}
+
       <Toast toasts={toasts} removeToast={removeToast} />
     </section>
   );

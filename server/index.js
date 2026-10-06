@@ -41,7 +41,15 @@ import PatioExitEvent from "./models/PatioExitEvent.js";
 import PatioAnomaly from "./models/PatioAnomaly.js";
 import wialonIntegrationService from "./services/wialonIntegrationService.js";
 import telemetryService from "./services/telemetryService.js";
-import { getCatalog as getWialonNotificationCatalog, applySelections as applyWialonSelections, invalidateCatalogCache, listNotifications as listWialonNotifications } from "./services/wialonNotificationService.js";
+import {
+  getCatalog as getWialonNotificationCatalog,
+  applySelections as applyWialonSelections,
+  invalidateCatalogCache,
+  listNotifications as listWialonNotifications,
+  unlinkBitacoraNotifications as unlinkWialonBitacoraNotifications,
+  CLOSED_STATUSES as WIALON_CLOSED_STATUSES,
+} from "./services/wialonNotificationService.js";
+import { processTriggeredAlerts as processWialonTriggeredAlerts } from "./services/wialonAlertEventService.js";
 import { readPlateFromImage } from "./services/plateRecognitionService.js";
 import { wialonApiCall, wialonLogout } from "./utils/wialonClient.js";
 import { auditCreation, auditUpdate, auditDeletion } from "./auditoriaUtils.js";
@@ -2653,10 +2661,44 @@ app.patch("/bitacora/:id/status", async (req, res) => {
     });
     if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
 
+    const prevStatus = String(bitacora.status || "").toLowerCase();
+    const nextStatus = String(status || "").toLowerCase();
+    const wasClosed = WIALON_CLOSED_STATUSES.includes(prevStatus);
+    const isNowClosed = WIALON_CLOSED_STATUSES.includes(nextStatus);
+
     bitacora.status = status;
     await bitacora.save();
 
-    res.json(bitacora);
+    // On close (e.g. after "Cierre de servicio"), unlink GPS from Wialon alerts.
+    // Best effort: never block closing the bitácora if Wialon fails.
+    let wialonSync = null;
+    if (!wasClosed && isNowClosed) {
+      try {
+        wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
+      } catch (err) {
+        console.error("Wialon notification unlink on close failed:", err);
+        wialonSync = {
+          applied: [],
+          failed: [],
+          pruned: [],
+          prunedEnabled: false,
+          skippedUnits: [],
+          error: err.message,
+        };
+      }
+      if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
+        console.warn("[wialon-unlink-close]", JSON.stringify({
+          bitacora: bitacora._id,
+          status: nextStatus,
+          failed: wialonSync.failed,
+          error: wialonSync.error,
+        }));
+      }
+    }
+
+    const payload = bitacora.toObject ? bitacora.toObject() : bitacora;
+    if (wialonSync) payload.wialonSync = wialonSync;
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -2707,6 +2749,30 @@ app.delete("/bitacora/:id", async (req, res) => {
 
     await bitacora.save();
 
+    // Soft-deleted trips should not keep GPS on Wialon alert rules.
+    // Best effort: never block the delete if Wialon fails.
+    let wialonSync = null;
+    try {
+      wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
+    } catch (err) {
+      console.error("Wialon notification unlink on soft-delete failed:", err);
+      wialonSync = {
+        applied: [],
+        failed: [],
+        pruned: [],
+        prunedEnabled: false,
+        skippedUnits: [],
+        error: err.message,
+      };
+    }
+    if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
+      console.warn("[wialon-unlink-delete]", JSON.stringify({
+        bitacora: bitacora._id,
+        failed: wialonSync.failed,
+        error: wialonSync.error,
+      }));
+    }
+
     // Create audit record for deletion
     await auditDeletion({
       oldData,
@@ -2723,7 +2789,8 @@ app.delete("/bitacora/:id", async (req, res) => {
         deleted: bitacora.deleted,
         deleted_at: bitacora.deleted_at,
         deleted_by: bitacora.deleted_by
-      }
+      },
+      ...(wialonSync ? { wialonSync } : {}),
     });
   } catch (error) {
     console.error("Error soft deleting bitacora:", error);
@@ -3351,8 +3418,13 @@ app.get("/wialon/notifications", async (req, res) => {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
+    const includeLastTrigger =
+      String(req.query.includeLastTrigger || "").toLowerCase() === "1" ||
+      String(req.query.includeLastTrigger || "").toLowerCase() === "true";
 
-    const notifications = await withDeadline(listWialonNotifications({ unitIds }));
+    const notifications = await withDeadline(
+      listWialonNotifications({ unitIds, includeLastTrigger })
+    );
     res.json({ notifications });
   } catch (err) {
     console.error("[wialon/notifications] falló:", err.message);
@@ -3829,6 +3901,122 @@ app.post("/wialon/notifications/apply", requireAppAuth, async (req, res) => {
     // Writes may have partially landed before the failure: never leave a stale cache.
     invalidateCatalogCache();
     console.error("Wialon notification apply error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// POST /bitacoras/:id/transportes/:transporteId/notificaciones/unlink
+// Manual mid-trip unlink: remove GPS from a Wialon notification and clear Mongo binding.
+// body: { unitId, resourceId, notifId }
+app.post(
+  "/bitacoras/:id/transportes/:transporteId/notificaciones/unlink",
+  requireAppAuth,
+  async (req, res) => {
+    try {
+      const { id, transporteId } = req.params;
+      const { unitId, resourceId, notifId } = req.body || {};
+
+      if (unitId == null || resourceId == null || notifId == null) {
+        return res.status(400).json({
+          error: "unitId, resourceId and notifId are required",
+        });
+      }
+
+      const bitacora = await Bitacora.findOne({
+        _id: id,
+        deleted: { $ne: true },
+      });
+      if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
+
+      const tIdx = bitacora.transportes.findIndex(
+        (t) =>
+          String(t.id) === String(transporteId) ||
+          String(t.internalId) === String(transporteId)
+      );
+      if (tIdx < 0) return res.status(404).json({ message: "Transporte not found" });
+
+      const transporte = bitacora.transportes[tIdx];
+      const unitIds = [
+        ...new Set(
+          (transporte.gpsUnits || [])
+            .map((u) => (u?.wialonId != null ? String(u.wialonId).trim() : ""))
+            .filter(Boolean)
+        ),
+      ];
+      // Prefer all transporte GPS so Mongo (transporte-level list) matches Wialon.
+      const unlinkUnits = unitIds.length
+        ? unitIds
+        : [String(unitId).trim()].filter(Boolean);
+
+      let wialonSync = null;
+      if (unlinkUnits.length) {
+        try {
+          wialonSync = await withDeadline(
+            applyWialonSelections({
+              unitIds: unlinkUnits,
+              selections: [
+                {
+                  resourceId: Number(resourceId),
+                  notifId: Number(notifId),
+                  action: "unlink",
+                },
+              ],
+            })
+          );
+        } catch (err) {
+          console.error("Wialon notification unlink failed:", err);
+          wialonSync = {
+            applied: [],
+            failed: [
+              {
+                resourceId: Number(resourceId),
+                notifId: Number(notifId),
+                action: "unlink",
+                error: err.message,
+              },
+            ],
+            pruned: [],
+            prunedEnabled: false,
+            skippedUnits: [],
+            error: err.message,
+          };
+        }
+      }
+
+      // Clear Mongo binding even if Wialon is unreachable (stale local state).
+      const before = transporte.notificaciones || [];
+      transporte.notificaciones = before.filter(
+        (n) =>
+          !(
+            Number(n.resourceId) === Number(resourceId) &&
+            Number(n.notifId) === Number(notifId)
+          )
+      );
+      bitacora.markModified("transportes");
+      await bitacora.save();
+      invalidateCatalogCache();
+
+      const updated = bitacora.transportes[tIdx];
+      res.json({
+        transporte: typeof updated.toObject === "function" ? updated.toObject() : updated,
+        bitacora,
+        wialonSync,
+      });
+    } catch (err) {
+      console.error("Transporte notification unlink error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Manually process Wialon notification triggers → bitácora eventos.
+// Useful for testing without waiting for the periodic worker.
+app.post("/wialon/alert-events/process", requireAppAuth, async (req, res) => {
+  try {
+    const results = await withDeadline(processWialonTriggeredAlerts());
+    res.json(results);
+  } catch (err) {
+    console.error("Wialon alert-events process error:", err.message);
     res.status(upstreamStatus(err)).json({ error: err.message });
   }
 });
@@ -9698,4 +9886,41 @@ if (WIALON_FLUSH_INTERVAL_MS > 0) {
   console.log(`[wialon-flush] Worker enabled (interval=${WIALON_FLUSH_INTERVAL_MS}ms)`);
 } else {
   console.log("[wialon-flush] Worker disabled (WIALON_FLUSH_INTERVAL_MS=0)");
+}
+
+// -----------------------------------------------------------------------
+// Wialon alert → bitácora auto-event worker
+// Polls notification logs for GPS units linked on open bitácoras and creates
+// matching eventos. Skipped if WIALON_ALERT_EVENT_INTERVAL_MS=0.
+// -----------------------------------------------------------------------
+const WIALON_ALERT_EVENT_INTERVAL_MS = parseInt(
+  process.env.WIALON_ALERT_EVENT_INTERVAL_MS || "60000",
+  10
+);
+if (WIALON_ALERT_EVENT_INTERVAL_MS > 0) {
+  let alertEventRunning = false;
+  const runAlertEvents = async () => {
+    if (alertEventRunning) return;
+    alertEventRunning = true;
+    try {
+      const result = await processWialonTriggeredAlerts();
+      if (result && (result.created || result.failed)) {
+        console.log(
+          `[wialon-alert-events] notifs=${result.notifs} logs=${result.logEntries} created=${result.created} skipped=${result.skipped} failed=${result.failed}`
+        );
+      }
+    } catch (err) {
+      console.error("[wialon-alert-events] worker error:", err);
+    } finally {
+      alertEventRunning = false;
+    }
+  };
+  setInterval(runAlertEvents, WIALON_ALERT_EVENT_INTERVAL_MS);
+  // First pass shortly after boot so a restart still catches recent triggers.
+  setTimeout(runAlertEvents, Math.min(15000, WIALON_ALERT_EVENT_INTERVAL_MS));
+  console.log(
+    `[wialon-alert-events] Worker enabled (interval=${WIALON_ALERT_EVENT_INTERVAL_MS}ms)`
+  );
+} else {
+  console.log("[wialon-alert-events] Worker disabled (WIALON_ALERT_EVENT_INTERVAL_MS=0)");
 }
