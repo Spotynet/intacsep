@@ -6846,30 +6846,19 @@ $gray: #223b53;
     }
   }
 
-  .edit-transporte-btn {
+  .transporte-details__actions {
     position: absolute;
     top: -1px;
     right: 0;
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 30px;
-    height: 30px;
-    border: 1px solid #e2e5eb;
-    border-radius: 8px;
-    background: #fff;
-    color: #6b7280;
-    font-size: 0.7rem;
-    cursor: pointer;
-    transition: all 0.15s ease;
+    gap: 4px;
     z-index: 2;
+  }
 
-    &:hover {
-      border-color: #c7cad3;
-      color: #374151;
-      background: #f9fafb;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-    }
+  // Keep legacy class for any remaining references; prefer .action-btn.
+  .edit-transporte-btn {
+    position: static;
   }
 }
 
@@ -12438,6 +12427,36 @@ td:has(.action-buttons) {
 
   &--embedded {
     min-height: 520px;
+  }
+
+  &__hint {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: #4b5563;
+
+    strong {
+      color: #111827;
+      font-weight: 600;
+    }
+  }
+
+  &__nuevo-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: #fef3c7;
+    color: #b45309;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    flex-shrink: 0;
   }
 
   &__toolbar {

@@ -27,7 +27,7 @@ const REGISTERED_SKEW_SEC = 120;
 
 /**
  * Whether this Wialon alert already has a matching bitácora evento for its latest trigger.
- * - registrado: evento covers lastTriggeredAt (or any match if no trigger time)
+ * - registrado: evento covers lastTriggeredAt (exact wialonTriggeredAt, else createdAt skew)
  * - pendiente: triggered but no covering evento yet
  * - sin_disparos: no last trigger in the lookback window
  */
@@ -43,7 +43,13 @@ const getAlertRegistration = (row, bitacoraEventos = []) => {
     return {status: "sin_disparos", event: null, label: "Sin disparos", variant: "gray"};
   }
 
-  const thresholdMs = (Number(row.lastTriggeredAt) - REGISTERED_SKEW_SEC) * 1000;
+  const triggerTs = Number(row.lastTriggeredAt);
+  const exact = matches.filter((e) => Number(e.wialonTriggeredAt) === triggerTs);
+  if (exact.length) {
+    return {status: "registrado", event: sortNewest(exact)[0], label: "Registrado", variant: "green"};
+  }
+
+  const thresholdMs = (triggerTs - REGISTERED_SKEW_SEC) * 1000;
   const covering = matches.filter((e) => new Date(e.createdAt || 0).getTime() >= thresholdMs);
   if (covering.length) {
     const event = sortNewest(covering)[0];
@@ -51,6 +57,8 @@ const getAlertRegistration = (row, bitacoraEventos = []) => {
   }
   return {status: "pendiente", event: null, label: "Pendiente", variant: "yellow"};
 };
+
+const EMBEDDED_POLL_MS = 25000;
 
 // Wialon puede quedar inalcanzable desde el servidor; evita exponer el error crudo de fetch.
 const friendlyWialonError = (msg) =>
@@ -61,12 +69,14 @@ const friendlyWialonError = (msg) =>
 // Reusable Alertas Wialon panel.
 // Props:
 //  - embedded: when true, render without Sidebar/PageHeader/full-viewport shell.
+//  - isActive: when false (hidden keep-alive tab), pause polling; default true.
 //  - unitIds: string[] — optional, restrict notifications to those touching any of these Wialon unit IDs.
 //  - bitacoraId: string — optional, when set trims each row's activeBitacoras to that bitácora.
 //  - bitacoraEventos: array — bitácora eventos used to show Registrado/Pendiente status.
 //  - onEventSaved: optional, called after an alert event is stored (auto or manual).
 const EventosWialonPanel = ({
   embedded = false,
+  isActive = true,
   unitIds = null,
   bitacoraId = null,
   bitacoraEventos = null,
@@ -84,6 +94,10 @@ const EventosWialonPanel = ({
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState(null);
   const [error, setError] = useState(null);
+  const hasLoadedRef = useRef(false);
+  // Embedded Alertas: highlight rows whose lastTriggeredAt advanced since last poll.
+  const prevTriggerRef = useRef(new Map());
+  const [newTriggerKeys, setNewTriggerKeys] = useState(() => new Set());
 
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState(null);
@@ -182,20 +196,23 @@ const EventosWialonPanel = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, embedded]);
 
-  const fetchNotifications = useCallback(async () => {
+  const fetchNotifications = useCallback(async (opts) => {
+    // Ignore synthetic click events from onClick={fetchNotifications}.
+    const soft = Boolean(opts && typeof opts === "object" && !opts.nativeEvent && opts.soft);
     if (!token) {
       setError("Token de Wialon no configurado.");
       setLoading(false);
       return;
     }
 
-    setLoading(true);
+    const showSpinner = !soft || !hasLoadedRef.current;
+    if (showSpinner) setLoading(true);
     setError(null);
 
     try {
       const params = new URLSearchParams();
-      if (Array.isArray(unitIds) && unitIds.length > 0) {
-        params.set("unitIds", unitIds.map(String).join(","));
+      if (unitIdsKey) {
+        params.set("unitIds", unitIdsKey.split("|").join(","));
         // Bitácora tab: enrich with last Wialon fire so operators see the newest alert.
         params.set("includeLastTrigger", "1");
       }
@@ -214,6 +231,7 @@ const EventosWialonPanel = ({
       const mapped = data.notifications
         .map((n) => ({
           ...n,
+          _key: `${n.resourceId}_${n.id}`,
           triggerLabel: TRIGGER_LABELS[n.triggerType] || n.triggerType,
           triggerColor: TRIGGER_COLORS[n.triggerType] || "#6b7280",
           text: n.text || "—",
@@ -240,14 +258,28 @@ const EventosWialonPanel = ({
           return (b.createdAt || 0) - (a.createdAt || 0);
         });
 
+      if (embedded) {
+        const prev = prevTriggerRef.current;
+        const advanced = new Set();
+        for (const row of mapped) {
+          const key = row._key;
+          const nextTs = Number(row.lastTriggeredAt) || 0;
+          const prevTs = Number(prev.get(key)) || 0;
+          if (prev.has(key) && nextTs > prevTs) advanced.add(key);
+          prev.set(key, nextTs);
+        }
+        setNewTriggerKeys(advanced);
+      }
+
       setNotifications(mapped);
+      hasLoadedRef.current = true;
     } catch (err) {
       console.error("Error fetching notifications:", err);
       setError(friendlyWialonError(err.message) || "Error al cargar alertas");
     } finally {
       setLoading(false);
     }
-  }, [token, baseUrl, unitIds]);
+  }, [token, baseUrl, unitIdsKey, embedded]);
 
   useEffect(() => {
     // In embedded mode we don't wait for verifyToken; fetch as soon as we can.
@@ -255,6 +287,21 @@ const EventosWialonPanel = ({
       fetchNotifications();
     }
   }, [user, embedded, fetchNotifications]);
+
+  // Soft refresh when returning to a keep-alive Alertas tab (no full spinner).
+  useEffect(() => {
+    if (!embedded || !isActive || !hasLoadedRef.current) return;
+    fetchNotifications({soft: true});
+  }, [embedded, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Bitácora Alertas tab: poll only while the tab is visible.
+  useEffect(() => {
+    if (!embedded || !isActive) return undefined;
+    const timer = setInterval(() => {
+      fetchNotifications({soft: true});
+    }, EMBEDDED_POLL_MS);
+    return () => clearInterval(timer);
+  }, [embedded, isActive, fetchNotifications]);
 
   // Derived filter options
   const typeOptions = useMemo(() => {
@@ -445,6 +492,14 @@ const EventosWialonPanel = ({
           registrado_por: user ? `${user.firstName} ${user.lastName}` : "Sistema",
           frecuencia: 10,
           transportes: enriched,
+          ...(notification.lastTriggeredAt
+            ? {
+                wialonTriggeredAt: notification.lastTriggeredAt,
+                wialonResourceId: notification.resourceId,
+                wialonNotifId: notification.id,
+                wialonUnitId: notification.lastTriggerUnitId || null,
+              }
+            : {}),
         }),
       });
       if (!patchRes.ok) throw new Error("Error al guardar el evento");
@@ -567,6 +622,7 @@ const EventosWialonPanel = ({
       sortable: true,
       render: (row) => {
         const icon = TRIGGER_ICONS[row.triggerType] || "fa-bell";
+        const isNew = embedded && newTriggerKeys.has(row._key);
         return (
           <div style={{display: "flex", alignItems: "center", gap: "10px"}}>
             <i
@@ -579,6 +635,11 @@ const EventosWialonPanel = ({
               }}
             />
             <span style={{fontWeight: 600, color: "#1f2937"}}>{row.name}</span>
+            {isNew && (
+              <span className="eventos-wialon-panel__nuevo-badge" title="Nueva disparada detectada">
+                Nuevo
+              </span>
+            )}
           </div>
         );
       },
@@ -599,18 +660,30 @@ const EventosWialonPanel = ({
       header: "Último disparo",
       width: "12%",
       sortable: true,
-      render: (row) => (
-        <div style={{display: "flex", flexDirection: "column", gap: "2px"}}>
-          <span style={{fontSize: "0.8rem", color: row.lastTriggeredAt ? "#111827" : "#9ca3af", fontWeight: row.lastTriggeredAt ? 600 : 400}}>
-            {fmtTime(row.lastTriggeredAt)}
-          </span>
-          {row.lastTriggerUnitName && (
-            <span style={{fontSize: "0.72rem", color: "#6b7280"}} title={row.lastTriggerText || ""}>
-              {row.lastTriggerUnitName}
+      render: (row) => {
+        const isNew = embedded && newTriggerKeys.has(row._key);
+        return (
+          <div style={{display: "flex", flexDirection: "column", gap: "2px"}}>
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: row.lastTriggeredAt ? "#111827" : "#9ca3af",
+                fontWeight: row.lastTriggeredAt ? 600 : 400,
+                background: isNew ? "#fef3c7" : "transparent",
+                borderRadius: 4,
+                padding: isNew ? "1px 4px" : 0,
+                alignSelf: "flex-start",
+              }}>
+              {fmtTime(row.lastTriggeredAt)}
             </span>
-          )}
-        </div>
-      ),
+            {row.lastTriggerUnitName && (
+              <span style={{fontSize: "0.72rem", color: "#6b7280"}} title={row.lastTriggerText || ""}>
+                {row.lastTriggerUnitName}
+              </span>
+            )}
+          </div>
+        );
+      },
     },
     ...(Array.isArray(bitacoraEventos)
       ? [
@@ -968,6 +1041,11 @@ const EventosWialonPanel = ({
     return (
       <div className="eventos-wialon-panel eventos-wialon-panel--embedded">
         {modals}
+        <p className="eventos-wialon-panel__hint">
+          Cada fila es una alerta vinculada a los GPS de esta bitácora. Una nueva disparada en
+          Wialon actualiza <strong>Último disparo</strong> y pasa a <strong>Pendiente</strong> hasta
+          registrarse sola en Eventos (o con Controles).
+        </p>
         <div className="eventos-wialon-panel__toolbar">
           <div className="eventos-wialon-panel__filters">{filtersPanel}</div>
           <div className="eventos-wialon-panel__actions">

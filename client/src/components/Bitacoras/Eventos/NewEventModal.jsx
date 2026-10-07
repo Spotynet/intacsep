@@ -418,8 +418,6 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
         if (response.ok) {
           const updatedBitacora = await response.json();
           setBitacora(updatedBitacora);
-          setIsEventStarted(true);
-          setFinishButtonDisabled(false);
         } else {
           console.error("Failed to start bitácora:", response.statusText);
         }
@@ -444,8 +442,6 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
         if (response.ok) {
           const updatedBitacora = await response.json();
           setBitacora(updatedBitacora);
-          setIsEventStarted(true);
-          setFinishButtonDisabled(false);
         } else {
           console.error("Failed to start bitácora:", response.statusText);
         }

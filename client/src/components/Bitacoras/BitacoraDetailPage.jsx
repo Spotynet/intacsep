@@ -151,6 +151,7 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
     const computeEventColor = () => {
       if (!frecuencia) return "#333235";
       if (!isLastEvent) {
+        if (event.isFrecuenciaMet == null) return "#9ca3b0";
         return event.isFrecuenciaMet ? "#51FF4E" : "#F82929";
       }
       const frecuenciaMs = frecuencia * 60000;
@@ -332,6 +333,8 @@ const BitacoraDetailPage = ({edited}) => {
   const [monitoreos, setMonitoreos] = useState([]);
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("detalles");
+  // Lazy-mount heavy tabs once, then keep them mounted (CSS hide) for fast switches.
+  const [mountedTabs, setMountedTabs] = useState(() => new Set(["detalles"]));
   const [selectedTransporte, setSelectedTransporte] = useState(null);
   const [transportes, setTransportes] = useState(bitacora?.transportes || []);
   const [mapaWialonSearch, setMapaWialonSearch] = useState("");
@@ -363,10 +366,101 @@ const BitacoraDetailPage = ({edited}) => {
   const [editSaving, setEditSaving] = useState(false);
   const [gpsNotifModal, setGpsNotifModal] = useState(null); // { gps, transporte }
   const [unlinkingKey, setUnlinkingKey] = useState(null);
+  const [showDeleteTransporteModal, setShowDeleteTransporteModal] = useState(false);
+  const [transporteToDelete, setTransporteToDelete] = useState(null);
+  const [removingTransporte, setRemovingTransporte] = useState(false);
   const {toasts, showToast, removeToast} = useToast();
 
   const openGpsNotificaciones = (gps, transporte) => {
     setGpsNotifModal({gps, transporte});
+  };
+
+  const handleOpenDeleteTransporte = () => {
+    if (!selectedTransporte || removingTransporte) return;
+    setTransporteToDelete(selectedTransporte);
+    setShowDeleteTransporteModal(true);
+  };
+
+  const handleCloseDeleteTransporteModal = () => {
+    if (removingTransporte) return;
+    setShowDeleteTransporteModal(false);
+    setTransporteToDelete(null);
+  };
+
+  const handleConfirmDeleteTransporte = async (e) => {
+    e?.preventDefault?.();
+    if (!bitacora?._id || !transporteToDelete || removingTransporte) return;
+
+    const transporteKey = transporteToDelete.internalId || transporteToDelete.id;
+    setRemovingTransporte(true);
+    try {
+      const res = await fetch(
+        `${baseUrl}/bitacoras/${bitacora._id}/transportes/${encodeURIComponent(transporteKey)}`,
+        {method: "DELETE", credentials: "include"}
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+
+      if (data.bitacora) {
+        applyBitacoraPayload(data.bitacora);
+      } else {
+        setBitacora((prev) => {
+          if (!prev) return prev;
+          const transportesNext = (prev.transportes || []).filter(
+            (t) =>
+              !(
+                (t.internalId &&
+                  transporteToDelete.internalId &&
+                  t.internalId === transporteToDelete.internalId) ||
+                t.id === transporteToDelete.id
+              )
+          );
+          return {...prev, transportes: transportesNext};
+        });
+        setTransportes((prev) =>
+          (prev || []).filter(
+            (t) =>
+              !(
+                (t.internalId &&
+                  transporteToDelete.internalId &&
+                  t.internalId === transporteToDelete.internalId) ||
+                t.id === transporteToDelete.id
+              )
+          )
+        );
+      }
+
+      const wasSelected =
+        selectedTransporte &&
+        ((selectedTransporte.internalId &&
+          transporteToDelete.internalId &&
+          selectedTransporte.internalId === transporteToDelete.internalId) ||
+          selectedTransporte.id === transporteToDelete.id);
+      if (wasSelected) setSelectedTransporte(null);
+
+      if (
+        gpsNotifModal?.transporte &&
+        ((gpsNotifModal.transporte.internalId &&
+          transporteToDelete.internalId &&
+          gpsNotifModal.transporte.internalId === transporteToDelete.internalId) ||
+          gpsNotifModal.transporte.id === transporteToDelete.id)
+      ) {
+        setGpsNotifModal(null);
+      }
+
+      setShowDeleteTransporteModal(false);
+      setTransporteToDelete(null);
+
+      if (data.wialonSync) {
+        reportWialonSync(data.wialonSync, showToast);
+      } else {
+        showToast("Transporte eliminado de la bitácora.", "success");
+      }
+    } catch (err) {
+      showToast(err.message || "No se pudo eliminar el transporte", "error");
+    } finally {
+      setRemovingTransporte(false);
+    }
   };
 
   const handleUnlinkNotificacion = async (notif) => {
@@ -374,7 +468,12 @@ const BitacoraDetailPage = ({edited}) => {
     const {gps, transporte} = gpsNotifModal;
     const key = `${notif.resourceId}_${notif.notifId}`;
     const label = notif.name || `Alerta ${notif.notifId}`;
-    if (!window.confirm(`¿Desvincular "${label}" del GPS ${gps.name || gps.wialonId}?`)) {
+    const transporteLabel = transporte?.id || transporte?.internalId || "transporte";
+    if (
+      !window.confirm(
+        `¿Desvincular "${label}" del transporte ${transporteLabel}? Se quitará de todos sus GPS.`
+      )
+    ) {
       return;
     }
 
@@ -444,7 +543,8 @@ const BitacoraDetailPage = ({edited}) => {
 
   // Unique Wialon unit IDs across every transporte's gpsUnits. Used to scope
   // the Mapa Wialon and Alertas Wialon tabs to just this bitácora.
-  const bitacoraUnitIds = useMemo(() => {
+  // Memoize on a stable key so poll/setBitacora does not churn child effects.
+  const bitacoraUnitIdsKey = useMemo(() => {
     const ids = new Set();
     for (const t of bitacora?.transportes || []) {
       for (const g of t?.gpsUnits || []) {
@@ -453,8 +553,12 @@ const BitacoraDetailPage = ({edited}) => {
         }
       }
     }
-    return Array.from(ids);
+    return Array.from(ids).sort().join("|");
   }, [bitacora?.transportes]);
+  const bitacoraUnitIds = useMemo(
+    () => (bitacoraUnitIdsKey ? bitacoraUnitIdsKey.split("|") : []),
+    [bitacoraUnitIdsKey]
+  );
 
   const handleEditTransporte = async () => {
     const selected = selectedTransporte;
@@ -779,6 +883,12 @@ const BitacoraDetailPage = ({edited}) => {
 
   //TABS
   const handleTabClick = (tabName) => {
+    setMountedTabs((prev) => {
+      if (prev.has(tabName)) return prev;
+      const next = new Set(prev);
+      next.add(tabName);
+      return next;
+    });
     setActiveTab(tabName);
   };
 
@@ -959,6 +1069,17 @@ const BitacoraDetailPage = ({edited}) => {
     }
   };
 
+  const applyBitacoraPayload = (data) => {
+    if (!data) return;
+    setBitacora(data);
+    setEventos(data.eventos || []);
+    setEditedBitacora(processBitacoraForEdit(data));
+    setTransportes(data.transportes);
+    setSelectedTransportes(data.transportes);
+    setIsEventStarted(data.status === "iniciada");
+    setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
+  };
+
   const fetchBitacora = async () => {
     try {
       const response = await fetch(`${baseUrl}/bitacora/${id}`, {
@@ -980,22 +1101,14 @@ const BitacoraDetailPage = ({edited}) => {
               const r2 = await fetch(`${baseUrl}/bitacora/${id}`, { credentials: "include" });
               if (r2.ok) {
                 const fixed = await r2.json();
-                setBitacora(fixed);
-                setEditedBitacora(processBitacoraForEdit(fixed));
-                setTransportes(fixed.transportes);
-                setSelectedTransportes(fixed.transportes);
+                applyBitacoraPayload(fixed);
               }
             }
           }
         }).catch(() => {});
 
-        setBitacora(data);
-        setEditedBitacora(processBitacoraForEdit(data));
-        setTransportes(data.transportes);
-        setSelectedTransportes(data.transportes);
-
-        setIsEventStarted(data.status === "iniciada");
-        setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
+        applyBitacoraPayload(data);
+        return data;
       } else {
         console.error("Failed to fetch bitácora:", response.statusText);
       }
@@ -1004,45 +1117,55 @@ const BitacoraDetailPage = ({edited}) => {
     }
   };
 
-  const fetchEventos = async () => {
+  // Full refresh (also returns data for callers that need the latest bitácora).
+  const fetchEventos = async () => fetchBitacora();
+
+  // Soft poll for Alertas: update eventos/status without replacing transportes identity
+  // when unchanged, and without forcing catalog refetches (deps use cliente only).
+  const refreshEventosSoft = async () => {
     try {
       const response = await fetch(`${baseUrl}/bitacora/${id}`, {
         method: "GET",
         credentials: "include",
       });
-      if (response.ok) {
-        const data = await response.json();
-
-        setBitacora(data);
-        setEventos(data.eventos);
-        setEditedBitacora(processBitacoraForEdit(data));
-        setTransportes(data.transportes);
-        setSelectedTransportes(data.transportes);
-
-        setIsEventStarted(data.status === "iniciada");
-        setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
-
-        return data; // <-- ✅ Return updated bitacora
-      } else {
-        console.error("Failed to fetch bitácora:", response.statusText);
-      }
+      if (!response.ok) return;
+      const data = await response.json();
+      setEventos(data.eventos || []);
+      setBitacora((prev) => {
+        if (!prev) return data;
+        return {
+          ...prev,
+          eventos: data.eventos,
+          status: data.status,
+          activa: data.activa,
+          inicioMonitoreo: data.inicioMonitoreo,
+          finalMonitoreo: data.finalMonitoreo,
+        };
+      });
+      setIsEventStarted(data.status === "iniciada");
+      setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
     } catch (e) {
-      console.error("Error fetching bitácora:", e);
+      console.error("Error soft-refreshing eventos:", e);
     }
   };
 
+  // Keep eventos fresh while Alertas Wialon tab is open (auto-Registrado badges).
   useEffect(() => {
-    fetchEventos();
-  }, []);
+    if (activeTab !== "alertas_wialon") return undefined;
+    const timer = setInterval(() => {
+      refreshEventosSoft();
+    }, 25000);
+    return () => clearInterval(timer);
+  }, [activeTab, id]);
 
-  // Update filtered data when bitacora is loaded
+  // Update filtered data when cliente changes (not on every bitacora object replace).
   useEffect(() => {
-    if (bitacora && bitacora.cliente) {
+    if (bitacora?.cliente) {
       fetchOrigenes(bitacora.cliente);
       fetchDestinos(bitacora.cliente);
       fetchLineasTransporte(bitacora.cliente);
     }
-  }, [bitacora]);
+  }, [bitacora?.cliente]);
 
   // Update edited_bitacora when origenes and destinos are loaded
   useEffect(() => {
@@ -1615,7 +1738,7 @@ const BitacoraDetailPage = ({edited}) => {
           <div className="content-area">
             {/* Tab Navigation */}
             <div className="modern-tabs">
-              {roleData?.bit_detalles.read && (
+              {roleData?.bit_detalles?.read && (
                 <button
                   className={`tab-button ${activeTab === "detalles" ? "active" : ""}`}
                   onClick={() => handleTabClick("detalles")}>
@@ -1624,7 +1747,7 @@ const BitacoraDetailPage = ({edited}) => {
                 </button>
               )}
 
-              {roleData?.bit_transportes.read && (
+              {roleData?.bit_transportes?.read && (
                 <button
                   className={`tab-button ${activeTab === "transportes" ? "active" : ""}`}
                   onClick={() => handleTabClick("transportes")}>
@@ -1656,7 +1779,7 @@ const BitacoraDetailPage = ({edited}) => {
 
             <div className="tab-content-modern">
               {/* Detalles Tab Content */}
-              {roleData?.bit_detalles.read && (
+              {roleData?.bit_detalles?.read && (
                 <div className={`tab-pane-modern ${activeTab === "detalles" ? "active" : ""}`}>
                   <div className="modern-card">
                     <div className="card-header-modern">
@@ -1835,7 +1958,7 @@ const BitacoraDetailPage = ({edited}) => {
               )}
 
               {/* Transportes Tab Content */}
-              {roleData?.bit_transportes.read && (
+              {roleData?.bit_transportes?.read && (
                 <div className={`tab-pane-modern ${activeTab === "transportes" ? "active" : ""}`}>
                   <div className="modern-card">
                     <div className="card-body-modern">
@@ -1845,8 +1968,7 @@ const BitacoraDetailPage = ({edited}) => {
                             <span className="transporte-list-header__title">Lista de Transportes</span>
                             <span className="transporte-list-header__count">{bitacora.transportes.length}</span>
                           </div>
-                          {roleData?.gps_id?.read && (
-                            <div className="transporte-list">
+                          <div className="transporte-list">
                               {bitacora.transportes.length === 0 ? (
                                 <div className="transporte-list-empty">
                                   <i className="fa-solid fa-truck"></i>
@@ -1890,20 +2012,36 @@ const BitacoraDetailPage = ({edited}) => {
                                   );
                                 })
                               )}
-                            </div>
-                          )}
+                          </div>
                         </div>
 
                         <div className="col-md-8" style={{padding: '0 0 0 16px'}}>
                           {selectedTransporte ? (
                             <div className="transporte-details" ref={transporteDetailRef}>
-                              {roleData.bit_transportes.update && (
-                                <button
-                                  className="edit-transporte-btn"
-                                  onClick={handleEditTransporte}
-                                  title="Editar transporte">
-                                  <i className="fa fa-pen"></i>
-                                </button>
+                              {(roleData?.bit_transportes?.update ||
+                                roleData?.bit_transportes?.delete) && (
+                                <div className="transporte-details__actions">
+                                  {roleData?.bit_transportes?.update && (
+                                    <button
+                                      type="button"
+                                      className="action-btn btn-primary"
+                                      onClick={handleEditTransporte}
+                                      title="Editar"
+                                      disabled={removingTransporte}>
+                                      <i className="fa fa-pen"></i>
+                                    </button>
+                                  )}
+                                  {roleData?.bit_transportes?.delete && (
+                                    <button
+                                      type="button"
+                                      className="action-btn btn-danger"
+                                      onClick={handleOpenDeleteTransporte}
+                                      title="Eliminar"
+                                      disabled={removingTransporte}>
+                                      <i className="fa fa-trash"></i>
+                                    </button>
+                                  )}
+                                </div>
                               )}
 
                               <div className="row">
@@ -2122,10 +2260,10 @@ const BitacoraDetailPage = ({edited}) => {
                 </div>
               )}
 
-              {/* Mapa & Eventos — split: map left, event list right */}
+              {/* Mapa & Eventos — split: map left, event list right (keep-alive after first visit) */}
               {(roleData?.bit_eventos?.read || roleData?.map_wialon?.read) && (
                 <div className={`tab-pane-modern ${activeTab === "mapa_eventos" ? "active" : ""}`}>
-                  {activeTab === "mapa_eventos" ? (
+                  {mountedTabs.has("mapa_eventos") ? (
                     <div
                       className={`mapa-eventos-split${
                         roleData?.map_wialon?.read && roleData?.bit_eventos?.read
@@ -2153,6 +2291,7 @@ const BitacoraDetailPage = ({edited}) => {
                               <WialonMap
                                 searchTerm={mapaWialonSearch}
                                 unitIds={bitacoraUnitIds}
+                                isActive={activeTab === "mapa_eventos"}
                                 className="wialon-map-wrapper--embedded"
                               />
                             </div>
@@ -2199,7 +2338,7 @@ const BitacoraDetailPage = ({edited}) => {
                 </div>
               )}
 
-              {/* Alertas Wialon Tab (scoped to this bitácora's GPS units) */}
+              {/* Alertas Wialon Tab — keep-alive after first visit */}
               {roleData?.eventos_wialon?.read && (
                 <div className={`tab-pane-modern ${activeTab === "alertas_wialon" ? "active" : ""}`}>
                   {bitacoraUnitIds.length === 0 ? (
@@ -2207,9 +2346,10 @@ const BitacoraDetailPage = ({edited}) => {
                       <i className="fa fa-bell"></i>
                       <p>Sin GPS asociados; no hay alertas Wialon que mostrar.</p>
                     </div>
-                  ) : activeTab === "alertas_wialon" ? (
+                  ) : mountedTabs.has("alertas_wialon") ? (
                     <EventosWialonPanel
                       embedded
+                      isActive={activeTab === "alertas_wialon"}
                       unitIds={bitacoraUnitIds}
                       bitacoraId={bitacora?._id}
                       bitacoraEventos={eventos}
@@ -2866,6 +3006,26 @@ const BitacoraDetailPage = ({edited}) => {
               })}
             </div>
           )}
+        </ModalTemplate>
+      )}
+
+      {showDeleteTransporteModal && transporteToDelete && (
+        <ModalTemplate
+          show={showDeleteTransporteModal}
+          title="Confirmar Eliminación"
+          onClose={handleCloseDeleteTransporteModal}
+          onSubmit={handleConfirmDeleteTransporte}
+          submitClass="btn btn-danger"
+          submitText={removingTransporte ? "Eliminando..." : "Eliminar"}
+          cancelText="Cancelar">
+          <p>
+            ¿Está seguro de que desea eliminar el transporte{" "}
+            <strong>{getTransporteLabel(transporteToDelete)}</strong> de esta bitácora?
+          </p>
+          <p className="text-muted small">
+            Se desvincularán sus alertas GPS si no las usan otras bitácoras abiertas. Los eventos
+            ya registrados se conservan.
+          </p>
         </ModalTemplate>
       )}
 

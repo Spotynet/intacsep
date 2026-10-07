@@ -63,6 +63,11 @@ const EventoSchema = new mongoose.Schema(
     transportes: [TransporteSchema],
     // Structured extra data (used by "Plan de embarque" evento and similar)
     metadata: { type: Object, default: null },
+    // Wialon auto-event linkage (Alertas tab Registrado match)
+    wialonTriggeredAt: { type: Number, default: null },
+    wialonResourceId: { type: Number, default: null },
+    wialonNotifId: { type: Number, default: null },
+    wialonUnitId: { type: String, default: null },
   },
   { timestamps: true }
 );

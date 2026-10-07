@@ -47,6 +47,7 @@ import {
   invalidateCatalogCache,
   listNotifications as listWialonNotifications,
   unlinkBitacoraNotifications as unlinkWialonBitacoraNotifications,
+  unlinkTransporteNotifications as unlinkWialonTransporteNotifications,
   CLOSED_STATUSES as WIALON_CLOSED_STATUSES,
 } from "./services/wialonNotificationService.js";
 import { processTriggeredAlerts as processWialonTriggeredAlerts } from "./services/wialonAlertEventService.js";
@@ -328,7 +329,10 @@ app.use((req, res, next) => {
     const data = jwt.verify(token, JWT_SECRET); // Verify the token
     req.session.user = data.user; // Store user data in session
   } catch (e) {
-    console.error(e);
+    // Expired / invalid tokens are normal client sessions — return 401 without stack spam.
+    if (e?.name !== "TokenExpiredError" && e?.name !== "JsonWebTokenError") {
+      console.error("JWT verify unexpected error:", e.message || e);
+    }
     req.session.user = null;
     return res.status(401).json({ message: "Unauthorized: Invalid token" }); // Return response on error
   }
@@ -545,7 +549,8 @@ app.get("/user", async (req, res) => {
     const users = await User.find();
     res.status(200).json(users);
   } catch (e) {
-    console.log(e);
+    console.error("Error fetching users:", e.message);
+    res.status(500).json({ message: "Error fetching users" });
   }
 });
 
@@ -555,7 +560,8 @@ app.get("/user/:id", async (req, res) => {
     const user = await User.findOne({ email: id });
     res.status(200).json(user);
   } catch (e) {
-    console.log(e);
+    console.error("Error fetching user:", e.message);
+    res.status(500).json({ message: "Error fetching user" });
   }
 });
 
@@ -570,7 +576,7 @@ app.post("/user/:id", async (req, res) => {
   }
 
   try {
-    const userToUpdate = await User.updateOne(
+    await User.updateOne(
       { email: id },
       {
         name: data.name,
@@ -585,11 +591,10 @@ app.post("/user/:id", async (req, res) => {
       }
     );
 
-    console.log(userToUpdate);
     res.status(200).json({ message: "User Updated" });
   } catch (e) {
-    console.log(e);
-    res.json({ message: "User NOT Updated" });
+    console.error("Error updating user:", e.message);
+    res.status(500).json({ message: "User NOT Updated" });
   }
 });
 
@@ -2124,9 +2129,17 @@ app.get("/bitacora/:id", async (req, res) => {
 
 app.patch("/bitacora/:id/event", async (req, res) => {
   const { id } = req.params;
-  const { nombre, descripcion, registrado_por, frecuencia, transportes } = req.body;
-
-  console.log(transportes);
+  const {
+    nombre,
+    descripcion,
+    registrado_por,
+    frecuencia,
+    transportes,
+    wialonTriggeredAt,
+    wialonResourceId,
+    wialonNotifId,
+    wialonUnitId,
+  } = req.body;
 
   try {
     // Find the bitacora by its ID (exclude deleted)
@@ -2229,6 +2242,15 @@ app.patch("/bitacora/:id/event", async (req, res) => {
       registrado_por,
       frecuencia,
       transportes: finalTransportes,
+      ...(wialonTriggeredAt != null
+        ? {
+            wialonTriggeredAt: Number(wialonTriggeredAt) || null,
+            wialonResourceId:
+              wialonResourceId != null ? Number(wialonResourceId) : null,
+            wialonNotifId: wialonNotifId != null ? Number(wialonNotifId) : null,
+            wialonUnitId: wialonUnitId != null ? String(wialonUnitId) : null,
+          }
+        : {}),
     };
 
     // Add the new event to the bitacora's eventos array
@@ -2282,7 +2304,6 @@ app.patch("/bitacora/:id", async (req, res) => {
   // Convertir campos de texto a mayúsculas antes de procesar
   const excludeFields = ['status', 'inicioMonitoreo', 'finalMonitoreo', 'telefono', '_id', 'createdAt', 'updatedAt', 'bitacora_id', 'capacidad', 'gpsUnits', 'origen', 'destino', 'eventos', 'notificaciones'];
   const updatedData = convertToUpperCase(validatedData, excludeFields);
-  console.log(updatedData);
 
   try {
     const bitacora = await Bitacora.findOne({
@@ -2604,6 +2625,61 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
+  }
+});
+
+// Remove a transporte from a bitácora (unlink Wialon notifs when safe; keep event history).
+app.delete("/bitacoras/:id/transportes/:transporteId", async (req, res) => {
+  try {
+    const { id, transporteId } = req.params;
+    const bitacora = await Bitacora.findOne({
+      _id: id,
+      deleted: { $ne: true },
+    });
+    if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
+
+    const tIdx = bitacora.transportes.findIndex(
+      (t) =>
+        String(t.id) === String(transporteId) ||
+        String(t.internalId) === String(transporteId)
+    );
+    if (tIdx < 0) return res.status(404).json({ message: "Transporte not found" });
+
+    const removed = bitacora.transportes[tIdx];
+    const removedPlain =
+      typeof removed.toObject === "function" ? removed.toObject() : { ...removed };
+
+    let wialonSync = null;
+    try {
+      wialonSync = await withDeadline(
+        unlinkWialonTransporteNotifications(bitacora, removed)
+      );
+    } catch (err) {
+      console.error("Wialon transporte unlink on remove failed:", err);
+      wialonSync = {
+        applied: [],
+        failed: [],
+        pruned: [],
+        prunedEnabled: false,
+        skippedUnits: [],
+        skippedShared: [],
+        error: err.message,
+      };
+    }
+
+    bitacora.transportes.splice(tIdx, 1);
+    bitacora.markModified("transportes");
+    await bitacora.save();
+    invalidateCatalogCache();
+
+    res.json({
+      bitacora,
+      removed: removedPlain,
+      wialonSync,
+    });
+  } catch (err) {
+    console.error("Transporte remove error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -3672,7 +3748,6 @@ app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
     const timeTo = to ? parseInt(to) : now;
 
     // 1. Get the notification name by searching for it in the resource
-    console.log(`[WialonLog] Searching for notification ${notifId} in resource ${resourceId}`);
     const searchRes = await wialonApiCall(
       "core/search_items",
       {
@@ -3695,12 +3770,10 @@ app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
       const notif = searchRes.items[0].unf[notifId];
       if (notif) {
         notifName = notif.n;
-        console.log(`[WialonLog] Found notification name: ${notifName}`);
       }
     }
 
     // 2. Get the notification log (Primary method)
-    console.log(`[WialonLog] Fetching log for resource ${resourceId}, notif ${notifId} from ${timeFrom} to ${timeTo}`);
     let logEntries = [];
     const logData = await wialonApiCall(
       "resource/get_notifications_log",
@@ -3714,86 +3787,70 @@ app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
     );
 
     if (logData && !logData.error) {
-      console.log(`[WialonLog] Received logData keys: ${Object.keys(logData || {})}`);
       if (logData[notifId] && Array.isArray(logData[notifId].log)) {
         logEntries = logData[notifId].log;
       } else {
         // Fallback: search for any key that has a log array
         const firstKey = Object.keys(logData).find(k => logData[k] && Array.isArray(logData[k].log));
         if (firstKey) {
-          console.log(`[WialonLog] Using fallback key ${firstKey}`);
           logEntries = logData[firstKey].log;
         }
       }
-    } else {
-      console.warn(`[WialonLog] resource/get_notifications_log failed or returned error: ${logData?.error || "unknown"}`);
-      
+    } else if (notifName) {
       // 3. Fallback to resource messages if primary method failed and we have a name
-      if (notifName) {
-        console.log(`[WialonLog] Falling back to messages/load_interval for resource ${resourceId}`);
-        const messagesData = await wialonApiCall(
-          "messages/load_interval",
-          {
-            itemId: parseInt(resourceId),
-            timeFrom: timeFrom,
-            timeTo: timeTo,
-            flags: 0,
-            flagsMask: 0,
-            loadCount: 5000
-          },
-          sid
+      const messagesData = await wialonApiCall(
+        "messages/load_interval",
+        {
+          itemId: parseInt(resourceId),
+          timeFrom: timeFrom,
+          timeTo: timeTo,
+          flags: 0,
+          flagsMask: 0,
+          loadCount: 5000
+        },
+        sid
+      );
+
+      if (messagesData && Array.isArray(messagesData.messages)) {
+        const filtered = messagesData.messages.filter(m =>
+          m.p && m.p.notification && m.p.notification.includes(notifName)
         );
 
-        if (messagesData && Array.isArray(messagesData.messages)) {
-          console.log(`[WialonLog] Found ${messagesData.messages.length} total messages in resource`);
-          // Filter by notification name
-          const filtered = messagesData.messages.filter(m => 
-            m.p && m.p.notification && m.p.notification.includes(notifName)
-          );
-          console.log(`[WialonLog] Found ${filtered.length} matching messages for "${notifName}"`);
-          
-          logEntries = filtered.map(m => ({
-            t: m.t,
-            u: 0, // Resource messages might not have unit ID in 'u' field, but it's in 'p.unit'
-            txt: `[Trigger] ${m.p.notification} for unit ${m.p.unit || "Unknown"}`,
-            tm: m.t,
-            // Add custom fields that we can map later
-            unit_name: m.p.unit,
-            raw_msg: m
-          }));
-        }
+        logEntries = filtered.map(m => ({
+          t: m.t,
+          u: 0, // Resource messages might not have unit ID in 'u' field, but it's in 'p.unit'
+          txt: `[Trigger] ${m.p.notification} for unit ${m.p.unit || "Unknown"}`,
+          tm: m.t,
+          unit_name: m.p.unit,
+          raw_msg: m
+        }));
       }
     }
-    
-    console.log(`[WialonLog] Total log entries found: ${logEntries.length}`);
 
     // 4. Build unit name lookup if we have entries and need names
     const unitNameMap = {};
     const unitsToFetch = [...new Set(logEntries.map(e => e.u).filter(u => u > 0))];
-    
-    if (unitsToFetch.length > 0 || logEntries.some(e => !e.unit_name)) {
-      console.log(`[WialonLog] Fetching unit list for name resolution`);
-        // Fetch unit names
-        const unitSearchData = await wialonApiCall(
-          "core/search_items",
-          {
-            spec: {
-              itemsType: "avl_unit",
-              propName: "sys_name",
-              propValueMask: "*",
-              sortType: "sys_name",
-            },
-            force: 1,
-            flags: 0x1,
-            from: 0,
-            to: 1000,
-          },
-          sid
-        );
 
-        if (unitSearchData && Array.isArray(unitSearchData.items)) {
-          console.log(`[WialonLog] Found ${unitSearchData.items.length} units in search`);
-          unitSearchData.items.forEach(u => {
+    if (unitsToFetch.length > 0 || logEntries.some(e => !e.unit_name)) {
+      const unitSearchData = await wialonApiCall(
+        "core/search_items",
+        {
+          spec: {
+            itemsType: "avl_unit",
+            propName: "sys_name",
+            propValueMask: "*",
+            sortType: "sys_name",
+          },
+          force: 1,
+          flags: 0x1,
+          from: 0,
+          to: 1000,
+        },
+        sid
+      );
+
+      if (unitSearchData && Array.isArray(unitSearchData.items)) {
+        unitSearchData.items.forEach(u => {
           unitNameMap[u.id] = u.nm || `Unit ${u.id}`;
         });
       }
@@ -8719,7 +8776,6 @@ app.get("/dashboard/summary-counts", async (req, res) => {
           flags: 0x1,
           from: 0, to: 1000
         }, sid);
-        console.log(`[SummaryCounts] activeUnits: ${data.totalItemsCount || data.items?.length || 0}`);
         return data.totalItemsCount || data.items?.length || 0;
       } finally {
         wialonApiCall("core/logout", {}, sid).catch(() => {});

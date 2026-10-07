@@ -27,7 +27,7 @@ const fmtTimeShort = (ts) => {
 
 const NA = -348201.3876;
 
-const WialonMap = ({searchTerm = "", unitIds = null, className = ""}) => {
+const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = true}) => {
   const {session: wialonSession, loading: unitsLoading} = useWialon();
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
@@ -688,6 +688,20 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = ""}) => {
     refreshAllMarkers(sess);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitIdsKey]);
+
+  // Keep-alive tab: Leaflet needs invalidateSize after the pane becomes visible again
+  // (and after sidebar width transition ~300ms).
+  useEffect(() => {
+    if (!isActive) return undefined;
+    const map = mapInstance.current;
+    if (!map) return undefined;
+    const t1 = setTimeout(() => map.invalidateSize(), 50);
+    const t2 = setTimeout(() => map.invalidateSize(), 350);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [isActive]);
 
   // ── Handlers ───────────────────────────────────────────────
   const handleSelectUnit = useCallback(

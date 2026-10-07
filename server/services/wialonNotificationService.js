@@ -418,9 +418,15 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
 /**
  * Unit↔notification bindings still needed by any open (non-deleted, non-closed) bitácora.
  * Keys: `${unitId}_${resourceId}_${notifId}`.
+ *
+ * @param {{ bitacoraId?: string|object, transporteId?: string }|null} exclude
+ *   When removing a transporte mid-trip, pass its bitácora + transporte id so those
+ *   bindings are not treated as "still needed" by this same transporte.
  */
-async function getOpenUnitNotifKeys() {
+async function getOpenUnitNotifKeys(exclude = null) {
   const keys = new Set();
+  const excludeBitId = exclude?.bitacoraId != null ? String(exclude.bitacoraId) : null;
+  const excludeTId = exclude?.transporteId != null ? String(exclude.transporteId) : null;
   try {
     const col = mongoose.connection.db.collection("bitacoras");
     const docs = await col
@@ -428,6 +434,9 @@ async function getOpenUnitNotifKeys() {
         { deleted: { $ne: true }, status: { $nin: CLOSED_STATUSES } },
         {
           projection: {
+            _id: 1,
+            "transportes.id": 1,
+            "transportes.internalId": 1,
             "transportes.gpsUnits.wialonId": 1,
             "transportes.notificaciones.resourceId": 1,
             "transportes.notificaciones.notifId": 1,
@@ -437,6 +446,14 @@ async function getOpenUnitNotifKeys() {
       .toArray();
     for (const d of docs) {
       for (const t of d.transportes || []) {
+        if (
+          excludeBitId &&
+          excludeTId &&
+          String(d._id) === excludeBitId &&
+          (String(t.id) === excludeTId || String(t.internalId) === excludeTId)
+        ) {
+          continue;
+        }
         const unitIds = (t.gpsUnits || [])
           .map((u) => (u?.wialonId != null ? String(u.wialonId).trim() : ""))
           .filter(Boolean);
@@ -520,6 +537,105 @@ export async function unlinkBitacoraNotifications(bitacora) {
 
   // Group by notification so each Wialon update only removes the units that
   // are safe to drop from that specific rule.
+  const byNotif = new Map();
+  for (const b of toUnlink) {
+    const nk = `${b.resourceId}_${b.notifId}`;
+    if (!byNotif.has(nk)) {
+      byNotif.set(nk, {
+        resourceId: b.resourceId,
+        notifId: b.notifId,
+        unitIds: new Set(),
+      });
+    }
+    byNotif.get(nk).unitIds.add(b.unitId);
+  }
+
+  const merged = { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared };
+  for (const group of byNotif.values()) {
+    const part = await applySelections({
+      unitIds: [...group.unitIds],
+      selections: [{ resourceId: group.resourceId, notifId: group.notifId, action: "unlink" }],
+    });
+    merged.applied.push(...(part.applied || []));
+    merged.failed.push(...(part.failed || []));
+    merged.pruned.push(...(part.pruned || []));
+    merged.skippedUnits.push(...(part.skippedUnits || []));
+    if (part.prunedEnabled) merged.prunedEnabled = true;
+  }
+  return merged;
+}
+
+/**
+ * Unlink one transporte's GPS from its Wialon notifications, skipping pairs still
+ * needed by other open bitácoras or other transportes on the same bitácora.
+ */
+export async function unlinkTransporteNotifications(bitacora, transporte) {
+  const bitacoraId = bitacora?._id;
+  const transporteKey = transporte?.internalId || transporte?.id;
+  const unitIds = [];
+  for (const u of transporte?.gpsUnits || []) {
+    const id = u?.wialonId != null ? String(u.wialonId).trim() : "";
+    if (id) unitIds.push(id);
+  }
+  const bindings = [];
+  const seenBinding = new Set();
+  for (const n of transporte?.notificaciones || []) {
+    if (n?.resourceId == null || n?.notifId == null) continue;
+    for (const unitId of unitIds) {
+      const key = `${unitId}_${n.resourceId}_${n.notifId}`;
+      if (seenBinding.has(key)) continue;
+      seenBinding.add(key);
+      bindings.push({
+        unitId,
+        resourceId: Number(n.resourceId),
+        notifId: Number(n.notifId),
+      });
+    }
+  }
+
+  if (!bindings.length) {
+    return { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared: [] };
+  }
+
+  const { keys: stillNeeded, ok } = await getOpenUnitNotifKeys({
+    bitacoraId,
+    transporteId: transporteKey,
+  });
+  // Fail-closed on Mongo lookup errors: do not strip shared GPS.
+  if (!ok) {
+    return {
+      applied: [],
+      failed: [],
+      pruned: [],
+      prunedEnabled: false,
+      skippedUnits: [],
+      skippedShared: bindings,
+      error: "open_bindings_lookup_failed",
+    };
+  }
+
+  const skippedShared = [];
+  const toUnlink = [];
+  for (const b of bindings) {
+    const key = `${b.unitId}_${b.resourceId}_${b.notifId}`;
+    if (stillNeeded.has(key)) {
+      skippedShared.push(b);
+      continue;
+    }
+    toUnlink.push(b);
+  }
+
+  if (!toUnlink.length) {
+    return {
+      applied: [],
+      failed: [],
+      pruned: [],
+      prunedEnabled: false,
+      skippedUnits: [],
+      skippedShared,
+    };
+  }
+
   const byNotif = new Map();
   for (const b of toUnlink) {
     const nk = `${b.resourceId}_${b.notifId}`;
@@ -840,7 +956,8 @@ async function fetchLastTriggerFromLog(sid, resourceId, notifId) {
     const firstKey = Object.keys(logData).find((k) => logData[k] && Array.isArray(logData[k].log));
     if (firstKey) entries = logData[firstKey].log;
   }
-  if (!entries.length) return { ...EMPTY_TRIGGER };
+  // Empty log is not a definitive answer — let messages/load_interval fallback run.
+  if (!entries.length) return null;
 
   let latest = entries[0];
   for (const e of entries) {
@@ -922,10 +1039,10 @@ async function enrichWithLastTriggers(rows) {
       }
     });
 
-    // 2) For rows the log API can't serve, batch-load resource messages by resourceId.
+    // 2) For rows the log API can't serve (null / no timestamp), batch-load messages.
     const needFallback = [];
     for (let i = 0; i < rows.length; i++) {
-      if (fromLog[i] == null) needFallback.push(i);
+      if (!fromLog[i]?.lastTriggeredAt) needFallback.push(i);
     }
 
     const resourceIds = [
@@ -942,10 +1059,11 @@ async function enrichWithLastTriggers(rows) {
     });
 
     return rows.map((row, i) => {
-      if (fromLog[i]) return { ...row, ...fromLog[i] };
+      // Prefer a real timestamp from the log API; EMPTY_TRIGGER (no ts) must fall through.
+      if (fromLog[i]?.lastTriggeredAt) return { ...row, ...fromLog[i] };
       const idx = resourceIndexes.get(Number(row.resourceId));
       const hit = idx?.get(row.name);
-      if (!hit) return { ...row, ...EMPTY_TRIGGER };
+      if (!hit) return { ...row, ...(fromLog[i] || EMPTY_TRIGGER) };
       return {
         ...row,
         lastTriggeredAt: hit.t,
