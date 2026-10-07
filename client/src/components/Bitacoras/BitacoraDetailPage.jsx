@@ -366,6 +366,7 @@ const BitacoraDetailPage = ({edited}) => {
   const [editSaving, setEditSaving] = useState(false);
   const [gpsNotifModal, setGpsNotifModal] = useState(null); // { gps, transporte }
   const [unlinkingKey, setUnlinkingKey] = useState(null);
+  const [pendingUnlinkNotif, setPendingUnlinkNotif] = useState(null);
   const [showDeleteTransporteModal, setShowDeleteTransporteModal] = useState(false);
   const [transporteToDelete, setTransporteToDelete] = useState(null);
   const [removingTransporte, setRemovingTransporte] = useState(false);
@@ -463,19 +464,17 @@ const BitacoraDetailPage = ({edited}) => {
     }
   };
 
-  const handleUnlinkNotificacion = async (notif) => {
+  const requestUnlinkNotificacion = (notif) => {
     if (!gpsNotifModal || !bitacora?._id || unlinkingKey) return;
+    setPendingUnlinkNotif(notif);
+  };
+
+  const handleConfirmUnlinkNotificacion = async (e) => {
+    e?.preventDefault?.();
+    const notif = pendingUnlinkNotif;
+    if (!gpsNotifModal || !bitacora?._id || !notif || unlinkingKey) return;
     const {gps, transporte} = gpsNotifModal;
     const key = `${notif.resourceId}_${notif.notifId}`;
-    const label = notif.name || `Alerta ${notif.notifId}`;
-    const transporteLabel = transporte?.id || transporte?.internalId || "transporte";
-    if (
-      !window.confirm(
-        `¿Desvincular "${label}" del transporte ${transporteLabel}? Se quitará de todos sus GPS.`
-      )
-    ) {
-      return;
-    }
 
     setUnlinkingKey(key);
     try {
@@ -520,6 +519,7 @@ const BitacoraDetailPage = ({edited}) => {
         );
       }
 
+      setPendingUnlinkNotif(null);
       if (data.wialonSync) {
         reportWialonSync(data.wialonSync, showToast);
       } else {
@@ -2809,6 +2809,7 @@ const BitacoraDetailPage = ({edited}) => {
               unitIds={editUnitIds}
               hint={editCatalogHint}
               onChange={setEditNotificaciones}
+              showToast={showToast}
             />
           </div>
 
@@ -3029,11 +3030,46 @@ const BitacoraDetailPage = ({edited}) => {
         </ModalTemplate>
       )}
 
+      {pendingUnlinkNotif && gpsNotifModal && (
+        <ModalTemplate
+          show
+          elevated
+          width={440}
+          formId="unlink-gps-notif-form"
+          title="Desvincular alerta"
+          onClose={() => {
+            if (unlinkingKey) return;
+            setPendingUnlinkNotif(null);
+          }}
+          onSubmit={handleConfirmUnlinkNotificacion}
+          cancelText="Cancelar"
+          submitText={unlinkingKey ? "Desvinculando…" : "Desvincular"}
+          submitClass="btn btn-danger"
+          submitDisabled={!!unlinkingKey}
+        >
+          <p>
+            ¿Desvincular{" "}
+            <strong>
+              {pendingUnlinkNotif.name || `Alerta ${pendingUnlinkNotif.notifId}`}
+            </strong>{" "}
+            del transporte{" "}
+            <strong>{getTransporteLabel(gpsNotifModal.transporte)}</strong>?
+          </p>
+          <p className="text-muted small mb-0">
+            Se quitará de todos sus GPS en Wialon y del registro de este transporte.
+          </p>
+        </ModalTemplate>
+      )}
+
       {gpsNotifModal && (
         <ModalTemplate
           show
           title={`Notificaciones · ${gpsNotifModal.gps.name || "GPS"}`}
-          onClose={() => setGpsNotifModal(null)}
+          onClose={() => {
+            if (unlinkingKey) return;
+            setPendingUnlinkNotif(null);
+            setGpsNotifModal(null);
+          }}
           hideFooter
           wide
           className="gps-notif-modal"
@@ -3088,7 +3124,7 @@ const BitacoraDetailPage = ({edited}) => {
                         type="button"
                         className="gps-notif-list__unlink"
                         disabled={!!unlinkingKey}
-                        onClick={() => handleUnlinkNotificacion(notif)}
+                        onClick={() => requestUnlinkNotificacion(notif)}
                       >
                         {busy ? (
                           <>

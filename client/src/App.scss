@@ -2236,6 +2236,10 @@ $gray: #223b53;
   justify-content: center;
   font-family: "Inter", "Segoe UI", sans-serif;
 
+  &.customModal--elevated {
+    z-index: 10050;
+  }
+
   .pm-backdrop {
     position: absolute;
     inset: 0;
@@ -8826,6 +8830,13 @@ $gray: #223b53;
   margin-bottom: 8px;
 }
 
+.notif-group__title-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .notif-group__count {
   background: #e5e7eb;
   color: #374151;
@@ -8833,6 +8844,31 @@ $gray: #223b53;
   font-size: 0.66rem;
   padding: 1px 7px;
   font-weight: 700;
+}
+
+.notif-group__unlink-all {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: #b91c1c;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.2;
+
+  &:hover:not(:disabled) {
+    color: #991b1b;
+    text-decoration: underline;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: wait;
+  }
 }
 
 .notif-group__search {
@@ -8887,6 +8923,125 @@ $gray: #223b53;
   max-height: 132px;
   overflow-y: auto;
   padding-right: 2px;
+}
+
+.linked-notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+// Beat .customModal .pm-body label / input form resets.
+.customModal .pm-body .linked-notif,
+.linked-notif {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 0;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+
+  &:hover {
+    border-color: #c7d2fe;
+  }
+
+  &__row {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 10px;
+    min-width: 0;
+  }
+
+  &__icon {
+    width: 22px;
+    height: 22px;
+    margin-top: 1px;
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 0.62rem;
+  }
+
+  &__body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  &__name {
+    margin: 0;
+    font-size: 0.8rem;
+    font-weight: 650;
+    line-height: 1.35;
+    color: #111827;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+
+  &__meta {
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: #6b7280;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__unlink {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid #fecaca;
+    background: #fff;
+    color: #b91c1c;
+    border-radius: 8px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 6px 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 1.2;
+    align-self: start;
+    transition: background 0.15s, border-color 0.15s;
+
+    i { font-size: 0.68rem; }
+
+    &:hover:not(:disabled) {
+      background: #fef2f2;
+      border-color: #f87171;
+    }
+
+    &:disabled {
+      opacity: 0.55;
+      cursor: wait;
+    }
+  }
+}
+
+@media (max-width: 560px) {
+  .customModal .pm-body .linked-notif,
+  .linked-notif {
+    &__row {
+      grid-template-columns: 22px minmax(0, 1fr);
+      row-gap: 8px;
+    }
+
+    &__unlink {
+      grid-column: 1 / -1;
+      justify-content: center;
+    }
+  }
 }
 
 .notif-chip {

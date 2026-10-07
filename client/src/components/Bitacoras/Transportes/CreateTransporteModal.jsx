@@ -534,6 +534,7 @@ const CreateTransporteModal = ({show, handleClose, addTransporte, transportes, b
           unitIds={selectedUnitIds}
           hint={catalogHint}
           onChange={setSelectedNotificaciones}
+          showToast={showToast}
         />
       </div>
 

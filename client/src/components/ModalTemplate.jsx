@@ -1,4 +1,5 @@
 import {useEffect} from "react";
+import {createPortal} from "react-dom";
 
 const ModalTemplate = ({
   show,
@@ -16,6 +17,8 @@ const ModalTemplate = ({
   extraWide = false,
   width,
   className = "",
+  elevated = false,
+  formId = "modal-template-form",
 }) => {
   useEffect(() => {
     if (show) {
@@ -33,10 +36,14 @@ const ModalTemplate = ({
     className,
   ].filter(Boolean).join(" ");
 
+  const overlayClasses = ["customModal", elevated && "customModal--elevated"]
+    .filter(Boolean)
+    .join(" ");
+
   const containerStyle = width ? { maxWidth: width } : undefined;
 
-  return (
-    <section className="customModal">
+  const modal = (
+    <section className={overlayClasses}>
       <div className="pm-backdrop" onClick={onClose}></div>
       <div className={containerClasses} style={containerStyle}>
         <div className="pm-header">
@@ -47,7 +54,7 @@ const ModalTemplate = ({
         </div>
         <hr />
         <div className="modal-scroll-body">
-          <form id="modal-template-form" className="pm-body" onSubmit={onSubmit}>
+          <form id={formId} className="pm-body" onSubmit={onSubmit}>
             {children}
           </form>
         </div>
@@ -56,10 +63,10 @@ const ModalTemplate = ({
             <button type="button" className={cancelClass} onClick={onClose}>
               {cancelText}
             </button>
-            <button 
-              type="submit" 
-              form="modal-template-form" 
-              className={submitClass} 
+            <button
+              type="submit"
+              form={formId}
+              className={submitClass}
               disabled={submitDisabled}
             >
               {submitText}
@@ -70,6 +77,13 @@ const ModalTemplate = ({
     </section>
   );
 
+  // Elevated confirms (and any nested use) mount on body to avoid form nesting
+  // and to sit above an already-open modal.
+  if (elevated && typeof document !== "undefined") {
+    return createPortal(modal, document.body);
+  }
+
+  return modal;
 };
 
 export default ModalTemplate;

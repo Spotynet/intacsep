@@ -1,5 +1,6 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {Select} from "../../Select";
+import ModalTemplate from "../../ModalTemplate";
 import {
   TRIGGER_LABELS,
   TRIGGER_COLORS,
@@ -11,7 +12,7 @@ const explainLinked = (n) => {
   const type = TRIGGER_LABELS[n.triggerType] || n.triggerType || "Alerta";
   const state = n.enabled
     ? "Está encendida en Wialon."
-    : "Está apagada en Wialon; al marcarla se enciende al guardar.";
+    : "Está apagada en Wialon; se enciende al guardar el transporte.";
   const cover =
     n.unitCount === 1
       ? "Solo vigila este GPS."
@@ -73,18 +74,19 @@ export const reportWialonSync = (sync, showToast) => {
   }
 };
 
-const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) => {
+const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, showToast}) => {
   const [notifCatalog, setNotifCatalog] = useState(null);
   const [notifLoading, setNotifLoading] = useState(false);
   const [notifError, setNotifError] = useState("");
   const [notifQuery, setNotifQuery] = useState("");
   const [notifRetry, setNotifRetry] = useState(0);
-  const [selectedLinked, setSelectedLinked] = useState({});
   const [selectedCanonical, setSelectedCanonical] = useState({});
   // Canonical types the user has switched off. A missing key means ON, so every
   // type starts enabled without depending on the async catalog. Turning one off
   // drops its pick: the row is inert until it is switched back on.
   const [disabledCanonical, setDisabledCanonical] = useState({});
+  const [unlinkingKey, setUnlinkingKey] = useState(null);
+  const [pendingUnlink, setPendingUnlink] = useState(null);
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const hintRef = useRef("");
   const prevUnitIdsRef = useRef(null);
@@ -108,9 +110,10 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
     setNotifLoading(false);
     setNotifQuery("");
     setNotifRetry(0);
-    setSelectedLinked({});
     setSelectedCanonical({});
     setDisabledCanonical({});
+    setUnlinkingKey(null);
+    setPendingUnlink(null);
     prevUnitIdsRef.current = null;
     candidatesSeenRef.current = {};
   }, [open]);
@@ -209,19 +212,80 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
     }
   };
 
+  const requestUnlinkLinked = (n) => {
+    if (!unitIds.map(String).filter(Boolean).length || unlinkingKey) return;
+    setPendingUnlink({mode: "one", notif: n});
+  };
+
+  const requestUnlinkAllLinked = () => {
+    const linked = notifCatalog?.linked || [];
+    if (!linked.length || !unitIds.map(String).filter(Boolean).length || unlinkingKey) return;
+    setPendingUnlink({mode: "all", count: linked.length});
+  };
+
+  const confirmUnlinkLinked = async (e) => {
+    e?.preventDefault?.();
+    if (!pendingUnlink || unlinkingKey) return;
+    const ids = unitIds.map(String).filter(Boolean);
+    const linked = notifCatalog?.linked || [];
+    if (!ids.length) return;
+
+    const selections =
+      pendingUnlink.mode === "all"
+        ? linked.map((n) => ({
+            resourceId: Number(n.resourceId),
+            notifId: Number(n.notifId),
+            action: "unlink",
+          }))
+        : pendingUnlink.notif
+          ? [
+              {
+                resourceId: Number(pendingUnlink.notif.resourceId),
+                notifId: Number(pendingUnlink.notif.notifId),
+                action: "unlink",
+              },
+            ]
+          : [];
+    if (!selections.length) return;
+
+    const busyKey =
+      pendingUnlink.mode === "all" ? "__all__" : notifKey(pendingUnlink.notif);
+    setUnlinkingKey(busyKey);
+    try {
+      const response = await fetch(`${baseUrl}/wialon/notifications/apply`, {
+        method: "POST",
+        credentials: "include",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({unitIds: ids, selections}),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || data.message || `HTTP ${response.status}`);
+      }
+      reportWialonSync(data, showToast);
+      setPendingUnlink(null);
+      // Force catalog reload so the linked list reflects Wialon.
+      prevUnitIdsRef.current = null;
+      setNotifRetry((r) => r + 1);
+    } catch (err) {
+      showToast?.(err.message || "No se pudo desvincular la notificación", "error");
+    } finally {
+      setUnlinkingKey(null);
+    }
+  };
+
   const selectedNotificaciones = useMemo(() => {
     const out = [];
     if (!active || !notifCatalog) return out;
+    // Remaining linked alerts stay on the transporte unless Desvincular removed them.
     (notifCatalog.linked || []).forEach((n) => {
-      if (selectedLinked[notifKey(n)]) {
-        out.push({
-          resourceId: n.resourceId,
-          notifId: n.notifId,
-          name: n.name,
-          triggerType: n.triggerType,
-          kind: "vinculada",
-        });
-      }
+      out.push({
+        resourceId: n.resourceId,
+        notifId: n.notifId,
+        name: n.name,
+        triggerType: n.triggerType,
+        kind: "vinculada",
+      });
     });
     (notifCatalog.canonical || []).forEach((t) => {
       // Switched off: never linked nor enabled in Wialon, regardless of a pick.
@@ -241,7 +305,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
       }
     });
     return out;
-  }, [active, notifCatalog, selectedLinked, selectedCanonical, disabledCanonical]);
+  }, [active, notifCatalog, selectedCanonical, disabledCanonical]);
 
   useEffect(() => {
     onChangeRef.current?.(selectedNotificaciones);
@@ -249,7 +313,18 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
 
   if (!active) return null;
 
+  const linkedCount = (notifCatalog?.linked || []).length;
+  const unlinkAllBusy = unlinkingKey === "__all__";
+  const pendingBusy =
+    pendingUnlink?.mode === "all"
+      ? unlinkAllBusy
+      : pendingUnlink?.notif
+        ? unlinkingKey === notifKey(pendingUnlink.notif)
+        : false;
+  const pendingLabel = pendingUnlink?.notif?.name || "esta alerta";
+
   return (
+    <>
     <div className="notif-picker">
       <div className="notif-picker__header">
         <i className="fa-solid fa-bell"></i>
@@ -293,53 +368,68 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
         <>
           <div className="notif-group notif-group--linked">
             <div className="notif-group__title">
-              Vinculadas a este GPS
-              <span className="notif-group__count">{(notifCatalog.linked || []).length}</span>
+              <span className="notif-group__title-text">
+                Vinculadas a este GPS
+                <span className="notif-group__count">{linkedCount}</span>
+              </span>
+              {linkedCount > 0 && (
+                <button
+                  type="button"
+                  className="notif-group__unlink-all"
+                  disabled={!!unlinkingKey}
+                  onClick={requestUnlinkAllLinked}
+                >
+                  {unlinkAllBusy ? "Desvinculando…" : "Desvincular todas"}
+                </button>
+              )}
             </div>
             <p className="notif-group__lead">
-              Alertas que este GPS ya tiene en Wialon, antes de elegir nuevas. Márcalas para
-              dejarlas encendidas en este transporte.
+              Ya vinculadas en Wialon. Se conservan en este transporte; Desvincular las quita del GPS ahora.
             </p>
-            {(notifCatalog.linked || []).length === 0 ? (
+            {linkedCount === 0 ? (
               <div className="notif-empty">Este GPS no tiene alertas vinculadas todavía.</div>
             ) : (
-              <div className="notif-list">
+              <div className="linked-notif-list">
                 {notifCatalog.linked.map((n) => {
                   const key = notifKey(n);
-                  const checked = !!selectedLinked[key];
+                  const busy = unlinkingKey === key || unlinkAllBusy;
                   const typeLabel = TRIGGER_LABELS[n.triggerType] || n.triggerType || "Alerta";
                   const detail = explainLinked(n);
+                  const meta = [
+                    typeLabel,
+                    n.enabled ? "Encendida" : "Apagada",
+                    n.unitCount === 1 ? "1 GPS" : `${n.unitCount} GPS`,
+                  ].join(" · ");
                   return (
-                    <label
-                      key={key}
-                      className={`notif-item ${checked ? "selected" : ""}`}
-                      title={detail}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => setSelectedLinked((prev) => ({...prev, [key]: !prev[key]}))}
-                      />
-                      <span
-                        className="notif-item__icon"
-                        style={{background: TRIGGER_COLORS[n.triggerType] || "#94a3b8"}}
-                        aria-hidden="true"
-                      >
-                        <i className={`fa-solid ${TRIGGER_ICONS[n.triggerType] || "fa-bell"}`}></i>
-                      </span>
-                      <span className="notif-item__name" title={n.name}>
-                        {n.name}
-                      </span>
-                      <span className="notif-item__aside">
-                        <span className="notif-chip">{typeLabel}</span>
-                        <span className={`notif-chip ${n.enabled ? "is-on" : "is-off"}`}>
-                          {n.enabled ? "Encendida" : "Apagada"}
+                    <div key={key} className="linked-notif" title={detail}>
+                      <div className="linked-notif__row">
+                        <span
+                          className="linked-notif__icon"
+                          style={{background: TRIGGER_COLORS[n.triggerType] || "#94a3b8"}}
+                          aria-hidden="true"
+                        >
+                          <i className={`fa-solid ${TRIGGER_ICONS[n.triggerType] || "fa-bell"}`}></i>
                         </span>
-                        <span className="notif-chip">
-                          {n.unitCount === 1 ? "1 GPS" : `${n.unitCount} GPS`}
-                        </span>
-                      </span>
-                    </label>
+                        <div className="linked-notif__body">
+                          <div className="linked-notif__name">{n.name}</div>
+                          <div className="linked-notif__meta">{meta}</div>
+                        </div>
+                        <button
+                          type="button"
+                          className="linked-notif__unlink"
+                          disabled={busy || !!unlinkingKey}
+                          onClick={() => requestUnlinkLinked(n)}
+                          title="Quitar este GPS de la alerta en Wialon"
+                        >
+                          {busy ? (
+                            <i className="fa fa-spinner fa-spin" aria-hidden="true"></i>
+                          ) : (
+                            <i className="fa-solid fa-link-slash" aria-hidden="true"></i>
+                          )}
+                          <span>{busy ? "…" : "Desvincular"}</span>
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -453,6 +543,52 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange}) =>
         </div>
       )}
     </div>
+
+    <ModalTemplate
+      show={!!pendingUnlink}
+      elevated
+      width={440}
+      formId="unlink-linked-notif-form"
+      title={pendingUnlink?.mode === "all" ? "Desvincular todas" : "Desvincular alerta"}
+      onClose={() => {
+        if (pendingBusy) return;
+        setPendingUnlink(null);
+      }}
+      onSubmit={confirmUnlinkLinked}
+      cancelText="Cancelar"
+      submitText={
+        pendingBusy
+          ? "Desvinculando…"
+          : pendingUnlink?.mode === "all"
+            ? "Desvincular todas"
+            : "Desvincular"
+      }
+      submitClass="btn btn-danger"
+      submitDisabled={pendingBusy}
+    >
+      {pendingUnlink?.mode === "all" ? (
+        <>
+          <p>
+            ¿Quitar este GPS de las <strong>{pendingUnlink.count}</strong> alertas
+            vinculadas en Wialon?
+          </p>
+          <p className="text-muted small mb-0">
+            Se desvinculan ahora, antes de guardar el transporte. La lista quedará vacía.
+          </p>
+        </>
+      ) : (
+        <>
+          <p>
+            ¿Quitar este GPS de la alerta <strong>{pendingLabel}</strong> en Wialon?
+          </p>
+          <p className="text-muted small mb-0">
+            Se desvincula ahora, antes de guardar el transporte. La alerta se quita de la lista
+            vinculada de este GPS.
+          </p>
+        </>
+      )}
+    </ModalTemplate>
+    </>
   );
 };
 
