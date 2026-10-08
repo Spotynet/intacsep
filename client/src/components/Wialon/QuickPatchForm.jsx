@@ -175,7 +175,7 @@ const QuickPatchForm = forwardRef(({ unit, eventTypes, onSuccess, onCancel }, re
     if (unit?.eventName && !formData.descripcion) {
       setFormData(prev => ({
         ...prev,
-        descripcion: `Alerta Wialon: ${unit.eventName}`
+        descripcion: `Alerta Intacsep: ${unit.eventName}`
       }));
     }
 

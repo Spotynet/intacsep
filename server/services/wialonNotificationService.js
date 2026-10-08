@@ -197,11 +197,10 @@ function rankCandidates(candidates, hint, knownResources) {
 export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
   const wanted = [...new Set(unitIds.map(String).filter(Boolean))];
 
-  // The wizard only searches from 2 characters on. Below that we return the
-  // groups and their counts without the candidate payload, so the first paint
-  // is cheap and the dropdowns stay empty until the user actually types.
+  // Optional name filter (q). Even without q we return a ranked preview of
+  // candidates so the wizard dropdowns are usable right after picking a GPS.
   const qNorm = norm(q);
-  const lite = qNorm.length < 2;
+  const searched = qNorm.length >= 2;
 
   const { unitMap, all, orphanInfo } = await getCatalogSnapshot();
 
@@ -234,24 +233,24 @@ export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
         !n.units.some((u) => wantedSet.has(String(u))) &&
         (n.units.length === 0 || n.units.every((u) => orphanInfo.set.has(String(u))))
     );
-    if (qNorm) pool = pool.filter((n) => norm(n.name).includes(qNorm));
-    const ranked = lite ? pool : rankCandidates(pool, hint, knownResources);
+    if (searched) pool = pool.filter((n) => norm(n.name).includes(qNorm));
+    const ranked = rankCandidates(pool, hint, knownResources);
     return {
       key: t.key,
       label: t.label,
       triggerType: t.triggerType,
       total: pool.length,
-      searched: !lite,
-      candidates: lite
-        ? []
-        : ranked.slice(0, CANDIDATES_PER_TYPE).map((n) => ({
-            resourceId: n.resourceId,
-            resourceName: n.resourceName,
-            notifId: n.notifId,
-            name: n.name,
-            enabled: n.enabled,
-            unitCount: n.units.length,
-          })),
+      searched,
+      // Keep `lite` for older clients that still key off it.
+      lite: !searched,
+      candidates: ranked.slice(0, CANDIDATES_PER_TYPE).map((n) => ({
+        resourceId: n.resourceId,
+        resourceName: n.resourceName,
+        notifId: n.notifId,
+        name: n.name,
+        enabled: n.enabled,
+        unitCount: n.units.length,
+      })),
     };
   });
 
@@ -259,7 +258,7 @@ export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
     units: unitStatus,
     linked,
     canonical,
-    lite,
+    lite: !searched,
     pruneEnabled: orphanInfo.prunedEnabled,
     candidatesPerType: CANDIDATES_PER_TYPE,
   };

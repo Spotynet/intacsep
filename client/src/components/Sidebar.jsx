@@ -316,7 +316,7 @@ const Sidebar = () => {
                       {showEventosWialon && (
                         <li onClick={() => navigate("/eventos-wialon")} className={isActive("/eventos-wialon") ? "active" : ""}>
                           <i className="fa fa-satellite-dish"></i>
-                          <span>Alertas Wialon</span>
+                          <span>Alertas Intacsep</span>
                           {summaryCounts?.currentAlerts != null && (
                             <span className="sidebar-badge sidebar-badge--alert">
                               {summaryCounts.currentAlerts}
@@ -327,7 +327,7 @@ const Sidebar = () => {
                       {showMapWialon && (
                         <li onClick={() => navigate("/map-wialon")} className={isActive("/map-wialon") ? "active" : ""}>
                           <i className="fa fa-map-marked-alt"></i>
-                          <span>Mapa Wialon</span>
+                          <span>Mapa Intacsep</span>
                           {summaryCounts?.activeUnits != null && (
                             <span className="sidebar-badge sidebar-badge--unit">
                               {summaryCounts.activeUnits}

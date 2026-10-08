@@ -18,23 +18,18 @@ const norm = (s) =>
     .replace(/[^a-z0-9]/g, "");
 
 // Keep in sync with client/src/utils/wialonUtils.js PATTERN_TARGETS.
+// Estadia dentro/fuera → always "Estadía" (authorization is unknown at alert time).
 const PATTERN_TARGETS = [
   { test: (n) => n.includes("gpsnoposiciona") || n === "gpsoff", prefer: "Gps no posiciona" },
   { test: (n) => n.includes("desvioderuta"), prefer: "Desvió de ruta" },
   {
-    test: (n) => n.includes("estadia") && n.includes("fuera"),
-    prefer: "Estadia no Autorizada",
+    test: (n) => n.includes("estadia"),
+    prefer: "Estadía",
+    forceNombre: true,
+    // Catalog may still only have Autorizada / no Autorizada — use those for
+    // metadata, but document the event as "Estadía".
+    fallbackPrefer: ["Estadia Autorizada", "Estadia no Autorizada"],
   },
-  {
-    test: (n) => n.includes("estadia") && n.includes("dentro") && n.includes("noautorizada"),
-    prefer: "Estadia no Autorizada",
-  },
-  {
-    test: (n) => n.includes("estadia") && n.includes("dentro"),
-    prefer: "Estadia Autorizada",
-  },
-  { test: (n) => n.includes("estadianoautorizada"), prefer: "Estadia no Autorizada" },
-  { test: (n) => n.includes("estadiaautorizada"), prefer: "Estadia Autorizada" },
   {
     test: (n) => n.includes("excesodevelocidad") || n === "speeding" || n.includes("exceso"),
     prefer: "Exceso de Velocidad",
@@ -57,9 +52,20 @@ function findEventTypeByName(eventTypes, preferredName) {
   const target = norm(preferredName);
   const exact = eventTypes.filter((et) => norm(et.evento) === target);
   if (exact.length) return exact.sort((a, b) => a.evento.length - b.evento.length)[0];
+  // Soft: phrase prefix only (space after preferred name), never glued compounds
+  // like "estadia" → "estadiaautorizada".
+  const prefLoose = String(preferredName)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
   const soft = eventTypes.filter((et) => {
-    const n = norm(et.evento);
-    return n === target || n.startsWith(target);
+    const rawLoose = String(et.evento || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+    return rawLoose === prefLoose || rawLoose.startsWith(`${prefLoose} `);
   });
   if (soft.length) return soft.sort((a, b) => a.evento.length - b.evento.length)[0];
   return null;
@@ -72,8 +78,18 @@ function findBestEventMatch(wialonName, eventTypes) {
   for (const rule of PATTERN_TARGETS) {
     if (!rule.test(nAlert)) continue;
     const preferred = typeof rule.prefer === "function" ? rule.prefer(nAlert) : rule.prefer;
-    const match = findEventTypeByName(eventTypes, preferred);
-    if (match) return match;
+    let match = findEventTypeByName(eventTypes, preferred);
+    if (!match && Array.isArray(rule.fallbackPrefer)) {
+      for (const fb of rule.fallbackPrefer) {
+        match = findEventTypeByName(eventTypes, fb);
+        if (match) break;
+      }
+    }
+    if (!match) continue;
+    if (rule.forceNombre && preferred) {
+      return {...match, evento: preferred};
+    }
+    return match;
   }
 
   let best = null;
@@ -108,9 +124,18 @@ function formatDuration(seconds) {
   return `Hace ${days}d`;
 }
 
+// Server hosts run in UTC; without an explicit zone, toLocaleString("es-MX")
+// prints UTC wall-clock and "último posicionamiento" looks hours ahead of the
+// event time (which the browser formats in local Mexico time).
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Mexico_City";
+
 function formatPosTime(ts) {
   if (!ts) return "";
-  return new Date(Number(ts) * 1000).toLocaleString("es-MX");
+  return new Date(Number(ts) * 1000).toLocaleString("es-MX", {
+    timeZone: APP_TIMEZONE,
+    dateStyle: "short",
+    timeStyle: "short",
+  });
 }
 
 async function reverseGeocode(session, lon, lat) {
@@ -442,7 +467,7 @@ async function createEventFromAlert({
   bitacora.eventos.push({
     nombre: eventType.evento,
     descripcion,
-    registrado_por: "Sistema Wialon",
+    registrado_por: "Sistema Intacsep",
     frecuencia: 10,
     transportes: [transportePayload],
     wialonTriggeredAt: Number(triggeredAt) || null,

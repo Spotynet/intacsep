@@ -15,8 +15,8 @@ const BREADCRUMB_MAP = {
   "/planes-embarque":           ["Monitoreo", "Planes de Embarque"],
   "/buscador-plan":             ["Monitoreo", "Buscador de Plan"],
   "/placa-test":                ["Monitoreo", "Control de Patios"],
-  "/eventos-wialon":            ["Monitoreo", "Alertas Wialon"],
-  "/map-wialon":                ["Monitoreo", "Mapa Wialon"],
+  "/eventos-wialon":            ["Monitoreo", "Alertas Intacsep"],
+  "/map-wialon":                ["Monitoreo", "Mapa Intacsep"],
 
   // Configuración — Catálogos
   "/tipos_monitoreo":           ["Configuración", "Catálogos", "Tipos de Monitoreo"],

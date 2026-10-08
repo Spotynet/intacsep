@@ -7,7 +7,13 @@ const normalize = (str) => str?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/
 
 const useClickOutside = (ref, handler) => {
   useEffect(() => {
-    const listener = (e) => { if (ref.current && !ref.current.contains(e.target)) handler(); };
+    const listener = (e) => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      // Menu is portaled to document.body, so it is outside wrapRef.
+      if (target.closest?.(".pselect__menu")) return;
+      if (ref.current && !ref.current.contains(target)) handler();
+    };
     document.addEventListener("mousedown", listener);
     return () => document.removeEventListener("mousedown", listener);
   }, [ref, handler]);
@@ -157,9 +163,9 @@ export const Select = ({
             {loading ? "Buscando…" : emptyText}
           </li>
         ) : (
-          filtered.map((opt) => (
+          filtered.map((opt, idx) => (
             <li
-              key={opt.value}
+              key={`${String(opt.value ?? "")}-${idx}`}
               className={`pselect__option${opt.value === value ? " pselect__option--selected" : ""}`}
               onClick={() => handleSelect(opt)}
             >

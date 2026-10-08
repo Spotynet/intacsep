@@ -11,8 +11,8 @@ import {
 const explainLinked = (n) => {
   const type = TRIGGER_LABELS[n.triggerType] || n.triggerType || "Alerta";
   const state = n.enabled
-    ? "Está encendida en Wialon."
-    : "Está apagada en Wialon; se enciende al guardar el transporte.";
+    ? "Está encendida."
+    : "Está apagada; se enciende al guardar el transporte.";
   const cover =
     n.unitCount === 1
       ? "Solo vigila este GPS."
@@ -54,20 +54,20 @@ export const reportWialonSync = (sync, showToast) => {
         ? ` Sí se desvincularon ${unlinked.length}.`
         : "";
     showToast(
-      `${failed.length} alerta(s) con error en Wialon: ${detail}${more}.${ok}`,
+      `${failed.length} alerta(s) con error: ${detail}${more}.${ok}`,
       "error",
       15000
     );
   }
   if (linked.length > 0) {
-    showToast(`${linked.length} notificación(es) activada(s) en Wialon.`, "success");
+    showToast(`${linked.length} notificación(es) activada(s).`, "success");
   }
   if (unlinked.length > 0) {
     showToast(`${unlinked.length} notificación(es) desvinculada(s) del GPS.`, "success");
   }
   if (skippedUnits.length > 0) {
     showToast(
-      `GPS no encontrado en Wialon: ${skippedUnits.join(", ")}.`,
+      `GPS no encontrado: ${skippedUnits.join(", ")}.`,
       "warning",
       8000
     );
@@ -118,6 +118,16 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
     candidatesSeenRef.current = {};
   }, [open]);
 
+  // Reset search when the GPS selection changes so a previous filter does not
+  // hide the default candidate list for the newly selected unit.
+  useEffect(() => {
+    if (!open || !active) return;
+    if (prevUnitIdsRef.current == null) return;
+    if (prevUnitIdsRef.current === unitIdsKey) return;
+    setNotifQuery("");
+    setSelectedCanonical({});
+  }, [open, active, unitIdsKey]);
+
   useEffect(() => {
     if (!open || !active || !unitIdsKey) {
       setNotifLoading(false);
@@ -131,16 +141,16 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
     setNotifLoading(true);
 
     let cancelled = false;
+    const requestForUnits = unitIdsKey;
     const timer = setTimeout(async () => {
       setNotifError("");
       try {
         const hintText = hintRef.current || "";
-        // La búsqueda arranca con 2 caracteres: por debajo el servidor responde
-        // en modo "lite" (solo grupos y contadores), sin el listado de opciones.
+        // Optional filter: with q empty the server still returns ranked options.
         const query = notifQuery.trim().length >= 2 ? notifQuery.trim() : "";
         const url =
           `${baseUrl}/wialon/notifications/catalog` +
-          `?unitIds=${encodeURIComponent(unitIdsKey)}` +
+          `?unitIds=${encodeURIComponent(requestForUnits)}` +
           `&hint=${encodeURIComponent(hintText)}` +
           `&q=${encodeURIComponent(query)}`;
         const response = await fetch(url, {method: "GET", credentials: "include"});
@@ -149,49 +159,40 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
         if (cancelled) return;
 
         (data.canonical || []).forEach((t) => {
-          (t.candidates || []).forEach((c) => {
+          (Array.isArray(t.candidates) ? t.candidates : []).forEach((c) => {
+            if (c?.resourceId == null || c?.notifId == null) return;
             candidatesSeenRef.current[notifKey(c)] = {...c, triggerType: t.triggerType};
           });
         });
 
-        prevUnitIdsRef.current = unitIdsKey;
+        prevUnitIdsRef.current = requestForUnits;
         setNotifCatalog(data);
 
-        // Selections are re-validated only when the GPS selection changes:
-        // narrowing the search must never silently drop what the user picked.
+        // Drop picks that are no longer in the candidate list for this GPS.
         if (unitsChanged) {
-          const validLinked = new Set((data.linked || []).map(notifKey));
-          setSelectedLinked((prev) => {
+          setSelectedCanonical((prev) => {
             const next = {};
-            Object.keys(prev).forEach((k) => {
-              if (validLinked.has(k)) next[k] = true;
+            Object.entries(prev).forEach(([key, value]) => {
+              if (!value) return;
+              const type = (data.canonical || []).find((c) => c.key === key);
+              const candidates = type?.candidates || [];
+              const stillThere =
+                candidates.some((c) => notifKey(c) === value) ||
+                !!candidatesSeenRef.current[value];
+              if (stillThere) next[key] = value;
             });
             return next;
           });
-          // A lite response carries no candidates, so re-validating against it
-          // would drop every choice the user already made. Only a real search
-          // answer may prune the canonical selections.
-          if (!data.lite) {
-            setSelectedCanonical((prev) => {
-              const next = {};
-              Object.entries(prev).forEach(([key, value]) => {
-                if (!value) return;
-                const type = (data.canonical || []).find((c) => c.key === key);
-                if (type && type.candidates.some((c) => notifKey(c) === value)) next[key] = value;
-              });
-              return next;
-            });
-          }
         }
       } catch (e) {
         if (!cancelled) {
           setNotifCatalog(null);
-          setNotifError("No fue posible cargar las notificaciones de Wialon.");
+          setNotifError("No fue posible cargar las notificaciones.");
         }
       } finally {
         if (!cancelled) setNotifLoading(false);
       }
-    }, 450);
+    }, unitsChanged ? 150 : 450);
 
     return () => {
       cancelled = true;
@@ -331,7 +332,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
         <div>
           <div className="notif-picker__title">Notificaciones a activar</div>
           <div className="notif-picker__subtitle">
-            Alertas de Wialon que se vincularán y activarán para este transporte.
+            Alertas que se vincularán y activarán para este transporte.
           </div>
         </div>
         {notifLoading && <i className="fa fa-spinner fa-spin ms-auto"></i>}
@@ -352,7 +353,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
           <i className="fa fa-triangle-exclamation"></i>
           <span>
             {missingUnits.map((u) => u.name || u.id).join(", ")}{" "}
-            {missingUnits.length === 1 ? "no existe" : "no existen"} en Wialon: no{" "}
+            {missingUnits.length === 1 ? "no existe" : "no existen"} en el catálogo GPS: no{" "}
             {missingUnits.length === 1 ? "se le podrá" : "les podrán"} activar notificaciones.
           </span>
         </div>
@@ -360,7 +361,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
 
       {notifLoading && !notifCatalog && !notifError && (
         <div className="notif-empty">
-          <i className="fa fa-spinner fa-spin me-2"></i>Cargando notificaciones de Wialon…
+          <i className="fa fa-spinner fa-spin me-2"></i>Cargando notificaciones…
         </div>
       )}
 
@@ -384,7 +385,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
               )}
             </div>
             <p className="notif-group__lead">
-              Ya vinculadas en Wialon. Se conservan en este transporte; Desvincular las quita del GPS ahora.
+              Ya vinculadas. Se conservan en este transporte; Desvincular las quita del GPS ahora.
             </p>
             {linkedCount === 0 ? (
               <div className="notif-empty">Este GPS no tiene alertas vinculadas todavía.</div>
@@ -419,7 +420,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
                           className="linked-notif__unlink"
                           disabled={busy || !!unlinkingKey}
                           onClick={() => requestUnlinkLinked(n)}
-                          title="Quitar este GPS de la alerta en Wialon"
+                          title="Quitar este GPS de la alerta"
                         >
                           {busy ? (
                             <i className="fa fa-spinner fa-spin" aria-hidden="true"></i>
@@ -445,7 +446,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
                   type="text"
                   value={notifQuery}
                   onChange={(e) => setNotifQuery(e.target.value)}
-                  placeholder="Buscar por nombre (escribe 2+ letras)…"
+                  placeholder="Filtrar por nombre…"
                   aria-label="Buscar alerta"
                 />
                 {notifQuery && (
@@ -459,22 +460,25 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
               {(notifCatalog.canonical || []).map((t) => {
                 const isOff = !!disabledCanonical[t.key];
                 const value = selectedCanonical[t.key] || "";
-                const options = t.candidates.map((c) => ({
+                const candidates = Array.isArray(t.candidates) ? t.candidates : [];
+                const options = candidates.map((c) => ({
                   value: notifKey(c),
-                  label: `${c.name}${c.unitCount > 0 ? ` · ${c.unitCount} u.` : ""}`,
+                  label: `${c.name || "Alerta"}${c.unitCount > 0 ? ` · ${c.unitCount} u.` : ""}`,
                 }));
                 // While the search box is empty the catalog comes back without
                 // candidates: keep the option already picked on screen.
                 if (value && !options.some((o) => o.value === value)) {
                   const seen = candidatesSeenRef.current[value];
-                  if (seen) options.push({value, label: seen.name});
+                  if (seen) options.push({value, label: seen.name || "Alerta"});
                 }
                 const emptyText =
                   t.total === 0
                     ? "Sin candidatas disponibles"
-                    : notifQuery.trim().length < 2
-                      ? "Escribe 2+ letras para buscar"
-                      : "Sin resultados";
+                    : notifLoading
+                      ? "Cargando…"
+                      : notifQuery.trim().length >= 2
+                        ? "Sin coincidencias"
+                        : "Sin resultados";
                 return (
                   <div key={t.key} className={`notif-canonical__row${isOff ? " is-off" : ""}`}>
                     <span className="notif-canonical__label" title={t.label}>
@@ -488,18 +492,19 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
                         setSelectedCanonical((prev) => ({...prev, [t.key]: val || ""}))
                       }
                       placeholder={
-                        t.candidates.length > 0
-                          ? `Elegir (${t.candidates.length}${
-                              t.total > t.candidates.length ? ` de ${t.total}` : ""
+                        candidates.length > 0
+                          ? `Elegir (${candidates.length}${
+                              t.total > candidates.length ? ` de ${t.total}` : ""
                             })`
                           : t.total === 0
                             ? "Sin candidatas disponibles"
-                            : notifQuery.trim().length >= 2
-                              ? "Sin coincidencias"
-                              : "Escribe 2+ letras para buscar"
+                            : notifLoading
+                              ? "Cargando alertas…"
+                              : notifQuery.trim().length >= 2
+                                ? "Sin coincidencias"
+                                : "Sin candidatas disponibles"
                       }
-                      // Typing here searches the same catalog as the section bar,
-                      // so every dropdown filters to the text you typed.
+                      // Typing here searches the same catalog as the section bar.
                       onSearch={setNotifQuery}
                       loading={notifLoading}
                       emptyText={emptyText}
@@ -526,7 +531,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
             <div className="notif-hint">
               <i className="fa fa-circle-info"></i>
               <span>
-                Al guardar se vinculan al GPS y se activan. Si Wialon rechaza alguna porque el
+                Al guardar se vinculan al GPS y se activan. Si alguna se rechaza porque el
                 GPS no tiene acceso a ese recurso, se avisará con el motivo. Las unidades que ya
                 no pertenezcan a ninguna bitácora abierta se desvinculan automáticamente.
               </span>
@@ -570,7 +575,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
         <>
           <p>
             ¿Quitar este GPS de las <strong>{pendingUnlink.count}</strong> alertas
-            vinculadas en Wialon?
+            vinculadas?
           </p>
           <p className="text-muted small mb-0">
             Se desvinculan ahora, antes de guardar el transporte. La lista quedará vacía.
@@ -579,7 +584,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
       ) : (
         <>
           <p>
-            ¿Quitar este GPS de la alerta <strong>{pendingLabel}</strong> en Wialon?
+            ¿Quitar este GPS de la alerta <strong>{pendingLabel}</strong>?
           </p>
           <p className="text-muted small mb-0">
             Se desvincula ahora, antes de guardar el transporte. La alerta se quita de la lista

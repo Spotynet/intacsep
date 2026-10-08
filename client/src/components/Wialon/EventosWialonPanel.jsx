@@ -22,20 +22,23 @@ const fmtTime = (ts) => {
   return new Date(ts * 1000).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"});
 };
 
-const ALERT_EVENT_PREFIX = "Alerta Wialon: ";
+const ALERT_EVENT_PREFIX = "Alerta Intacsep: ";
+const ALERT_EVENT_PREFIX_LEGACY = "Alerta Wialon: ";
 const REGISTERED_SKEW_SEC = 120;
 
 /**
- * Whether this Wialon alert already has a matching bitácora evento for its latest trigger.
+ * Whether this alert already has a matching bitácora evento for its latest trigger.
  * - registrado: evento covers lastTriggeredAt (exact wialonTriggeredAt, else createdAt skew)
  * - pendiente: triggered but no covering evento yet
  * - sin_disparos: no last trigger in the lookback window
  */
 const getAlertRegistration = (row, bitacoraEventos = []) => {
   const expected = `${ALERT_EVENT_PREFIX}${row.name}`;
-  const matches = (bitacoraEventos || []).filter(
-    (e) => String(e.descripcion || "") === expected
-  );
+  const expectedLegacy = `${ALERT_EVENT_PREFIX_LEGACY}${row.name}`;
+  const matches = (bitacoraEventos || []).filter((e) => {
+    const d = String(e.descripcion || "");
+    return d === expected || d === expectedLegacy;
+  });
   const sortNewest = (list) =>
     [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 
@@ -63,7 +66,7 @@ const EMBEDDED_POLL_MS = 25000;
 // Wialon puede quedar inalcanzable desde el servidor; evita exponer el error crudo de fetch.
 const friendlyWialonError = (msg) =>
   /fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|network/i.test(msg || "")
-    ? "No se pudo conectar con la API de Wialon. El servidor puede estar sin salida a Wialon o Wialon no responde. Intenta de nuevo en unos segundos."
+    ? "No se pudo conectar con el servicio de alertas Intacsep. Intenta de nuevo en unos segundos."
     : msg;
 
 // Reusable Alertas Wialon panel.
@@ -200,7 +203,7 @@ const EventosWialonPanel = ({
     // Ignore synthetic click events from onClick={fetchNotifications}.
     const soft = Boolean(opts && typeof opts === "object" && !opts.nativeEvent && opts.soft);
     if (!token) {
-      setError("Token de Wialon no configurado.");
+      setError("Token de GPS no configurado.");
       setLoading(false);
       return;
     }
@@ -488,7 +491,7 @@ const EventosWialonPanel = ({
         credentials: "include",
         body: JSON.stringify({
           nombre: best.match.evento,
-          descripcion: `Alerta Wialon: ${notification.name}`,
+          descripcion: `Alerta Intacsep: ${notification.name}`,
           registrado_por: user ? `${user.firstName} ${user.lastName}` : "Sistema",
           frecuencia: 10,
           transportes: enriched,
@@ -703,8 +706,8 @@ const EventosWialonPanel = ({
                       : "—"
                   }`
                 : row.eventStatus === "pendiente"
-                ? "Disparada en Wialon; aún no hay evento en la bitácora"
-                : "Sin disparos recientes en Wialon";
+                ? "Disparada; aún no hay evento en la bitácora"
+                : "Sin disparos recientes";
               return (
                 <Tooltip text={tip} position="top">
                   <span>
@@ -944,7 +947,7 @@ const EventosWialonPanel = ({
           columns={columns}
           rowKey="_key"
           maxHeight="100%"
-          emptyMessage="No se encontraron alertas configuradas en Wialon."
+          emptyMessage="No se encontraron alertas configuradas."
           sortField={sortField}
           sortOrder={sortOrder}
           onSortChange={handleSortChange}
@@ -976,7 +979,7 @@ const EventosWialonPanel = ({
               </button>
               <h1 className="bits-header__title mb-0" style={{ fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center' }}>
                 <span className="bits-breadcrumb__ancestor" style={{ color: '#64748b', fontWeight: 400 }}>Monitoreo<span className="bits-breadcrumb__sep" style={{ margin: '0 4px', opacity: 0.5 }}>/</span></span>
-                <span className="bits-breadcrumb__ancestor" style={{ color: '#64748b', fontWeight: 400 }}>Alertas Wialon<span className="bits-breadcrumb__sep" style={{ margin: '0 4px', opacity: 0.5 }}>/</span></span>
+                <span className="bits-breadcrumb__ancestor" style={{ color: '#64748b', fontWeight: 400 }}>Alertas Intacsep<span className="bits-breadcrumb__sep" style={{ margin: '0 4px', opacity: 0.5 }}>/</span></span>
                 <span className="bits-breadcrumb__current" style={{ color: '#1e293b' }}>Crear nuevo evento</span>
               </h1>
             </div>
@@ -1043,7 +1046,7 @@ const EventosWialonPanel = ({
         {modals}
         <p className="eventos-wialon-panel__hint">
           Cada fila es una alerta vinculada a los GPS de esta bitácora. Una nueva disparada en
-          Wialon actualiza <strong>Último disparo</strong> y pasa a <strong>Pendiente</strong> hasta
+          Intacsep actualiza <strong>Último disparo</strong> y pasa a <strong>Pendiente</strong> hasta
           registrarse sola en Eventos (o con Controles).
         </p>
         <div className="eventos-wialon-panel__toolbar">
@@ -1080,7 +1083,7 @@ const EventosWialonPanel = ({
         </div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
           <PageHeader
-            title="Monitoreo - Alertas Wialon"
+            title="Monitoreo - Alertas Intacsep"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
             count={filteredNotifications.length}
             hasActiveFilters={hasActiveFilters}

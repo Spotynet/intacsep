@@ -1071,14 +1071,14 @@ const BitacorasPage = () => {
                           </Tooltip>
                           {hasAlert && (
                             <Tooltip
-                              text={`Alerta Wialon activa: ${alertNames.join(", ")}`}
+                              text={`Alerta Intacsep activa: ${alertNames.join(", ")}`}
                               position="top"
                             >
                               <i
                                 className="fa fa-bell bitacora-wialon-alert-bell"
                                 role="button"
                                 tabIndex={0}
-                                aria-label="Alerta Wialon activa"
+                                aria-label="Alerta Intacsep activa"
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   window.location.href = "/eventos-wialon";

@@ -89,6 +89,6 @@ export const TRIGGER_HINTS = {
 export const getTriggerLabel = (triggerType) => TRIGGER_LABELS[triggerType] || triggerType || "Desconocido";
 
 export const getTriggerHint = (triggerType) =>
-  TRIGGER_HINTS[triggerType] || "Aviso configurado en Wialon.";
+  TRIGGER_HINTS[triggerType] || "Aviso configurado en Intacsep.";
 
 export const getTriggerIcon = (triggerType) => TRIGGER_ICONS[triggerType] || "fa-bell";

@@ -90,8 +90,8 @@ const permLabels = {
   reporte_eventos:         "Reporte eventos",
   reporte_estadisticas:    "Reporte de puntualidad",
   reporte_control_patios:  "Control de patios",
-  eventos_wialon:          "Alertas Wialon",
-  map_wialon:              "Mapa Wialon",
+  eventos_wialon:          "Alertas Intacsep",
+  map_wialon:              "Mapa Intacsep",
 };
 
 const disabledPerms = {

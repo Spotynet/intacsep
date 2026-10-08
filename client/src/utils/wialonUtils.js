@@ -9,24 +9,16 @@ const normalize = (str) => {
 
 // Pattern → preferred EventType (matched flexibly against the catalog).
 // Order matters: more specific patterns first.
+// Estadia dentro/fuera → always "Estadía" (authorization unknown at alert time).
 const PATTERN_TARGETS = [
   { test: (n) => n.includes("gpsnoposiciona") || n === "gpsoff", prefer: "Gps no posiciona" },
   { test: (n) => n.includes("desvioderuta"), prefer: "Desvió de ruta" },
-  // Estadia: "fuera" / "no autorizada" → no autorizada; plain "dentro" → autorizada
   {
-    test: (n) => n.includes("estadia") && n.includes("fuera"),
-    prefer: "Estadia no Autorizada",
+    test: (n) => n.includes("estadia"),
+    prefer: "Estadía",
+    forceNombre: true,
+    fallbackPrefer: ["Estadia Autorizada", "Estadia no Autorizada"],
   },
-  {
-    test: (n) => n.includes("estadia") && n.includes("dentro") && n.includes("noautorizada"),
-    prefer: "Estadia no Autorizada",
-  },
-  {
-    test: (n) => n.includes("estadia") && n.includes("dentro"),
-    prefer: "Estadia Autorizada",
-  },
-  { test: (n) => n.includes("estadianoautorizada"), prefer: "Estadia no Autorizada" },
-  { test: (n) => n.includes("estadiaautorizada"), prefer: "Estadia Autorizada" },
   {
     test: (n) => n.includes("excesodevelocidad") || n === "speeding" || n.includes("exceso"),
     prefer: "Exceso de Velocidad",
@@ -82,9 +74,20 @@ const findEventTypeByName = (eventTypes, preferredName) => {
   if (exact.length) {
     return exact.sort((a, b) => a.evento.length - b.evento.length)[0];
   }
+  // Soft: phrase prefix only (space after preferred name), never glued compounds
+  // like "estadia" → "estadiaautorizada".
+  const prefLoose = String(preferredName)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
   const soft = eventTypes.filter((et) => {
-    const n = normalize(et.evento);
-    return n === target || n.startsWith(target);
+    const rawLoose = String(et.evento || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+    return rawLoose === prefLoose || rawLoose.startsWith(`${prefLoose} `);
   });
   if (soft.length) {
     return soft.sort((a, b) => a.evento.length - b.evento.length)[0];
@@ -101,8 +104,18 @@ export const findBestEventMatch = (wialonName, eventTypes) => {
   for (const rule of PATTERN_TARGETS) {
     if (!rule.test(normalizedAlert)) continue;
     const preferred = resolvePrefer(rule.prefer, normalizedAlert);
-    const match = findEventTypeByName(eventTypes, preferred);
-    if (match) return { match, source: "Mapeo directo", score: 1.0 };
+    let match = findEventTypeByName(eventTypes, preferred);
+    if (!match && Array.isArray(rule.fallbackPrefer)) {
+      for (const fb of rule.fallbackPrefer) {
+        match = findEventTypeByName(eventTypes, fb);
+        if (match) break;
+      }
+    }
+    if (!match) continue;
+    if (rule.forceNombre && preferred) {
+      match = {...match, evento: preferred};
+    }
+    return { match, source: "Mapeo directo", score: 1.0 };
   }
 
   // 2. Fuzzy / substring search — prefer shorter catalog names on ties

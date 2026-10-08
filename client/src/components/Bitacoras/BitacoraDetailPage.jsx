@@ -1771,7 +1771,7 @@ const BitacoraDetailPage = ({edited}) => {
                 <button
                   className={`tab-button ${activeTab === "alertas_wialon" ? "active" : ""}`}
                   onClick={() => handleTabClick("alertas_wialon")}>
-                  <span className="tab-title">Alertas Wialon</span>
+                  <span className="tab-title">Alertas Intacsep</span>
                   <span className="tab-subtitle">{bitacoraUnitIds.length} GPS</span>
                 </button>
               )}
@@ -2220,7 +2220,7 @@ const BitacoraDetailPage = ({edited}) => {
                                               {gps.name}
                                             </h6>
                                             <div className="info-group mb-1">
-                                              <label className="info-label small">ID Wialon:</label>
+                                              <label className="info-label small">ID GPS:</label>
                                               <span className="info-value small">
                                                 {gps.wialonId}
                                               </span>
@@ -2344,7 +2344,7 @@ const BitacoraDetailPage = ({edited}) => {
                   {bitacoraUnitIds.length === 0 ? (
                     <div className="eventos-empty">
                       <i className="fa fa-bell"></i>
-                      <p>Sin GPS asociados; no hay alertas Wialon que mostrar.</p>
+                      <p>Sin GPS asociados; no hay alertas Intacsep que mostrar.</p>
                     </div>
                   ) : mountedTabs.has("alertas_wialon") ? (
                     <EventosWialonPanel
@@ -3056,7 +3056,7 @@ const BitacoraDetailPage = ({edited}) => {
             <strong>{getTransporteLabel(gpsNotifModal.transporte)}</strong>?
           </p>
           <p className="text-muted small mb-0">
-            Se quitará de todos sus GPS en Wialon y del registro de este transporte.
+            Se quitará de todos sus GPS y del registro de este transporte.
           </p>
         </ModalTemplate>
       )}
@@ -3078,7 +3078,7 @@ const BitacoraDetailPage = ({edited}) => {
             <div className="gps-notif-modal__meta">
               <span>
                 <i className="fa fa-satellite-dish me-1"></i>
-                ID Wialon: <strong>{gpsNotifModal.gps.wialonId}</strong>
+                ID GPS: <strong>{gpsNotifModal.gps.wialonId}</strong>
               </span>
               <span>
                 Transporte:{" "}

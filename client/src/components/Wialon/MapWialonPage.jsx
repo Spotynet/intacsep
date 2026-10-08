@@ -43,7 +43,7 @@ const MapWialonPage = () => {
         </div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
           <PageHeader
-            title="Mapa Wialon"
+            title="Mapa Intacsep"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
           >
             <input

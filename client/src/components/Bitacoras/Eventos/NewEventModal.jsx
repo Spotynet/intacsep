@@ -765,7 +765,7 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
 
         <div className="new-event-modal-split__map">
           <div className="new-event-modal-split__map-label">
-            Mapa Wialon
+            Mapa Intacsep
             {mapUnitIds.length > 0
               ? ` · ${mapUnitIds.length} GPS`
               : ""}
