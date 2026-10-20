@@ -2,6 +2,17 @@
 
 const baseUrl = import.meta.env.VITE_BASE_URL;
 
+// Shared fetch wrapper: retries once after refreshing the access token on 401
+const authFetch = async (url, options = {}) => {
+  const opts = { credentials: "include", ...options };
+  let res = await fetch(url, opts);
+  if (res.status === 401) {
+    await fetch(`${baseUrl}/refresh_token`, { method: "POST", credentials: "include" });
+    res = await fetch(url, opts);
+  }
+  return res;
+};
+
 export const fetchOrigenes = async (cliente = null) => {
   try {
     let url = `${baseUrl}/origenes`;
@@ -9,10 +20,7 @@ export const fetchOrigenes = async (cliente = null) => {
       url += `?cliente=${encodeURIComponent(cliente)}`;
     }
 
-    const response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-    });
+    const response = await authFetch(url, { method: "GET" });
     if (!response.ok) throw new Error("Failed to fetch origenes");
     return await response.json();
   } catch (e) {
@@ -28,10 +36,7 @@ export const fetchDestinos = async (cliente = null) => {
       url += `?cliente=${encodeURIComponent(cliente)}`;
     }
 
-    const response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-    });
+    const response = await authFetch(url, { method: "GET" });
     if (!response.ok) throw new Error("Failed to fetch destinos");
     return await response.json();
   } catch (e) {
@@ -47,10 +52,7 @@ export const fetchOperadores = async (lineaTransporte = null) => {
       url += `?lineaTransporte=${encodeURIComponent(lineaTransporte)}`;
     }
 
-    const response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-    });
+    const response = await authFetch(url, { method: "GET" });
     if (!response.ok) throw new Error("Failed to fetch operadores");
     return await response.json();
   } catch (e) {
@@ -66,10 +68,7 @@ export const fetchLineasTransporte = async (cliente = null) => {
       url += `?cliente=${encodeURIComponent(cliente)}`;
     }
 
-    const response = await fetch(url, {
-      method: "GET",
-      credentials: "include",
-    });
+    const response = await authFetch(url, { method: "GET" });
     if (!response.ok) throw new Error("Failed to fetch lineas transporte");
     return await response.json();
   } catch (e) {
@@ -80,7 +79,7 @@ export const fetchLineasTransporte = async (cliente = null) => {
 
 export const fetchUsers = async () => {
   try {
-    const response = await fetch(`${baseUrl}/users/`, {
+    const response = await authFetch(`${baseUrl}/users/`, {
       method: "GET",
       credentials: "include",
     });
@@ -117,6 +116,8 @@ export const fetchBitacoras = async (
   // Add all filter parameters
   if (filters.statusFilter) params.append("statusFilter", filters.statusFilter);
   if (filters.creationDateFilter) params.append("creationDateFilter", filters.creationDateFilter);
+  if (filters.fechaDesde) params.append("fechaDesde", filters.fechaDesde);
+  if (filters.fechaHasta) params.append("fechaHasta", filters.fechaHasta);
   if (filters.clienteFilter) params.append("clienteFilter", filters.clienteFilter);
   if (filters.monitoreoFilter) params.append("monitoreoFilter", filters.monitoreoFilter);
   if (filters.operadorFilter) params.append("operadorFilter", filters.operadorFilter);
@@ -124,7 +125,7 @@ export const fetchBitacoras = async (
   if (filters.sortField) params.append("sortField", filters.sortField);
   if (filters.sortOrder) params.append("sortOrder", filters.sortOrder);
 
-  const response = await fetch(`${baseUrl}/bitacoras?${params.toString()}`, {
+  const response = await authFetch(`${baseUrl}/bitacoras?${params.toString()}`, {
     credentials: "include",
   });
 
@@ -132,10 +133,28 @@ export const fetchBitacoras = async (
   return data;
 };
 
+// Returns { byId: { <bitacoraMongoId>: [enabledAlertName, ...] } } for OPEN
+// bitácoras whose transporte GPS units are covered by any ENABLED Wialon
+// notification rule. Soft-fails to { byId: {} } on error.
+export const fetchOpenBitacorasWithWialonAlerts = async () => {
+  try {
+    const response = await authFetch(`${baseUrl}/wialon/open-bitacoras-with-alerts`, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) return { byId: {} };
+    const data = await response.json();
+    return data && typeof data.byId === "object" && data.byId !== null ? data : { byId: {} };
+  } catch (e) {
+    console.error("Error fetching open bitácoras with Wialon alerts:", e);
+    return { byId: {} };
+  }
+};
+
 
 export const fetchClients = async (userRoleData = null) => {
   try {
-    const response = await fetch(`${baseUrl}/clients`, {
+    const response = await authFetch(`${baseUrl}/clients`, {
       method: "GET",
       credentials: "include",
     });
@@ -157,7 +176,7 @@ export const fetchClients = async (userRoleData = null) => {
 
 export const fetchMonitoreos = async () => {
   try {
-    const response = await fetch(`${baseUrl}/monitoreos`, {
+    const response = await authFetch(`${baseUrl}/monitoreos`, {
       method: "GET",
       credentials: "include",
     });
@@ -207,7 +226,7 @@ export const getLocationText = (field, list) => {
 
 export const fetchIntegrations = async () => {
   try {
-    const response = await fetch(`${baseUrl}/integrations`, {
+    const response = await authFetch(`${baseUrl}/integrations`, {
       method: "GET",
       credentials: "include",
     });
@@ -221,7 +240,7 @@ export const fetchIntegrations = async () => {
 
 export const createIntegration = async (data) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations`, {
+    const response = await authFetch(`${baseUrl}/integrations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -237,7 +256,7 @@ export const createIntegration = async (data) => {
 
 export const updateIntegration = async (id, data) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations/${id}`, {
+    const response = await authFetch(`${baseUrl}/integrations/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -253,7 +272,7 @@ export const updateIntegration = async (id, data) => {
 
 export const deleteIntegration = async (id) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations/${id}`, {
+    const response = await authFetch(`${baseUrl}/integrations/${id}`, {
       method: "DELETE",
       credentials: "include",
     });
@@ -267,7 +286,7 @@ export const deleteIntegration = async (id) => {
 
 export const fetchVehicleMappings = async (integrationId) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations/${integrationId}/vehicles`, {
+    const response = await authFetch(`${baseUrl}/integrations/${integrationId}/vehicles`, {
       method: "GET",
       credentials: "include",
     });
@@ -281,7 +300,7 @@ export const fetchVehicleMappings = async (integrationId) => {
 
 export const upsertVehicleMappings = async (integrationId, vehicles) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations/${integrationId}/vehicles`, {
+    const response = await authFetch(`${baseUrl}/integrations/${integrationId}/vehicles`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ vehicles }),
@@ -297,7 +316,7 @@ export const upsertVehicleMappings = async (integrationId, vehicles) => {
 
 export const importToWialon = async (integrationId, mappingIds = []) => {
   try {
-    const response = await fetch(`${baseUrl}/integrations/${integrationId}/import-to-wialon`, {
+    const response = await authFetch(`${baseUrl}/integrations/${integrationId}/import-to-wialon`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mappingIds }),
@@ -312,7 +331,7 @@ export const importToWialon = async (integrationId, mappingIds = []) => {
 };
 
 export const testInbound = async (integrationId, body = {}) => {
-  const response = await fetch(`${baseUrl}/integrations/${integrationId}/test-inbound`, {
+  const response = await authFetch(`${baseUrl}/integrations/${integrationId}/test-inbound`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -322,7 +341,7 @@ export const testInbound = async (integrationId, body = {}) => {
 };
 
 export const flushWialon = async (integrationId) => {
-  const response = await fetch(`${baseUrl}/integrations/${integrationId}/flush-wialon`, {
+  const response = await authFetch(`${baseUrl}/integrations/${integrationId}/flush-wialon`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",

@@ -1,67 +1,66 @@
-import React, {useState} from "react";
+import React, {useState, useEffect} from "react";
+import {useWialon} from "../../context/WialonProvider";
 
 const WialonLogin = () => {
+  const {session, loading, error} = useWialon();
   const [loginStatus, setLoginStatus] = useState("");
   const [userName, setUserName] = useState("");
 
-  // Get the token from the environment variable
-  const token = import.meta.env.VITE_WIALON_TOKEN;
+  useEffect(() => {
+    if (loading) {
+      setLoginStatus("Initializing Wialon session...");
+    } else if (error) {
+      setLoginStatus(`Error: ${error}`);
+    } else if (session) {
+      const user = session.getCurrUser();
+      if (user) {
+        setLoginStatus("Logged in");
+        setUserName(user.getName());
+      } else {
+        setLoginStatus("Session available but no user");
+      }
+    }
+  }, [session, loading, error]);
 
   const login = () => {
-    const sess = window.wialon.core.Session.getInstance(); // Get instance of current session
-    const user = sess.getCurrUser(); // Get current user
-
+    if (!session) {
+      setLoginStatus("No session available. Wait for initialization.");
+      return;
+    }
+    const user = session.getCurrUser();
     if (user) {
-      setLoginStatus(`You are logged in as '${user.getName()}', click logout first`);
-      return;
+      setLoginStatus(`Already logged in as '${user.getName()}'`);
+      setUserName(user.getName());
+    } else {
+      setLoginStatus("Session exists but no user. Provider should handle login.");
     }
-
-    if (!token) {
-      setLoginStatus("Token not found in environment variables.");
-      return;
-    }
-
-    setLoginStatus(`Trying to login with token '${token}'...`);
-    sess.initSession("https://hst-api.wialon.com"); // Initialize Wialon session
-
-    sess.loginToken(token, "", (code) => {
-      if (code) {
-        setLoginStatus(`Login failed: ${window.wialon.core.Errors.getErrorText(code)}`);
-      } else {
-        setLoginStatus("Logged in successfully!");
-        const user = sess.getCurrUser();
-        if (user) {
-          setUserName(user.getName());
-        }
-      }
-    });
   };
 
   const logout = () => {
-    const sess = window.wialon.core.Session.getInstance();
-    const user = sess.getCurrUser();
+    if (!session) return;
+    const user = session.getCurrUser();
     if (!user) {
-      setLoginStatus("You are not logged in, click 'login' first.");
+      setLoginStatus("Not logged in.");
       return;
     }
-
-    sess.logout((code) => {
+    session.logout((code) => {
       if (code) {
         setLoginStatus(`Logout failed: ${window.wialon.core.Errors.getErrorText(code)}`);
       } else {
-        setLoginStatus("Logged out successfully!");
-        setUserName(""); // Clear the current user name
+        setLoginStatus("Logged out.");
+        setUserName("");
       }
     });
   };
 
   const getUser = () => {
-    const sess = window.wialon.core.Session.getInstance();
-    const user = sess.getCurrUser();
+    if (!session) return;
+    const user = session.getCurrUser();
     if (!user) {
-      setLoginStatus("You are not logged in, click 'login' first.");
+      setLoginStatus("Not logged in.");
     } else {
-      setLoginStatus(`You are logged in as '${user.getName()}'`);
+      setLoginStatus(`Logged in as '${user.getName()}'`);
+      setUserName(user.getName());
     }
   };
 

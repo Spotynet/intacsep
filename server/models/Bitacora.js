@@ -27,12 +27,20 @@ const TransporteSchema = new mongoose.Schema(
     gpsUnits: [{
       wialonId: { type: String, required: true },
       name: { type: String },
-      data: { type: Object }
     }],
     gpsData: [{
       wialonId: { type: String },
       name: { type: String },
       data: { type: Object }
+    }],
+    // Wialon notifications selected for this transporte (applied on creation)
+    notificaciones: [{
+      resourceId: { type: Number, required: true },
+      notifId: { type: Number, required: true },
+      name: { type: String, default: "" },
+      triggerType: { type: String, default: "" },
+      kind: { type: String, enum: ["vinculada", "canonica"], default: "vinculada" },
+      appliedAt: { type: Date, default: Date.now },
     }],
     registro: {
       ubicacion: { type: String, default: "" },
@@ -55,6 +63,11 @@ const EventoSchema = new mongoose.Schema(
     transportes: [TransporteSchema],
     // Structured extra data (used by "Plan de embarque" evento and similar)
     metadata: { type: Object, default: null },
+    // Wialon auto-event linkage (Alertas tab Registrado match)
+    wialonTriggeredAt: { type: Number, default: null },
+    wialonResourceId: { type: Number, default: null },
+    wialonNotifId: { type: Number, default: null },
+    wialonUnitId: { type: String, default: null },
   },
   { timestamps: true }
 );
@@ -140,6 +153,11 @@ BitSchema.index({ deleted: 1, cliente: 1 });
 BitSchema.index({ deleted: 1, status: 1 });
 BitSchema.index({ deleted: 1, createdAt: -1 });
 BitSchema.index({ deleted: 1, bitacora_id: -1 });
+BitSchema.index({ deleted: 1, operador: 1, createdAt: -1 });
+BitSchema.index({ deleted: 1, linea_transporte: 1, createdAt: -1 });
+BitSchema.index({ "transportes.lineaTransporte": 1 });
+BitSchema.index({ "transportes.operador": 1 });
+BitSchema.index({ "eventos.nombre": 1 });
 
 const Bitacora = mongoose.model("Bitacora", BitSchema);
 export default Bitacora;

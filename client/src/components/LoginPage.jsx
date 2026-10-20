@@ -6,28 +6,20 @@ const Login = () => {
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const navigate = useNavigate();
   const {login} = useAuth();
-  const [isRegistered, setIsRegistered] = useState(true);
-  const [formData, setFormData] = useState({
-    email: "",
-    password: "",
-    firstName: "",
-    lastName: "",
-    phone: "",
-  });
+  const [formData, setFormData] = useState({email: "", password: ""});
   const [errorMessage, setErrorMessage] = useState("");
-  const [isLoading, setIsLoading] = useState(false); // Loading state
-  //RESET PWD
+  const [isLoading, setIsLoading] = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const [resetEmail, setResetEmail] = useState("");
   const [resetError, setResetError] = useState("");
   const [resetSuccess, setResetSuccess] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
 
   const requestPasswordReset = async (e) => {
     e.preventDefault();
     setResetError("");
     setResetSuccess("");
     setIsLoading(true);
-
     try {
       const response = await fetch(`${baseUrl}/request-reset-password`, {
         method: "POST",
@@ -35,321 +27,168 @@ const Login = () => {
         body: JSON.stringify({email: resetEmail}),
       });
       const data = await response.json();
-      setIsLoading(false);
-
       if (response.ok) {
-        setResetSuccess("Email de cambio de contraseña enviado!");
+        setResetSuccess("Enlace enviado. Revisa tu correo.");
       } else {
-        setResetError(data.message || "Error al enviar link");
+        setResetError(data.message || "Error al enviar enlace.");
       }
-    } catch (error) {
+    } catch {
+      setResetError("Error de conexión. Intenta nuevamente.");
+    } finally {
       setIsLoading(false);
-      setResetError("Failed to send reset email");
     }
   };
 
   const handleForm = (e) => {
     const {name, value} = e.target;
-    setFormData((prevData) => ({
-      ...prevData,
-      [name]: value,
-    }));
-  };
-
-  const registerUser = async (e) => {
-    e.preventDefault();
-    setErrorMessage("");
-    setIsLoading(true); // Set loading state
-
-    const response = await fetch(`${baseUrl}/register`, {
-      method: "POST",
-      headers: {"content-type": "application/json"},
-      body: JSON.stringify(formData),
-    });
-
-    const data = await response.json();
-    setIsLoading(false); // Reset loading state
-
-    if (response.status === 200) {
-      setIsRegistered(true);
-    } else {
-      setErrorMessage(data.message || "Error registering user");
-    }
+    setFormData((prev) => ({...prev, [name]: value}));
+    if (errorMessage) setErrorMessage("");
   };
 
   const loginUser = async (e) => {
     e.preventDefault();
     setErrorMessage("");
-    setIsLoading(true); // Set loading state
-
+    setIsLoading(true);
     try {
-      await login(formData.email, formData.password); // Ensure this throws an error on failure
-      // Only navigate if login is successful
-      // navigate("/bitacoras");
-    } catch (e) {
-      // Handle the error and navigate to the appropriate page
-      navigate("/"); // Navigate only if there's an error
+      await login(formData.email, formData.password);
+    } catch {
+      setErrorMessage("Correo o contraseña incorrectos.");
+      navigate("/");
     } finally {
-      setIsLoading(false); // Reset loading state
+      setIsLoading(false);
     }
-  };
-
-  const setForm = () => {
-    if (!isRegistered) {
-      return (
-        <section id="login">
-          <div className="container col justify-content-center align-items-center bg-white">
-            <img src="./logo1.png" alt="logo" width={50} />
-            <p>Registrarse</p>
-            <form
-              onSubmit={registerUser}
-              className="d-flex flex-column justify-content-center align-items-center">
-              <div className="form-floating mb-3">
-                <input
-                  type="email"
-                  name="email"
-                  className="form-control"
-                  id="email"
-                  placeholder="name@example.com"
-                  required
-                  onChange={handleForm}
-                  value={formData.email}
-                />
-                <label htmlFor="email">Email</label>
-              </div>
-              <div className="form-floating mb-3">
-                <input
-                  type="text"
-                  name="firstName"
-                  className="form-control"
-                  id="firstName"
-                  placeholder="nombre"
-                  required
-                  onChange={handleForm}
-                  value={formData.firstName}
-                />
-                <label htmlFor="firstName">Nombre</label>
-              </div>
-              <div className="form-floating mb-3">
-                <input
-                  type="text"
-                  name="lastName"
-                  className="form-control"
-                  id="lastName"
-                  placeholder="Apellido"
-                  required
-                  onChange={handleForm}
-                  value={formData.lastName}
-                />
-                <label htmlFor="lastName">Apellidos</label>
-              </div>
-              <div className="form-floating mb-3">
-                <input
-                  type="tel"
-                  name="phone"
-                  className="form-control"
-                  id="phone"
-                  placeholder="Teléfono"
-                  required
-                  onChange={handleForm}
-                  value={formData.phone}
-                />
-                <label htmlFor="phone">Teléfono</label>
-              </div>
-
-              <div className="form-floating">
-                <input
-                  type="password"
-                  name="password"
-                  className="form-control"
-                  id="password"
-                  placeholder="Password"
-                  required
-                  onChange={handleForm}
-                  value={formData.password}
-                />
-                <label htmlFor="password">Contraseña</label>
-              </div>
-              <button type="submit" className="btn btn-primary mt-3" disabled={isLoading}>
-                {isLoading ? "..." : "Registrarse"}
-              </button>
-              {errorMessage && <p className="text-danger mt-3">{errorMessage}</p>}
-            </form>
-
-            <p className="mt-3 registerSwitch" onClick={() => setIsRegistered(true)}>
-              Iniciar sesión
-            </p>
-            <p className="opacity-25 mt-3">© Spotynet 2024</p>
-          </div>
-        </section>
-      );
-    }
-
-    return (
-      <section id="login">
-        <div className="container col justify-content-center align-items-center">
-          <img src="./logo1.png" alt="logo" width={80} />
-          <p>Inicio de sesión</p>
-          <form
-            onSubmit={loginUser}
-            className="d-flex flex-column justify-content-center align-items-center">
-            <div className="form-floating mb-3">
-              <input
-                type="email"
-                name="email"
-                className="form-control"
-                id="floatingInput"
-                placeholder="name@example.com"
-                required
-                value={formData.email}
-                onChange={handleForm}
-              />
-              <label htmlFor="floatingInput">Email</label>
-            </div>
-            <div className="form-floating mb-2">
-              <input
-                type="password"
-                name="password"
-                className="form-control"
-                id="floatingPassword"
-                placeholder="Password"
-                required
-                value={formData.password}
-                onChange={handleForm}
-              />
-              <label htmlFor="floatingPassword">Contraseña</label>
-            </div>
-            <p id="errorMsg" className="text-danger m-1 visually-hidden">
-              Email o Contraseña incorrectos. Intente de nuevo
-            </p>
-            <a href="" className="mt-0">
-              Olvidaste tu contraseña?
-            </a>
-            <button type="submit" className="btn btn-primary" disabled={isLoading}>
-              {isLoading ? "Iniciando Sesión ..." : "Iniciar sesión"}
-            </button>
-          </form>
-          <a
-            href="https://www.spotynet.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="opacity-25 mt-5">
-            Powered by © Spotynet 2024
-          </a>
-        </div>
-      </section>
-    );
   };
 
   return (
-    <section id="login">
-      <div className="col justify-content-center align-items-center ">
+    <div id="login">
+      {/* Aurora background orbs */}
+      <div className="lp-orb lp-orb--1" />
+      <div className="lp-orb lp-orb--2" />
+      <div className="lp-orb lp-orb--3" />
+
+      <div className="lp-card">
+        {/* Gradient top border line */}
+        <div className="lp-card__top-line" />
+
+        {/* Logo */}
+        <div className="lp-logo">
+          <img src="./logo1.png" alt="Intacsep" />
+        </div>
+
         {isResettingPassword ? (
-          <div className="flex flex-col justify-content-center align-items-center p-5 text-center loginCard">
-            <img src="./logo1.png" alt="logo" width={80} />
-            <p>Cambiar Contraseña</p>
-            <form
-              onSubmit={requestPasswordReset}
-              className="d-flex flex-column justify-content-center align-items-center">
-              <div className="form-floating mb-3">
-                <input
-                  type="email"
-                  name="email"
-                  className="form-control"
-                  placeholder="name@example.com"
-                  required
-                  value={resetEmail}
-                  onChange={(e) => setResetEmail(e.target.value)}
-                />
-                <label htmlFor="floatingInput">Email</label>
+          <div className="lp-body" key="reset">
+            <div className="lp-header">
+              <h1 className="lp-header__title">Recuperar acceso</h1>
+              <p className="lp-header__sub">Ingresa tu correo y te enviaremos un enlace.</p>
+            </div>
+
+            <form onSubmit={requestPasswordReset} className="lp-form">
+              <div className="lp-field">
+                <label className="lp-field__label" htmlFor="resetEmail">Correo electrónico</label>
+                <div className="lp-field__wrap">
+                  <i className="fa-regular fa-envelope lp-field__icon" />
+                  <input
+                    id="resetEmail"
+                    type="email"
+                    className="lp-field__input"
+                    placeholder="tu@correo.com"
+                    required
+                    autoFocus
+                    value={resetEmail}
+                    onChange={(e) => { setResetEmail(e.target.value); setResetError(""); setResetSuccess(""); }}
+                    autoComplete="email"
+                  />
+                </div>
               </div>
-              {resetError && <p className="text-danger">{resetError}</p>}
-              {resetSuccess && <p className="text-success">{resetSuccess}</p>}
-              <button type="submit" className="btn btn-primary" disabled={isLoading}>
-                {isLoading ? "Cargando..." : "Recuperar"}
+
+              {resetError   && <div className="lp-msg lp-msg--error"><i className="fa-solid fa-circle-exclamation" />{resetError}</div>}
+              {resetSuccess && <div className="lp-msg lp-msg--ok"><i className="fa-solid fa-circle-check" />{resetSuccess}</div>}
+
+              <button type="submit" className="lp-btn" disabled={isLoading}>
+                {isLoading ? <span className="spinner-border spinner-border-sm" /> : "Enviar enlace"}
               </button>
-              <button
-                type="button"
-                className="btn btn-link mt-3"
-                onClick={() => setIsResettingPassword(false)}>
-                Volver a Inicio de Sesión
+
+              <button type="button" className="lp-back-btn"
+                onClick={() => { setIsResettingPassword(false); setResetError(""); setResetSuccess(""); }}>
+                <i className="fa-solid fa-arrow-left" /> Volver al inicio de sesión
               </button>
             </form>
           </div>
         ) : (
-          <div className=" flex flex-col justify-content-center align-items-center w-full p-5 text-center loginCard">
-            {/* <img src="./logoSpoty.png" alt="logo" width={80} /> */}
-            <img src="./logo1.png" alt="logo" width={80} />
-            <p className="text-white mb-3">Inicio de sesión</p>
-            <form
-              onSubmit={loginUser}
-              className="d-flex flex-column justify-content-center align-items-center mb-5 px-0">
-              <div className="form-floating mb-3 text-white">
-                <input
-                  type="email"
-                  name="email"
-                  className="form-control"
-                  id="floatingInput"
-                  placeholder=""
-                  required
-                  value={formData.email}
-                  onChange={handleForm}
-                />
-                <label htmlFor="floatingInput">Email</label>
+          <div className="lp-body" key="login">
+            <div className="lp-header">
+              <h1 className="lp-header__title">Bienvenido</h1>
+              <p className="lp-header__sub">Ingresa tus credenciales para continuar.</p>
+            </div>
+
+            <form onSubmit={loginUser} className="lp-form">
+              <div className="lp-field">
+                <label className="lp-field__label" htmlFor="email">Correo electrónico</label>
+                <div className="lp-field__wrap">
+                  <i className="fa-regular fa-envelope lp-field__icon" />
+                  <input
+                    id="email"
+                    name="email"
+                    type="email"
+                    className="lp-field__input"
+                    placeholder="tu@correo.com"
+                    required
+                    autoFocus
+                    value={formData.email}
+                    onChange={handleForm}
+                    autoComplete="email"
+                  />
+                </div>
               </div>
-              <div className="form-floating mb-2 text-white">
-                <input
-                  type="password"
-                  name="password"
-                  className="form-control"
-                  id="floatingPassword"
-                  placeholder=""
-                  required
-                  value={formData.password}
-                  onChange={handleForm}
-                />
-                <label htmlFor="floatingPassword">Contraseña</label>
+
+              <div className="lp-field">
+                <div className="lp-field__label-row">
+                  <label className="lp-field__label" htmlFor="password">Contraseña</label>
+                  <button type="button" className="lp-forgot" onClick={() => setIsResettingPassword(true)}>
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                </div>
+                <div className="lp-field__wrap">
+                  <i className="fa-solid fa-lock lp-field__icon" />
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    className="lp-field__input lp-field__input--pr"
+                    placeholder="••••••••"
+                    required
+                    value={formData.password}
+                    onChange={handleForm}
+                    autoComplete="current-password"
+                  />
+                  <button type="button" className="lp-field__eye" tabIndex={-1}
+                    onClick={() => setShowPassword((v) => !v)}>
+                    <i className={`fa-regular ${showPassword ? "fa-eye-slash" : "fa-eye"}`} />
+                  </button>
+                </div>
               </div>
-              <p id="errorMsg" className="text-danger m-1 visually-hidden">
-                Email o Contraseña incorrectos. Intente de nuevo
-              </p>
-              <a
-                href=""
-                className="mt-1 mb-2 text-white opacity-50"
-                onClick={(e) => {
-                  e.preventDefault();
-                  setIsResettingPassword(true);
-                }}>
-                Olvidaste tu contraseña?
-              </a>
-              <button
-                type="submit"
-                className="btn btn-primary rounded-1 mt-2 mb-0"
-                disabled={isLoading}>
-                {isLoading ? (
-                  <span className="spinner-border spinner-border-sm"></span>
-                ) : (
-                  "Iniciar sesión"
-                )}
+
+              {errorMessage && (
+                <div className="lp-msg lp-msg--error">
+                  <i className="fa-solid fa-circle-exclamation" />{errorMessage}
+                </div>
+              )}
+
+              <button type="submit" className="lp-btn" disabled={isLoading}>
+                {isLoading
+                  ? <><span className="spinner-border spinner-border-sm" /> Entrando…</>
+                  : "Iniciar sesión"}
               </button>
             </form>
-            <a
-              href="https://www.spotynet.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="opacity-50 mt-2 text-white text-decoration-none">
-              Powered by © Spotynet 2025 on AWS <br />v 3.1
-            </a>
-            <p className=" opacity-10"></p>
           </div>
         )}
+
+        <footer className="lp-footer">
+          <a href="https://www.spotynet.com/" target="_blank" rel="noopener noreferrer">Powered by © Spotynet 2026 on AWS</a>
+          <span>·</span><span>v 4.0</span>
+        </footer>
       </div>
-      <div className="backdrop"></div>
-      <div className="wave wave-1"></div>
-      <div className="wave wave-2"></div>
-      <div className="wave wave-3"></div>
-      <div className="wave wave-4"></div>
-    </section>
+    </div>
   );
 };
 

@@ -1,0 +1,1082 @@
+import {useEffect, useMemo, useRef, useState, useCallback} from "react";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+
+import UnitDetailPanel from "./UnitDetailPanel";
+import TrackHistoryPanel from "./TrackHistoryPanel";
+import {useWialon} from "../../context/WialonProvider";
+
+const THROTTLE_MS = 200;
+const TRACE_MAX_POINTS = 100;
+
+const fmtTime = (ts) => {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"});
+};
+
+const fmtTimeShort = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const diffSec = Math.floor((now - d) / 1000);
+  if (diffSec < 60) return `hace ${diffSec}s`;
+  if (diffSec < 3600) return `hace ${Math.floor(diffSec / 60)}m`;
+  if (diffSec < 86400) return `hace ${Math.floor(diffSec / 3600)}h`;
+  return d.toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"});
+};
+
+const NA = -348201.3876;
+
+/** Build a simple lat/lng corridor polygon around a Wialon line geofence (width in meters). */
+const lineCorridorLatLngs = (points, widthMeters) => {
+  const pts = (points || []).filter(
+    (p) => p && Number.isFinite(p.y) && Number.isFinite(p.x)
+  );
+  if (pts.length < 2 || !(widthMeters > 0)) return null;
+
+  const half = widthMeters / 2;
+  const left = [];
+  const right = [];
+
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(pts.length - 1, i + 1)];
+    const cur = pts[i];
+    const dx = (next.x - prev.x) * Math.cos((cur.y * Math.PI) / 180);
+    const dy = next.y - prev.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const latRad = (cur.y * Math.PI) / 180;
+    const mPerDegLat = 111320;
+    const mPerDegLon = Math.max(111320 * Math.cos(latRad), 1e-6);
+    const ox = ((-dy / len) * half) / mPerDegLon;
+    const oy = ((dx / len) * half) / mPerDegLat;
+    left.push(L.latLng(cur.y + oy, cur.x + ox));
+    right.push(L.latLng(cur.y - oy, cur.x - ox));
+  }
+
+  return [...left, ...right.reverse()];
+};
+
+const COMPLIANCE_POLL_MS = 45000;
+
+const complianceLabel = (status) => {
+  if (status === "ok") return "Cumple";
+  if (status === "breach") return "Fuera";
+  if (status === "unknown") return "Sin dato";
+  return "Sin geocerca";
+};
+
+const WialonMap = ({
+  searchTerm = "",
+  unitIds = null,
+  className = "",
+  isActive = true,
+  onComplianceChange,
+}) => {
+  const {session: wialonSession, loading: unitsLoading} = useWialon();
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+  const sessionRef = useRef(null);
+  const markersRef = useRef({});
+  const tracesRef = useRef({});
+  const geofenceLayerRef = useRef(null);
+  const complianceFittedRef = useRef(false);
+  const complianceByUnitRef = useRef({});
+  const complianceRefreshTimer = useRef(null);
+  const loadGeofencesRef = useRef(null);
+
+  const throttleTimers = useRef({});
+  const moveendTimer = useRef(null);
+  const mountIdRef = useRef(0);
+  const prevUnitsJson = useRef("");
+  const addressCache = useRef({});
+  const selectedUnitId = useRef(null);
+
+  const [status, setStatus] = useState("Inicializando...");
+  const [unitCount, setUnitCount] = useState(0);
+  const [selectedUnit, setSelectedUnit] = useState(null);
+  const [units, setUnits] = useState([]);
+  const [showDetail, setShowDetail] = useState(false);
+  const [showTrack, setShowTrack] = useState(false);
+  const [detailUnit, setDetailUnit] = useState(null);
+  const [trackUnit, setTrackUnit] = useState(null);
+  const [geofenceCount, setGeofenceCount] = useState(0);
+  const [complianceByUnit, setComplianceByUnit] = useState({});
+  const searchRef = useRef(searchTerm);
+  searchRef.current = searchTerm;
+  complianceByUnitRef.current = complianceByUnit;
+
+  const scopedMode = Array.isArray(unitIds) && unitIds.length > 0;
+
+  // Stable Set<string> of scoped unit IDs; null → no scope (all units).
+  // Using JSON key to avoid churning identity on every render.
+  const unitIdsKey = useMemo(() => {
+    if (!Array.isArray(unitIds)) return "";
+    return unitIds.map(String).sort().join("|");
+  }, [unitIds]);
+  const unitIdSet = useMemo(() => {
+    if (!Array.isArray(unitIds) || unitIds.length === 0) return null;
+    // Store both the trimmed raw string and its numeric-normalized form so
+    // legacy variants like "012345" or "12345.0" still match live IDs.
+    const set = new Set();
+    for (const raw of unitIds) {
+      if (raw == null) continue;
+      const s = String(raw).trim();
+      if (!s) continue;
+      set.add(s);
+      const n = Number(s);
+      if (!Number.isNaN(n)) set.add(String(n));
+    }
+    return set.size > 0 ? set : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitIdsKey]);
+  const unitIdSetRef = useRef(unitIdSet);
+  unitIdSetRef.current = unitIdSet;
+
+  // Helper: apply the optional wialonId scope on a raw items[] from the session.
+  const scopeItems = useCallback((items) => {
+    const set = unitIdSetRef.current;
+    if (!set) return items;
+    return items.filter((u) => {
+      const id = u.getId?.();
+      if (id == null) return false;
+      const s = String(id);
+      return set.has(s) || set.has(String(Number(s)));
+    });
+  }, []);
+
+  // ── Geocoding ──────────────────────────────────────────────
+  const getAddress = useCallback((lat, lng) => {
+    const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+    if (addressCache.current[key] !== undefined) return addressCache.current[key];
+    try {
+      window.wialon.util.Gis.getLocations([{lon: lng, lat}], (code, data) => {
+        if (!code && data?.[0]) {
+          addressCache.current[key] = data[0];
+        }
+      });
+    } catch {}
+    return null;
+  }, []);
+
+  // ── Popup Builder ──────────────────────────────────────────
+  const buildPopupHtml = useCallback(
+    (unit) => {
+      const pos = unit.getPosition?.();
+      const msg = unit.getLastMessage?.();
+      const heading = pos?.c ?? 0;
+      const speed = pos?.s ?? 0;
+      const iconUrl = unit.getIconUrl?.(48);
+      const mileage = unit.getMileageCounter?.();
+      const engineHrs = unit.getEngineHoursCounter?.();
+
+      let sensorRows = "";
+      try {
+        const sensors = unit.getSensors?.();
+        if (sensors && msg) {
+          for (const key in sensors) {
+            const s = sensors[key];
+            if (s.t === "driver") continue;
+            const val = unit.calculateSensorValue?.(s, msg);
+            if (val === NA || val === undefined) continue;
+            const display = typeof val === "number" ? Number(val.toFixed(1)) : val;
+            sensorRows += `<div class="wialon-popup__label">${s.n}</div><div class="wialon-popup__value">${display} ${s.m || ""}</div>`;
+          }
+        }
+      } catch {}
+
+      const hLabel =
+        heading === 0 ? "N" : heading === 90 ? "E" : heading === 180 ? "S" : heading === 270 ? "O" :
+        `${Math.round(heading)}°`;
+
+      const address = pos ? getAddress(pos.y, pos.x) : null;
+      const unitId = String(unit.getId?.() ?? "");
+      const comp =
+        complianceByUnitRef.current[unitId] ||
+        complianceByUnitRef.current[String(Number(unitId))];
+      let complianceHtml = "";
+      if (comp?.checks?.length) {
+        const rows = comp.checks
+          .map((c) => {
+            const expect = c.expectInside ? "Dentro de" : "Fuera de";
+            const st =
+              c.status === "ok"
+                ? "OK"
+                : c.status === "breach"
+                  ? "Incumple"
+                  : "Sin dato";
+            const color =
+              c.status === "ok" ? "#047857" : c.status === "breach" ? "#b91c1c" : "#b45309";
+            return `<div class="wialon-popup__check" style="color:${color}">${expect} ${c.name} · ${st}</div>`;
+          })
+          .join("");
+        complianceHtml = `<div class="wialon-popup__compliance"><div class="wialon-popup__label">Geocercas</div>${rows}</div>`;
+      } else if (comp?.status === "none") {
+        complianceHtml = `<div class="wialon-popup__compliance"><div class="wialon-popup__label">Geocercas</div><div class="wialon-popup__check" style="color:#6b7280">Sin geocercas vinculadas a alertas</div></div>`;
+      }
+
+      return `
+        <div class="wialon-popup">
+          <div class="wialon-popup__header">
+            ${iconUrl ? `<img src="${iconUrl}" class="wialon-popup__icon" />` : ""}
+            <div class="wialon-popup__title">
+              <div class="wialon-popup__name">${unit.getName()}</div>
+              <div class="wialon-popup__sub">${speed > 0 ? `En movimiento · ${speed} km/h` : "Detenido"}</div>
+            </div>
+            <div class="wialon-popup__heading-badge" style="background:${speed > 0 ? "#22c55e" : "#6b7280"}">
+              ${hLabel}
+            </div>
+          </div>
+          ${address ? `<div class="wialon-popup__address"><i class="fa fa-map-marker-alt"></i> ${address}</div>` : ""}
+          ${complianceHtml}
+          <div class="wialon-popup__grid">
+            <div class="wialon-popup__label">Última vez</div>
+            <div class="wialon-popup__value">${fmtTime(pos?.t)}</div>
+            ${pos ? `
+              <div class="wialon-popup__label">Coordenadas</div>
+              <div class="wialon-popup__value">${pos.y.toFixed(6)}, ${pos.x.toFixed(6)}</div>
+            ` : ""}
+            ${mileage !== undefined ? `
+              <div class="wialon-popup__label">Odómetro</div>
+              <div class="wialon-popup__value">${Number(mileage.toFixed(1))} km</div>
+            ` : ""}
+            ${engineHrs !== undefined ? `
+              <div class="wialon-popup__label">Motor</div>
+              <div class="wialon-popup__value">${Number(engineHrs.toFixed(1))} h</div>
+            ` : ""}
+            ${sensorRows}
+          </div>
+          <div class="wialon-popup__time">${fmtTimeShort(pos?.t)}</div>
+        </div>
+      `;
+    },
+    [getAddress]
+  );
+
+  // ── Icon Builder ───────────────────────────────────────────
+  const createIcon = useCallback((unit) => {
+    const pos = unit.getPosition?.();
+    const speed = pos?.s ?? 0;
+    const heading = pos?.c ?? 0;
+    const color = speed > 0 ? "#22c55e" : "#6b7280";
+    const iconUrl = unit.getIconUrl?.(32);
+
+    if (iconUrl) {
+      return L.divIcon({
+        className: "wialon-unit-marker",
+        html: `<img src="${iconUrl}" style="
+          width:28px;height:28px;
+          transform:rotate(${heading}deg);
+          transition:transform .3s ease;
+        " />`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+        popupAnchor: [0, -14],
+      });
+    }
+
+    return L.divIcon({
+      className: "wialon-unit-marker",
+      html: `<div style="
+        width:28px;height:28px;border-radius:50%;
+        background:${color};border:3px solid #fff;
+        box-shadow:0 2px 6px rgba(0,0,0,.3);
+        display:flex;align-items:center;justify-content:center;
+        transform:rotate(${heading}deg);
+      "><span style="color:#fff;font-size:12px;font-weight:700;transform:rotate(-${heading}deg);">▲</span></div>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -14],
+    });
+  }, []);
+
+  // ── Marker Factory (deferred popup) ────────────────────────
+  const createMarker = useCallback(
+    (unit) => {
+      const pos = unit.getPosition?.();
+      if (!pos) return null;
+      const latlng = L.latLng(pos.y, pos.x);
+      const icon = createIcon(unit);
+      const marker = L.marker(latlng, {icon});
+      marker._wialonUnit = unit;
+      marker.bindPopup("", {maxWidth: 280, className: "wialon-popup-wrapper"});
+      marker.on("popupopen", () => {
+        marker.getPopup().setContent(buildPopupHtml(unit));
+      });
+      return marker;
+    },
+    [createIcon, buildPopupHtml]
+  );
+
+  // ── Sidebar sync ───────────────────────────────────────────
+  const buildUnitsJson = useCallback((list) => {
+    return list.map((u) => `${u.id}:${u.speed}:${u.pos?.y}:${u.pos?.x}`).join("|");
+  }, []);
+
+  const syncSidebar = useCallback(
+    (sess) => {
+      const rawItems = sess.getItems("avl_unit") || [];
+      const items = scopeItems(rawItems);
+      const cur = searchRef.current.toLowerCase();
+      const filtered = cur
+        ? items.filter((u) => (u.getName?.() ?? "").toLowerCase().includes(cur))
+        : items;
+
+      const newList = filtered.map((u) => {
+        const pos = u.getPosition?.();
+        return {id: u.getId(), name: u.getName(), pos, speed: pos?.s ?? 0, lastMsg: pos?.t};
+      });
+
+      const json = buildUnitsJson(newList);
+      if (json !== prevUnitsJson.current) {
+        prevUnitsJson.current = json;
+        setUnits(newList);
+        setUnitCount(newList.length);
+      }
+      return filtered;
+    },
+    [buildUnitsJson, scopeItems]
+  );
+
+  // ── Live trace (trail polyline) ────────────────────────────
+  const updateTrace = useCallback(
+    (unit) => {
+      const map = mapInstance.current;
+      if (!map) return;
+      const id = unit.getId();
+      const pos = unit.getPosition?.();
+      if (!pos) return;
+
+      const latlng = L.latLng(pos.y, pos.x);
+
+      if (!tracesRef.current[id]) {
+        tracesRef.current[id] = L.polyline([], {
+          color: "#6366f1",
+          weight: 3,
+          opacity: 0.5,
+          dashArray: "4 4",
+          smoothFactor: 1,
+        }).addTo(map);
+      }
+
+      const line = tracesRef.current[id];
+      const pts = line.getLatLngs();
+      pts.push(latlng);
+
+      if (pts.length > TRACE_MAX_POINTS) {
+        pts.splice(0, pts.length - TRACE_MAX_POINTS);
+      }
+      line.setLatLngs(pts);
+    },
+    []
+  );
+
+  // ── Throttled marker update ────────────────────────────────
+  const updateSingleMarker = useCallback(
+    (unit) => {
+      const id = unit.getId();
+      if (throttleTimers.current[id]) return;
+      throttleTimers.current[id] = true;
+
+      const map = mapInstance.current;
+      if (!map || !map.getContainer()) return;
+
+      const pos = unit.getPosition?.();
+      if (!pos) return;
+
+      const latlng = L.latLng(pos.y, pos.x);
+      const icon = createIcon(unit);
+
+      if (markersRef.current[id]) {
+        markersRef.current[id].setLatLng(latlng).setIcon(icon);
+      } else {
+        const marker = createMarker(unit);
+        if (marker) {
+          marker.addTo(map);
+          markersRef.current[id] = marker;
+        }
+      }
+
+      // Only trace the selected unit
+      if (id === selectedUnitId.current) {
+        updateTrace(unit);
+      }
+
+      setTimeout(() => {
+        throttleTimers.current[id] = false;
+      }, THROTTLE_MS);
+    },
+    [createIcon, createMarker, updateTrace]
+  );
+
+  // ── Full refresh ───────────────────────────────────────────
+  const refreshAllMarkers = useCallback(
+    (sess) => {
+      const map = mapInstance.current;
+      if (!map || !map.getContainer()) return;
+
+      const filtered = syncSidebar(sess);
+      const filteredIds = new Set(filtered.map((u) => u.getId()));
+      const bounds = map.getBounds();
+      const expanded = bounds.pad(0.2);
+
+      filtered.forEach((unit) => {
+        const pos = unit.getPosition?.();
+        if (!pos) return;
+        const id = unit.getId();
+        const latlng = L.latLng(pos.y, pos.x);
+        const icon = createIcon(unit);
+
+        if (markersRef.current[id]) {
+          markersRef.current[id].setLatLng(latlng).setIcon(icon);
+        } else if (expanded.contains(latlng)) {
+          const marker = createMarker(unit);
+          if (marker) {
+            marker.addTo(map);
+            markersRef.current[id] = marker;
+          }
+        }
+      });
+
+      Object.keys(markersRef.current).forEach((id) => {
+        if (!filteredIds.has(Number(id))) {
+          map.removeLayer(markersRef.current[id]);
+          delete markersRef.current[id];
+        }
+      });
+
+      if (filtered.length > 0 && !map._wialonFitted) {
+        const allBounds = filtered
+          .map((u) => u.getPosition?.())
+          .filter((p) => p && typeof p.y === "number" && typeof p.x === "number")
+          .map((p) => L.latLng(p.y, p.x));
+        if (allBounds.length > 0) {
+          map.fitBounds(L.latLngBounds(allBounds).pad(0.1));
+          map._wialonFitted = true;
+        }
+      }
+    },
+    [syncSidebar, createIcon, createMarker]
+  );
+
+  // ── Viewport culling on map move ───────────────────────────
+  const cullMarkers = useCallback(() => {
+    const map = mapInstance.current;
+    const sess = sessionRef.current;
+    if (!map || !sess || !map._wialonFitted) return;
+
+    const bounds = map.getBounds().pad(0.2);
+    const items = scopeItems(sess.getItems("avl_unit") || []);
+    const inView = new Set();
+
+    items.forEach((unit) => {
+      const pos = unit.getPosition?.();
+      if (pos && bounds.contains(L.latLng(pos.y, pos.x))) {
+        inView.add(unit.getId());
+      }
+    });
+
+    Object.keys(markersRef.current).forEach((id) => {
+      const numId = Number(id);
+      if (inView.has(numId)) {
+        if (!map.hasLayer(markersRef.current[id])) {
+          markersRef.current[id].addTo(map);
+        }
+      } else if (numId !== selectedUnitId.current) {
+        if (map.hasLayer(markersRef.current[id])) {
+          map.removeLayer(markersRef.current[id]);
+        }
+      }
+    });
+
+    // Ensure selected unit is always on map
+    if (selectedUnitId.current && markersRef.current[selectedUnitId.current]) {
+      if (!map.hasLayer(markersRef.current[selectedUnitId.current])) {
+        markersRef.current[selectedUnitId.current].addTo(map);
+      }
+    }
+  }, [scopeItems]);
+
+  // ── Search filter ──────────────────────────────────────────
+  const applySearchFilter = useCallback(
+    (sess) => {
+      const rawItems = sess.getItems("avl_unit") || [];
+      const scopedIds = new Set(scopeItems(rawItems).map((u) => u.getId()));
+      const cur = searchRef.current.toLowerCase();
+
+      syncSidebar(sess);
+
+      rawItems.forEach((unit) => {
+        const id = unit.getId();
+        const marker = markersRef.current[id];
+        if (!marker) return;
+
+        const name = (unit.getName?.() ?? "").toLowerCase();
+        const inScope = scopedIds.has(id);
+        const matches = inScope && (!cur || name.includes(cur));
+
+        if (matches && !mapInstance.current?.hasLayer(marker)) {
+          marker.addTo(mapInstance.current);
+        } else if (!matches && mapInstance.current?.hasLayer(marker)) {
+          mapInstance.current?.removeLayer(marker);
+        }
+
+        // Toggle trace visibility
+        const trace = tracesRef.current[id];
+        if (trace) {
+          if (matches && !mapInstance.current?.hasLayer(trace)) trace.addTo(mapInstance.current);
+          else if (!matches && mapInstance.current?.hasLayer(trace)) mapInstance.current?.removeLayer(trace);
+        }
+      });
+    },
+    [syncSidebar, scopeItems]
+  );
+
+  const zoneStyleForCompliance = useCallback((z, unitsComp) => {
+    const zKey = `${z.resourceId}_${z.zoneId}`;
+    let hasBreach = false;
+    let hasOk = false;
+    for (const u of Object.values(unitsComp || {})) {
+      for (const c of u.checks || []) {
+        if (`${c.resourceId}_${c.zoneId}` !== zKey) continue;
+        if (c.status === "breach") hasBreach = true;
+        if (c.status === "ok") hasOk = true;
+      }
+    }
+    if (hasBreach) return {color: "#dc2626", fill: "#dc2626", fillOpacity: 0.16};
+    if (hasOk) return {color: "#059669", fill: "#059669", fillOpacity: 0.12};
+    const colorHex = z.color || "#6366f1";
+    return {color: colorHex, fill: colorHex, fillOpacity: 0.12};
+  }, []);
+
+  const drawZones = useCallback(
+    (zones, unitsComp, {fit = false} = {}) => {
+      const map = mapInstance.current;
+      if (!map) return;
+
+      if (geofenceLayerRef.current) {
+        map.removeLayer(geofenceLayerRef.current);
+        geofenceLayerRef.current = null;
+      }
+
+      const gLayer = L.layerGroup().addTo(map);
+      geofenceLayerRef.current = gLayer;
+      const bounds = [];
+      let count = 0;
+
+      (zones || []).forEach((z) => {
+        if (!z?.points?.length) return;
+        const style = zoneStyleForCompliance(z, unitsComp);
+        const zoneType = Number(z.type);
+        let layer;
+        const tip =
+          `${z.name || "Zona"}` +
+          (z.expectInside == null
+            ? ""
+            : z.expectInside
+              ? " · Esperado: dentro"
+              : " · Esperado: fuera");
+
+        if (zoneType === 3 && z.points.length === 1) {
+          const center = L.latLng(z.points[0].y, z.points[0].x);
+          layer = L.circle(center, {
+            radius: z.width || 100,
+            color: style.color,
+            fillColor: style.fill,
+            fillOpacity: style.fillOpacity,
+            weight: 2,
+          });
+          bounds.push(center);
+        } else if (zoneType === 1) {
+          // Line geofence: Wialon `width` is corridor meters, not Leaflet px weight.
+          const pts = z.points
+            .filter((p) => p && Number.isFinite(p.y) && Number.isFinite(p.x))
+            .map((p) => L.latLng(p.y, p.x));
+          if (pts.length < 2) return;
+
+          const corridorM = Number(z.width) > 0 ? Number(z.width) : 50;
+          const corridorPts = lineCorridorLatLngs(z.points, corridorM);
+          if (corridorPts?.length >= 3) {
+            const corridor = L.polygon(corridorPts, {
+              color: style.color,
+              fillColor: style.fill,
+              fillOpacity: Math.max(style.fillOpacity, 0.14),
+              weight: 1,
+              opacity: 0.7,
+            });
+            corridor.bindTooltip(tip, {sticky: true, className: "wialon-geofence-tooltip"});
+            corridor.addTo(gLayer);
+          }
+
+          layer = L.polyline(pts, {
+            color: style.color,
+            weight: 4,
+            opacity: 0.95,
+          });
+          bounds.push(...pts);
+        } else {
+          const pts = z.points.map((p) => L.latLng(p.y, p.x));
+          layer = L.polygon(pts, {
+            color: style.color,
+            fillColor: style.fill,
+            fillOpacity: style.fillOpacity,
+            weight: 2,
+          });
+          bounds.push(...pts);
+        }
+
+        if (layer) {
+          layer.bindTooltip(tip, {
+            sticky: true,
+            className: "wialon-geofence-tooltip",
+          });
+          layer.addTo(gLayer);
+          count++;
+        }
+      });
+
+      setGeofenceCount(count);
+
+      if (fit && !complianceFittedRef.current) {
+        for (const m of Object.values(markersRef.current || {})) {
+          try {
+            const ll = m.getLatLng?.();
+            if (ll) bounds.push(ll);
+          } catch {}
+        }
+        if (bounds.length) {
+          try {
+            map.fitBounds(L.latLngBounds(bounds), {padding: [40, 40], maxZoom: 14});
+            complianceFittedRef.current = true;
+          } catch {}
+        }
+      }
+    },
+    [zoneStyleForCompliance]
+  );
+
+  const emitComplianceSummary = useCallback(
+    (unitsArr, zonesArr, extra = {}) => {
+      if (!onComplianceChange) return;
+      const list = unitsArr || [];
+      onComplianceChange({
+        unitCount: list.length,
+        zoneCount: (zonesArr || []).length,
+        okCount: list.filter((u) => u.status === "ok").length,
+        breachCount: list.filter((u) => u.status === "breach").length,
+        noneCount: list.filter((u) => u.status === "none").length,
+        unknownCount: list.filter((u) => u.status === "unknown").length,
+        emptyReason:
+          list.length > 0 && !(zonesArr || []).length ? "no_zones" : null,
+        ...extra,
+      });
+    },
+    [onComplianceChange]
+  );
+
+  // ── Load geofences (global) or compliance zones (bitácora scope) ──
+  // Coalesce concurrent callers (init + scope effect + poll) into one fetch.
+  const loadGeofencesInflight = useRef(null);
+  const loadGeofences = useCallback(async () => {
+    if (loadGeofencesInflight.current) return loadGeofencesInflight.current;
+
+    const run = (async () => {
+      try {
+        const baseUrl = import.meta.env.VITE_BASE_URL;
+        if (!baseUrl || !mapInstance.current) return;
+
+        if (scopedMode) {
+          const ids = unitIds.map(String).filter(Boolean).join(",");
+          const res = await fetch(
+            `${baseUrl}/wialon/geofences/compliance?unitIds=${encodeURIComponent(ids)}`,
+            {credentials: "include"}
+          );
+          if (!res.ok) {
+            emitComplianceSummary([], [], {error: true});
+            return;
+          }
+          const data = await res.json();
+          const byUnit = {};
+          for (const u of data.units || []) {
+            byUnit[String(u.unitId)] = u;
+            const n = Number(u.unitId);
+            if (!Number.isNaN(n)) byUnit[String(n)] = u;
+          }
+          setComplianceByUnit(byUnit);
+          complianceByUnitRef.current = byUnit;
+          drawZones(data.zones || [], byUnit, {fit: true});
+          emitComplianceSummary(data.units || [], data.zones || []);
+          return;
+        }
+
+        const token = localStorage.getItem("wialonToken");
+        if (!token) return;
+        const res = await fetch(`${baseUrl}/wialon/geofences`, {
+          headers: {"x-wialon-token": token},
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        setComplianceByUnit({});
+        complianceByUnitRef.current = {};
+        drawZones(data.zones || [], {}, {fit: false});
+      } catch {
+        if (scopedMode) emitComplianceSummary([], [], {error: true});
+      } finally {
+        loadGeofencesInflight.current = null;
+      }
+    })();
+
+    loadGeofencesInflight.current = run;
+    return run;
+  }, [scopedMode, unitIds, drawZones, emitComplianceSummary]);
+
+  loadGeofencesRef.current = loadGeofences;
+
+  // ── One-time session listeners (map init) ─────────────────
+  const setupSessionListeners = useCallback((sess) => {
+    const onPositionChanged = (evt) => {
+      if (mountIdRef.current === 0) return;
+      const unit = sess.getItem(evt.i);
+      if (unit) {
+        updateSingleMarker(unit);
+        if (detailUnit?.getId?.() === evt.i) {
+          setDetailUnit(sess.getItem(evt.i));
+        }
+      }
+      // Bitácora: throttled compliance refresh when a scoped unit moves.
+      const set = unitIdSetRef.current;
+      if (set) {
+        const id = String(evt.i);
+        if (set.has(id) || set.has(String(Number(id)))) {
+          if (!complianceRefreshTimer.current) {
+            complianceRefreshTimer.current = setTimeout(() => {
+              complianceRefreshTimer.current = null;
+              loadGeofencesRef.current?.();
+            }, 12000);
+          }
+        }
+      }
+    };
+
+    const onItemDeleted = (item) => {
+      const id = item.getId?.();
+      if (id && markersRef.current[id]) {
+        mapInstance.current?.removeLayer(markersRef.current[id]);
+        delete markersRef.current[id];
+      }
+      if (id && tracesRef.current[id]) {
+        mapInstance.current?.removeLayer(tracesRef.current[id]);
+        delete tracesRef.current[id];
+      }
+    };
+
+    sess.addListener("positionChanged", onPositionChanged);
+    sess.addListener("itemDeleted", onItemDeleted);
+
+    mapInstance.current.on("moveend", () => {
+      if (moveendTimer.current) clearTimeout(moveendTimer.current);
+      moveendTimer.current = setTimeout(cullMarkers, 150);
+    });
+  }, [updateSingleMarker, detailUnit, cullMarkers]);
+
+  // ── Load initial data (units + geofences) ─────────────────
+  const loadInitialData = useCallback(() => {
+    const sess = sessionRef.current;
+    if (!sess || !mapInstance.current) return;
+
+    refreshAllMarkers(sess);
+
+    const resFlags = window.wialon.item.Item.dataFlag.base | 0x1000;
+    sess.updateDataFlags([{type: "type", data: "avl_resource", flags: resFlags, mode: 0}], (rCode) => {
+      if (!rCode) loadGeofences();
+    });
+  }, [refreshAllMarkers, loadGeofences]);
+
+  // ── Map init ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current || mapInstance.current) return;
+
+    const id = ++mountIdRef.current;
+
+    const map = L.map(mapRef.current, {
+      zoomControl: true,
+      attributionControl: true,
+      maxZoom: 17,
+    }).setView([19.43, -99.13], 6);
+
+    mapInstance.current = map;
+
+    // Use the shared session from WialonProvider (already logged in)
+    const sess = wialonSession || window.wialon.core.Session.getInstance();
+    sessionRef.current = sess;
+
+    const afterLogin = () => {
+      if (mountIdRef.current !== id) return;
+      if (!map.getContainer()) return;
+
+      setStatus("Cargando mapa...");
+
+      const gisUrl = sess.getBaseGisUrl("render");
+      const userId = sess.getCurrUser()?.getId();
+
+      if (!gisUrl || !userId) {
+        setStatus("No se pudo obtener la URL del mapa.");
+        return;
+      }
+
+      const wialonTiles = L.tileLayer(`${gisUrl}/gis_render/{x}_{y}_{z}/${userId}/tile.png`, {
+        maxZoom: 17,
+        minZoom: 2,
+        zoomReverse: true,
+        attribution: "© Gurtam",
+      });
+
+      const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "© OpenStreetMap",
+      });
+
+      const esriSatellite = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        {maxZoom: 18, attribution: "Tiles © Esri"}
+      );
+
+      const esriLabels = L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png",
+        {maxZoom: 19, attribution: "© CARTO"}
+      );
+
+      const hybrid = L.layerGroup([esriSatellite, esriLabels]);
+
+      wialonTiles.addTo(map);
+
+      L.control
+        .layers(
+          {Gurtam: wialonTiles, OpenStreetMap: osm, Satélite: esriSatellite, Híbrido: hybrid},
+          {},
+          {position: "topright"}
+        )
+        .addTo(map);
+
+      sess.loadLibrary("itemIcon");
+      sess.loadLibrary("unitSensors");
+      setupSessionListeners(sess);
+      setStatus("");
+    };
+
+    // Session is already logged in by WialonProvider
+    const user = sess.getCurrUser();
+    if (user) {
+      afterLogin();
+    } else {
+      // Fallback: if provider session isn't ready yet, wait and retry
+      const checkInterval = setInterval(() => {
+        if (sess.getCurrUser()) {
+          clearInterval(checkInterval);
+          afterLogin();
+        }
+      }, 500);
+      // Stop checking after 10s
+      setTimeout(() => clearInterval(checkInterval), 10000);
+    }
+
+    return () => {
+      mountIdRef.current++;
+      if (moveendTimer.current) clearTimeout(moveendTimer.current);
+      if (complianceRefreshTimer.current) {
+        clearTimeout(complianceRefreshTimer.current);
+        complianceRefreshTimer.current = null;
+      }
+      throttleTimers.current = {};
+      selectedUnitId.current = null;
+      if (mapInstance.current) {
+        mapInstance.current.remove();
+        mapInstance.current = null;
+      }
+      markersRef.current = {};
+      tracesRef.current = {};
+      geofenceLayerRef.current = null;
+    };
+  }, [wialonSession]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Load units when provider finishes fetching ─────────────
+  useEffect(() => {
+    if (unitsLoading || !wialonSession) return;
+    const sess = sessionRef.current;
+    if (!sess || !mapInstance.current) return;
+    loadInitialData();
+  }, [unitsLoading, wialonSession, loadInitialData]);
+
+  useEffect(() => {
+    const sess = sessionRef.current;
+    if (sess && mapInstance.current) {
+      applySearchFilter(sess);
+    }
+  }, [searchTerm, applySearchFilter]);
+
+  // Re-scope on unitIds change: reset the "fitted" flag so the map re-fits
+  // to the new scope, then rebuild markers (adds new, removes out-of-scope).
+  // Compliance fetch is owned by the poll effect below (avoids double-hit on mount).
+  useEffect(() => {
+    const sess = sessionRef.current;
+    const map = mapInstance.current;
+    if (!sess || !map) return;
+    map._wialonFitted = false;
+    complianceFittedRef.current = false;
+    refreshAllMarkers(sess);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unitIdsKey]);
+
+  // Bitácora mode: poll geofence compliance while the map tab is active.
+  useEffect(() => {
+    if (!scopedMode || !isActive) return undefined;
+    loadGeofences();
+    const timer = setInterval(() => {
+      loadGeofences();
+    }, COMPLIANCE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [scopedMode, isActive, unitIdsKey, loadGeofences]);
+
+  // Keep-alive tab: Leaflet needs invalidateSize after the pane becomes visible again
+  // (and after sidebar width transition ~300ms).
+  useEffect(() => {
+    if (!isActive) return undefined;
+    const map = mapInstance.current;
+    if (!map) return undefined;
+    const t1 = setTimeout(() => map.invalidateSize(), 50);
+    const t2 = setTimeout(() => map.invalidateSize(), 350);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [isActive]);
+
+  // ── Handlers ───────────────────────────────────────────────
+  const handleSelectUnit = useCallback(
+    (u) => {
+      if (u.pos && mapInstance.current) {
+        mapInstance.current.setView([u.pos.y, u.pos.x], 15);
+        markersRef.current[u.id]?.openPopup();
+        const sess = sessionRef.current;
+        const fullUnit = sess?.getItem(u.id);
+        selectedUnitId.current = u.id;
+        setSelectedUnit(u);
+        setDetailUnit(fullUnit || null);
+        setShowDetail(true);
+        // Start trace for this unit
+        if (fullUnit) updateTrace(fullUnit);
+      }
+    },
+    [updateTrace]
+  );
+
+  const handleCloseDetail = useCallback(() => {
+    // Remove trace for previously selected unit
+    const prevId = selectedUnitId.current;
+    if (prevId && tracesRef.current[prevId]) {
+      mapInstance.current?.removeLayer(tracesRef.current[prevId]);
+      delete tracesRef.current[prevId];
+    }
+    selectedUnitId.current = null;
+    setShowDetail(false);
+    setDetailUnit(null);
+  }, []);
+
+  const handleShowTrack = useCallback(
+    (unit) => {
+      selectedUnitId.current = unit.getId?.();
+      setTrackUnit(unit);
+      setShowTrack(true);
+      setShowDetail(false);
+    },
+    []
+  );
+
+  const handleCloseTrack = useCallback(() => {
+    selectedUnitId.current = null;
+    setShowTrack(false);
+    setTrackUnit(null);
+  }, []);
+
+  return (
+    <div className={`wialon-map-wrapper${className ? ` ${className}` : ""}`}>
+      {status && (
+        <div className="wialon-map-status">
+          <i className="fa fa-spinner fa-spin"></i> {status}
+        </div>
+      )}
+      <div ref={mapRef} className="wialon-map-container" />
+
+      {/* Sidebar */}
+      <div className="wialon-map-sidebar">
+        <div className="wialon-map-sidebar__header">
+          <span className="wialon-map-sidebar__title">
+            Unidades <span className="wialon-map-sidebar__count">{unitCount}</span>
+          </span>
+          {geofenceCount > 0 && (
+            <span className="wialon-map-sidebar__badge" title="Geocercas">
+              <i className="fa fa-draw-polygon"></i> {geofenceCount}
+            </span>
+          )}
+        </div>
+        <div className="wialon-map-sidebar__list">
+          {units.length === 0 ? (
+            <div className="wialon-map-sidebar__empty">Sin unidades</div>
+          ) : (
+            units.map((u) => {
+              const comp =
+                complianceByUnit[String(u.id)] ||
+                complianceByUnit[String(Number(u.id))];
+              const cStatus = comp?.status;
+              return (
+              <div
+                key={u.id}
+                className={`wialon-map-sidebar__item${selectedUnit?.id === u.id ? " wialon-map-sidebar__item--active" : ""}`}
+                onClick={() => handleSelectUnit(u)}>
+                <span
+                  className="wialon-map-sidebar__dot"
+                  style={{background: u.speed > 0 ? "#22c55e" : "#6b7280"}}
+                />
+                <div className="wialon-map-sidebar__info">
+                  <span className="wialon-map-sidebar__name">{u.name}</span>
+                  <span className="wialon-map-sidebar__meta">
+                    {u.speed > 0 ? `${u.speed} km/h` : "Detenido"}
+                  </span>
+                </div>
+                {scopedMode && cStatus && (
+                  <span
+                    className={`wialon-map-sidebar__compliance wialon-map-sidebar__compliance--${cStatus}`}
+                    title="Estado vs geocercas de alertas"
+                  >
+                    {complianceLabel(cStatus)}
+                  </span>
+                )}
+              </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Unit Detail Panel */}
+      {showDetail && detailUnit && (
+        <UnitDetailPanel
+          unit={detailUnit}
+          onClose={handleCloseDetail}
+          onShowTrack={handleShowTrack}
+        />
+      )}
+
+      {/* Track History Panel */}
+      {showTrack && trackUnit && (
+        <TrackHistoryPanel
+          unit={trackUnit}
+          mapInstance={mapInstance.current}
+          onClose={handleCloseTrack}
+        />
+      )}
+    </div>
+  );
+};
+
+export default WialonMap;

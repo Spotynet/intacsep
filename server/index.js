@@ -41,7 +41,19 @@ import PatioExitEvent from "./models/PatioExitEvent.js";
 import PatioAnomaly from "./models/PatioAnomaly.js";
 import wialonIntegrationService from "./services/wialonIntegrationService.js";
 import telemetryService from "./services/telemetryService.js";
+import {
+  getCatalog as getWialonNotificationCatalog,
+  applySelections as applyWialonSelections,
+  invalidateCatalogCache,
+  listNotifications as listWialonNotifications,
+  getGeofenceComplianceForUnits,
+  unlinkBitacoraNotifications as unlinkWialonBitacoraNotifications,
+  unlinkTransporteNotifications as unlinkWialonTransporteNotifications,
+  CLOSED_STATUSES as WIALON_CLOSED_STATUSES,
+} from "./services/wialonNotificationService.js";
+import { processTriggeredAlerts as processWialonTriggeredAlerts } from "./services/wialonAlertEventService.js";
 import { readPlateFromImage } from "./services/plateRecognitionService.js";
+import { wialonApiCall, wialonLogout } from "./utils/wialonClient.js";
 import { auditCreation, auditUpdate, auditDeletion } from "./auditoriaUtils.js";
 import { convertToUpperCase } from "./utils/textUtils.js";
 import multer from "multer";
@@ -184,6 +196,56 @@ const decrementOperadorSequence = async () => {
   return sequence.seq;
 };
 
+// Normalize gpsUnits array: coerce wialonId to String, drop entries with invalid IDs
+const normalizeGpsUnits = (gpsUnits) => {
+  if (!Array.isArray(gpsUnits)) return [];
+  return gpsUnits
+    .filter((u) => u && u.wialonId != null && String(u.wialonId).trim() !== "")
+    .map((u) => ({ ...u, wialonId: String(u.wialonId).trim() }));
+};
+
+// Normalize notificaciones array: keep only valid {resourceId, notifId} pairs, deduped
+const normalizeNotificaciones = (notificaciones) => {
+  if (!Array.isArray(notificaciones)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const n of notificaciones) {
+    if (!n) continue;
+    const resourceId = Number(n.resourceId);
+    const notifId = Number(n.notifId);
+    if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
+    const key = `${resourceId}_${notifId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      resourceId,
+      notifId,
+      name: String(n.name || ""),
+      triggerType: String(n.triggerType || ""),
+      kind: n.kind === "canonica" ? "canonica" : "vinculada",
+      appliedAt: n.appliedAt ? new Date(n.appliedAt) : new Date(),
+    });
+  }
+  return out;
+};
+
+// One-shot Wialon instruction. Not stored on the transporte.
+const dropUnitIdsByNotif = (notificaciones) => {
+  const map = new Map();
+  if (!Array.isArray(notificaciones)) return map;
+  for (const n of notificaciones) {
+    if (!n) continue;
+    const resourceId = Number(n.resourceId);
+    const notifId = Number(n.notifId);
+    if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
+    const ids = Array.isArray(n.dropUnitIds)
+      ? [...new Set(n.dropUnitIds.map((id) => String(id).trim()).filter(Boolean))]
+      : [];
+    map.set(`${resourceId}_${notifId}`, ids);
+  }
+  return map;
+};
+
 dotenv.config();
 
 const transporter = nodemailer.createTransport({
@@ -268,6 +330,7 @@ app.use((req, res, next) => {
     req.path === "/request-reset-password" ||
     req.path === "/reset-password" ||
     req.path.startsWith("/inbound/") ||
+    req.path.startsWith("/wialon/") ||
     (req.method === "GET" && req.path == "/")
   ) {
     return next();
@@ -284,7 +347,10 @@ app.use((req, res, next) => {
     const data = jwt.verify(token, JWT_SECRET); // Verify the token
     req.session.user = data.user; // Store user data in session
   } catch (e) {
-    console.error(e);
+    // Expired / invalid tokens are normal client sessions — return 401 without stack spam.
+    if (e?.name !== "TokenExpiredError" && e?.name !== "JsonWebTokenError") {
+      console.error("JWT verify unexpected error:", e.message || e);
+    }
     req.session.user = null;
     return res.status(401).json({ message: "Unauthorized: Invalid token" }); // Return response on error
   }
@@ -292,38 +358,19 @@ app.use((req, res, next) => {
   next(); // Proceed to the next middleware
 });
 
-// A transient DNS failure (EAI_AGAIN) rejects the driver connection as an
-// unhandled promise and exits the process. node --watch then waits for a
-// file change instead of starting again, which takes the API offline.
-const isMongoNetworkError = (err) => {
-  const name = err?.name || "";
-  const code = err?.code || err?.cause?.code || "";
-  return name === "MongoNetworkError" || name === "MongoServerSelectionError" || code === "EAI_AGAIN";
-};
-
+// Transient DNS failures (EAI_AGAIN) reject this promise. Left unhandled, Node exits.
 const connectMongo = () => {
   mongoose
     .connect(process.env.MONGO_URI)
     .then(() => console.log("MongoDB connected"))
     .catch((err) => {
-      console.error("MongoDB connect failed, retrying in 5s:", err?.message || err);
+      console.error(`MongoDB connection failed (${err.code || err.name}): ${err.message}. Retrying in 5s.`);
       setTimeout(connectMongo, 5000);
     });
 };
-
 mongoose.connection.on("error", (err) => {
-  console.error("MongoDB connection error:", err?.message || err);
+  console.error("MongoDB error:", err.message);
 });
-
-process.on("unhandledRejection", (err) => {
-  if (isMongoNetworkError(err)) {
-    console.error("MongoDB network error (process kept alive):", err?.message || err);
-    return;
-  }
-  console.error("Unhandled rejection:", err);
-  process.exit(1);
-});
-
 connectMongo();
 
 app.get("/", (req, res) => {
@@ -473,8 +520,8 @@ app.post("/reset-password", async (req, res) => {
 app.post("/protected", (req, res) => {
   const { user } = req.session;
 
-  if (!user) return res.send("Access Denied").status(401);
-  res.json({ user: user }).status(200);
+  if (!user) return res.status(401).send("Access Denied");
+  res.status(200).json({ user: user });
 });
 
 app.post("/refresh_token", async (req, res) => {
@@ -520,7 +567,8 @@ app.get("/user", async (req, res) => {
     const users = await User.find();
     res.status(200).json(users);
   } catch (e) {
-    console.log(e);
+    console.error("Error fetching users:", e.message);
+    res.status(500).json({ message: "Error fetching users" });
   }
 });
 
@@ -530,7 +578,8 @@ app.get("/user/:id", async (req, res) => {
     const user = await User.findOne({ email: id });
     res.status(200).json(user);
   } catch (e) {
-    console.log(e);
+    console.error("Error fetching user:", e.message);
+    res.status(500).json({ message: "Error fetching user" });
   }
 });
 
@@ -545,7 +594,7 @@ app.post("/user/:id", async (req, res) => {
   }
 
   try {
-    const userToUpdate = await User.updateOne(
+    await User.updateOne(
       { email: id },
       {
         name: data.name,
@@ -560,11 +609,10 @@ app.post("/user/:id", async (req, res) => {
       }
     );
 
-    console.log(userToUpdate);
     res.status(200).json({ message: "User Updated" });
   } catch (e) {
-    console.log(e);
-    res.json({ message: "User NOT Updated" });
+    console.error("Error updating user:", e.message);
+    res.status(500).json({ message: "User NOT Updated" });
   }
 });
 
@@ -691,10 +739,9 @@ app.get("/bitacoras", async (req, res) => {
     }
     if (idFilter) query.bitacora_id = { $regex: idFilter, $options: "i" };
     if (creationDateFilter) {
-      const startDate = new Date(creationDateFilter);
-      const endDate = new Date(creationDateFilter);
-      endDate.setDate(endDate.getDate() + 1);
-      query.createdAt = { $gte: startDate, $lt: endDate };
+      const startDate = new Date(creationDateFilter + "T00:00:00");
+      const endDate = new Date(creationDateFilter + "T23:59:59.999");
+      query.createdAt = { $gte: startDate, $lte: endDate };
     }
 
     // Hide cerradas if role doesn't have permission
@@ -2091,12 +2138,8 @@ app.get("/bitacora/:id", async (req, res) => {
 
             const hasRegistroData = !!(t.registro && (t.registro.coordenadas || t.registro.ubicacion));
 
-            // If gpsData exists but without data, backfill from registro
-            if (t.gpsData.length > 0 && !t.gpsData[0].data && hasRegistroData) {
-              t.gpsData[0].data = buildDataFromRegistro(t.registro);
-            }
-
-            // If gpsData missing, create from registro when available
+            // Migration aid: if gpsData missing but registro has data, create gpsData[0] from gpsUnits[0] + registro
+            // This handles old documents created before gpsData was populated by the client
             if (t.gpsData.length === 0 && hasRegistroData) {
               const firstUnit = t.gpsUnits[0] || {};
               t.gpsData.push({
@@ -2119,9 +2162,17 @@ app.get("/bitacora/:id", async (req, res) => {
 
 app.patch("/bitacora/:id/event", async (req, res) => {
   const { id } = req.params;
-  const { nombre, descripcion, registrado_por, frecuencia, transportes } = req.body;
-
-  console.log(transportes);
+  const {
+    nombre,
+    descripcion,
+    registrado_por,
+    frecuencia,
+    transportes,
+    wialonTriggeredAt,
+    wialonResourceId,
+    wialonNotifId,
+    wialonUnitId,
+  } = req.body;
 
   try {
     // Find the bitacora by its ID (exclude deleted)
@@ -2147,34 +2198,23 @@ app.patch("/bitacora/:id/event", async (req, res) => {
     // Create a new event, normalizing gpsData for each transporte
     const normalizedTransportes = (transportes || []).map((t) => {
       const registro = t.registro || {};
-      const hasRegistro = !!(registro.coordenadas || registro.ubicacion);
-      const gpsUnits = Array.isArray(t.gpsUnits) ? t.gpsUnits : [];
+      const gpsUnits = normalizeGpsUnits(t.gpsUnits);
       let gpsData = Array.isArray(t.gpsData) ? t.gpsData : [];
 
-      // Ensure first gpsData has a data object when registro has values
-      if (hasRegistro) {
-        if (gpsData.length === 0) {
-          const firstUnit = gpsUnits[0] || {};
-          gpsData = [{
-            wialonId: firstUnit.wialonId || undefined,
-            name: firstUnit.name || undefined,
-            data: {
-              duracion: registro.duracion || "",
-              velocidad: registro.velocidad || "",
-              coordenadas: registro.coordenadas || "",
-              ultimo_posicionamiento: registro.ultimo_posicionamiento || "",
-              ubicacion: registro.ubicacion || "",
-            }
-          }];
-        } else if (!gpsData[0].data) {
-          gpsData[0].data = {
+      // Migration aid: if client didn't send gpsData (old client), create from gpsUnits[0] + registro
+      if (gpsData.length === 0 && (registro.coordenadas || registro.ubicacion)) {
+        const firstUnit = gpsUnits[0] || {};
+        gpsData = [{
+          wialonId: firstUnit.wialonId || undefined,
+          name: firstUnit.name || undefined,
+          data: {
             duracion: registro.duracion || "",
             velocidad: registro.velocidad || "",
             coordenadas: registro.coordenadas || "",
             ultimo_posicionamiento: registro.ultimo_posicionamiento || "",
             ubicacion: registro.ubicacion || "",
-          };
-        }
+          }
+        }];
       }
 
       return { ...t, gpsUnits, gpsData };
@@ -2235,6 +2275,15 @@ app.patch("/bitacora/:id/event", async (req, res) => {
       registrado_por,
       frecuencia,
       transportes: finalTransportes,
+      ...(wialonTriggeredAt != null
+        ? {
+            wialonTriggeredAt: Number(wialonTriggeredAt) || null,
+            wialonResourceId:
+              wialonResourceId != null ? Number(wialonResourceId) : null,
+            wialonNotifId: wialonNotifId != null ? Number(wialonNotifId) : null,
+            wialonUnitId: wialonUnitId != null ? String(wialonUnitId) : null,
+          }
+        : {}),
     };
 
     // Add the new event to the bitacora's eventos array
@@ -2286,9 +2335,8 @@ app.patch("/bitacora/:id", async (req, res) => {
   }
 
   // Convertir campos de texto a mayúsculas antes de procesar
-  const excludeFields = ['status', 'inicioMonitoreo', 'finalMonitoreo', 'telefono', '_id', 'createdAt', 'updatedAt', 'bitacora_id', 'capacidad', 'gpsUnits', 'origen', 'destino', 'eventos'];
+  const excludeFields = ['status', 'inicioMonitoreo', 'finalMonitoreo', 'telefono', '_id', 'createdAt', 'updatedAt', 'bitacora_id', 'capacidad', 'gpsUnits', 'origen', 'destino', 'eventos', 'notificaciones'];
   const updatedData = convertToUpperCase(validatedData, excludeFields);
-  console.log(updatedData);
 
   try {
     const bitacora = await Bitacora.findOne({
@@ -2305,11 +2353,13 @@ app.patch("/bitacora/:id", async (req, res) => {
     // Preserve internalId across transporte updates — it must never change once assigned.
     // Match incoming transportes to existing ones by: internalId → current id → _originalId (id changed).
     // Evento transporte copies also get their internalId stamped so future matches work.
+    const wialonJobs = [];
     if (updatedData.transportes) {
       const existingById = new Map(bitacora.transportes.map((t) => [t.id, t]));
       const existingByInternalId = new Map(
         bitacora.transportes.filter((t) => t.internalId).map((t) => [t.internalId, t])
       );
+      const notifKeyOf = (n) => `${Number(n.resourceId)}_${Number(n.notifId)}`;
 
       updatedData.transportes = updatedData.transportes.map((t) => {
         const existing =
@@ -2317,8 +2367,33 @@ app.patch("/bitacora/:id", async (req, res) => {
           existingById.get(t.id) ||
           (t._originalId && existingById.get(t._originalId));
         const { _originalId, ...rest } = t;
+        const units = normalizeGpsUnits(rest.gpsUnits);
+        const stored = existing?.notificaciones || [];
+        const rawNotifs = Array.isArray(rest.notificaciones) ? rest.notificaciones : [];
+        const dropByKey = dropUnitIdsByNotif(rawNotifs);
+        const nextNotifs = Array.isArray(rest.notificaciones)
+          ? normalizeNotificaciones(rest.notificaciones)
+          : normalizeNotificaciones(stored.map((n) => (n.toObject ? n.toObject() : n)));
+        const prevKeys = new Set(stored.map(notifKeyOf));
+        const added = nextNotifs.filter((n) => !prevKeys.has(notifKeyOf(n)));
+        if (added.length && units.length) {
+          wialonJobs.push({
+            unitIds: units.map((u) => u.wialonId),
+            selections: added.map((n) => ({
+              resourceId: n.resourceId,
+              notifId: n.notifId,
+              action: "link",
+              dropUnitIds: dropByKey.get(notifKeyOf(n)) || [],
+            })),
+          });
+        }
         // Use existing internalId (immutable), or incoming one, or let schema default generate one
-        return { ...rest, internalId: existing?.internalId || t.internalId || undefined };
+        return {
+          ...rest,
+          gpsUnits: units,
+          notificaciones: nextNotifs,
+          internalId: existing?.internalId || t.internalId || undefined,
+        };
       });
 
       // Build old-id → resolved transporte map for evento copy repair
@@ -2474,7 +2549,27 @@ app.patch("/bitacora/:id", async (req, res) => {
       }
     ]);
 
-    res.json(resolvedBitacora[0]);
+    let wialonSync = null;
+    if (wialonJobs.length) {
+      wialonSync = { applied: [], failed: [], skippedUnits: [], pruned: [] };
+      for (const job of wialonJobs) {
+        try {
+          const part = await withDeadline(applyWialonSelections(job));
+          wialonSync.applied.push(...(part.applied || []));
+          wialonSync.failed.push(...(part.failed || []));
+          wialonSync.skippedUnits.push(...(part.skippedUnits || []));
+          wialonSync.pruned.push(...(part.pruned || []));
+        } catch (err) {
+          console.error("Wialon notification sync failed:", err);
+          wialonSync.failed.push(...job.selections.map((n) => ({ ...n, error: err.message })));
+        }
+      }
+      invalidateCatalogCache();
+    }
+
+    const payload = resolvedBitacora[0];
+    if (payload && wialonSync) payload.wialonSync = wialonSync;
+    res.json(payload);
   } catch (error) {
     console.error("Error updating bitacora:", error);
     res.status(500).json({ message: "Internal server error" });
@@ -2485,7 +2580,7 @@ app.patch("/bitacora/:id", async (req, res) => {
 app.post("/bitacoras/:id/transportes", async (req, res) => {
   try {
     const bitacoraId = req.params.id;
-    const { id, internalId, tracto, remolque, operador, lineaTransporte, telefono, gpsUnits } = req.body;
+    const { id, internalId, tracto, remolque, operador, lineaTransporte, telefono, gpsUnits, notificaciones } = req.body;
 
     // Find the bitacora by ID (exclude deleted)
     const bitacora = await Bitacora.findOne({
@@ -2496,6 +2591,10 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
       return res.status(404).json({ message: "Bitacora not found" });
     }
 
+    const normalizedUnits = normalizeGpsUnits(gpsUnits);
+    const dropByKey = dropUnitIdsByNotif(notificaciones);
+    const normalizedNotifs = normalizeNotificaciones(notificaciones);
+
     // Create a new Transporte object (internalId auto-assigned by schema default)
     const newTransporte = {
       id,
@@ -2504,7 +2603,8 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
       lineaTransporte,
       operador,
       telefono,
-      gpsUnits: gpsUnits || [], // Incluir gpsUnits, por defecto array vacío
+      gpsUnits: normalizedUnits,
+      notificaciones: normalizedNotifs,
     };
 
     // Add the new Transporte to the bitacora's transportes array
@@ -2513,11 +2613,111 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
     // Save the updated bitacora
     await bitacora.save();
 
+    // Link/enable the selected Wialon notifications for these GPS units.
+    // Best effort: the transporte is already saved, so failures are reported
+    // instead of aborting the request.
+    let wialonSync = null;
+    if (normalizedUnits.length > 0 && normalizedNotifs.length > 0) {
+      try {
+        wialonSync = await applyWialonSelections({
+          unitIds: normalizedUnits.map((u) => u.wialonId),
+          selections: normalizedNotifs.map((n) => ({
+            resourceId: n.resourceId,
+            notifId: n.notifId,
+            action: "link",
+            dropUnitIds: dropByKey.get(`${n.resourceId}_${n.notifId}`) || [],
+          })),
+        });
+      } catch (err) {
+        console.error("Wialon notification sync failed:", err);
+        wialonSync = {
+          applied: [],
+          failed: normalizedNotifs.map((n) => ({
+            resourceId: n.resourceId,
+            notifId: n.notifId,
+            action: "link",
+            error: err.message,
+          })),
+          pruned: [],
+          prunedEnabled: false,
+          skippedUnits: [],
+          error: err.message,
+        };
+      }
+    }
+
+    if (wialonSync && (wialonSync.failed.length || wialonSync.skippedUnits.length)) {
+      console.warn("[wialon-sync]", JSON.stringify({
+        bitacora: bitacoraId,
+        transporte: id,
+        failed: wialonSync.failed,
+        skippedUnits: wialonSync.skippedUnits,
+        applied: wialonSync.applied.length,
+      }));
+    }
+
     // Return the updated bitacora
-    res.status(200).json(bitacora);
+    const payload = bitacora.toObject();
+    payload.wialonSync = wialonSync;
+    res.status(200).json(payload);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error", error });
+  }
+});
+
+// Remove a transporte from a bitácora (unlink Wialon notifs when safe; keep event history).
+app.delete("/bitacoras/:id/transportes/:transporteId", async (req, res) => {
+  try {
+    const { id, transporteId } = req.params;
+    const bitacora = await Bitacora.findOne({
+      _id: id,
+      deleted: { $ne: true },
+    });
+    if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
+
+    const tIdx = bitacora.transportes.findIndex(
+      (t) =>
+        String(t.id) === String(transporteId) ||
+        String(t.internalId) === String(transporteId)
+    );
+    if (tIdx < 0) return res.status(404).json({ message: "Transporte not found" });
+
+    const removed = bitacora.transportes[tIdx];
+    const removedPlain =
+      typeof removed.toObject === "function" ? removed.toObject() : { ...removed };
+
+    let wialonSync = null;
+    try {
+      wialonSync = await withDeadline(
+        unlinkWialonTransporteNotifications(bitacora, removed)
+      );
+    } catch (err) {
+      console.error("Wialon transporte unlink on remove failed:", err);
+      wialonSync = {
+        applied: [],
+        failed: [],
+        pruned: [],
+        prunedEnabled: false,
+        skippedUnits: [],
+        skippedShared: [],
+        error: err.message,
+      };
+    }
+
+    bitacora.transportes.splice(tIdx, 1);
+    bitacora.markModified("transportes");
+    await bitacora.save();
+    invalidateCatalogCache();
+
+    res.json({
+      bitacora,
+      removed: removedPlain,
+      wialonSync,
+    });
+  } catch (err) {
+    console.error("Transporte remove error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -2575,10 +2775,44 @@ app.patch("/bitacora/:id/status", async (req, res) => {
     });
     if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
 
+    const prevStatus = String(bitacora.status || "").toLowerCase();
+    const nextStatus = String(status || "").toLowerCase();
+    const wasClosed = WIALON_CLOSED_STATUSES.includes(prevStatus);
+    const isNowClosed = WIALON_CLOSED_STATUSES.includes(nextStatus);
+
     bitacora.status = status;
     await bitacora.save();
 
-    res.json(bitacora);
+    // On close (e.g. after "Cierre de servicio"), unlink GPS from Wialon alerts.
+    // Best effort: never block closing the bitácora if Wialon fails.
+    let wialonSync = null;
+    if (!wasClosed && isNowClosed) {
+      try {
+        wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
+      } catch (err) {
+        console.error("Wialon notification unlink on close failed:", err);
+        wialonSync = {
+          applied: [],
+          failed: [],
+          pruned: [],
+          prunedEnabled: false,
+          skippedUnits: [],
+          error: err.message,
+        };
+      }
+      if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
+        console.warn("[wialon-unlink-close]", JSON.stringify({
+          bitacora: bitacora._id,
+          status: nextStatus,
+          failed: wialonSync.failed,
+          error: wialonSync.error,
+        }));
+      }
+    }
+
+    const payload = bitacora.toObject ? bitacora.toObject() : bitacora;
+    if (wialonSync) payload.wialonSync = wialonSync;
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -2629,6 +2863,30 @@ app.delete("/bitacora/:id", async (req, res) => {
 
     await bitacora.save();
 
+    // Soft-deleted trips should not keep GPS on Wialon alert rules.
+    // Best effort: never block the delete if Wialon fails.
+    let wialonSync = null;
+    try {
+      wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
+    } catch (err) {
+      console.error("Wialon notification unlink on soft-delete failed:", err);
+      wialonSync = {
+        applied: [],
+        failed: [],
+        pruned: [],
+        prunedEnabled: false,
+        skippedUnits: [],
+        error: err.message,
+      };
+    }
+    if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
+      console.warn("[wialon-unlink-delete]", JSON.stringify({
+        bitacora: bitacora._id,
+        failed: wialonSync.failed,
+        error: wialonSync.error,
+      }));
+    }
+
     // Create audit record for deletion
     await auditDeletion({
       oldData,
@@ -2645,7 +2903,8 @@ app.delete("/bitacora/:id", async (req, res) => {
         deleted: bitacora.deleted,
         deleted_at: bitacora.deleted_at,
         deleted_by: bitacora.deleted_by
-      }
+      },
+      ...(wialonSync ? { wialonSync } : {}),
     });
   } catch (error) {
     console.error("Error soft deleting bitacora:", error);
@@ -3034,7 +3293,17 @@ app.post("/integrations/:id/vehicles", async (req, res) => {
       return res.status(400).json({ message: "Vehicles must be an array" });
     }
 
-    const operations = vehicles.map((v) => ({
+    // Validate and sanitize wialonUnitId — must be a numeric string or absent
+    const sanitizedVehicles = vehicles.map((v) => {
+      const clean = { ...v };
+      if (clean.wialonUnitId != null) {
+        const s = String(clean.wialonUnitId).trim();
+        clean.wialonUnitId = /^\d+$/.test(s) ? s : undefined;
+      }
+      return clean;
+    });
+
+    const operations = sanitizedVehicles.map((v) => ({
       updateOne: {
         filter: { integrationId, imei: v.imei },
         update: { $set: { ...v, integrationId } },
@@ -3126,6 +3395,118 @@ app.post("/integrations/:id/flush-wialon", async (req, res) => {
   }
 });
 
+// GET status of Wialon push pipeline for an integration
+app.get("/integrations/:id/wialon-status", async (req, res) => {
+  try {
+    const integrationId = req.params.id;
+    const stats = await InboundMessage.aggregate([
+      { $match: { integrationId: new mongoose.Types.ObjectId(integrationId) } },
+      { $group: {
+        _id: "$wialonStatus",
+        count: { $sum: 1 },
+        lastAt: { $max: "$createdAt" },
+        lastError: { $last: "$wialonError" }
+      }}
+    ]);
+    
+    const pendingCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "pending" });
+    const failedCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "failed" });
+    const pushedCount = await InboundMessage.countDocuments({ integrationId, wialonStatus: "pushed" });
+    
+    res.json({
+      pending: pendingCount,
+      failed: failedCount,
+      pushed: pushedCount,
+      details: stats
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// GET units from Wialon for an integration (to help with sync/mapping)
+app.get("/integrations/:id/wialon-units", async (req, res) => {
+  try {
+    const integration = await Integration.findById(req.params.id);
+    if (!integration) return res.status(404).json({ message: "Integration not found" });
+
+    const token = integration.wialonToken || process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ message: "No Wialon token configured" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) throw new Error(`Login error: ${loginData.error}`);
+    const sid = loginData.eid;
+
+    try {
+      const data = await wialonApiCall("core/search_items", {
+        spec: { itemsType: "avl_unit", propName: "sys_name", propValueMask: "*", sortType: "sys_name" },
+        force: 1,
+        flags: 0x1 | 0x100, // basic + custom props
+        from: 0, to: 1000
+      }, sid);
+
+      res.json(data.items || []);
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Sync local vehicle mappings status with Wialon
+app.post("/integrations/:id/sync-status", async (req, res) => {
+  try {
+    const integrationId = req.params.id;
+    const integration = await Integration.findById(integrationId);
+    if (!integration) return res.status(404).json({ message: "Integration not found" });
+
+    const token = integration.wialonToken || process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ message: "No Wialon token configured" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) throw new Error(`Login error: ${loginData.error}`);
+    const sid = loginData.eid;
+
+    try {
+      // 1. Get all units from Wialon
+      const data = await wialonApiCall("core/search_items", {
+        spec: { itemsType: "avl_unit", propName: "sys_name", propValueMask: "*", sortType: "sys_name" },
+        force: 1,
+        flags: 0x1,
+        from: 0, to: 1000
+      }, sid);
+      
+      const wialonUnitIds = new Set((data.items || []).map(u => String(u.id)));
+      
+      // 2. Update local mappings
+      const mappings = await VehicleMapping.find({ integrationId });
+      let updatedCount = 0;
+      
+      for (const m of mappings) {
+        let newStatus = m.status;
+        if (m.wialonUnitId && !wialonUnitIds.has(m.wialonUnitId)) {
+          newStatus = "pending"; // Lost link
+        } else if (m.wialonUnitId && wialonUnitIds.has(m.wialonUnitId)) {
+          newStatus = "linkedToWialon";
+        }
+        
+        if (newStatus !== m.status) {
+          m.status = newStatus;
+          await m.save();
+          updatedCount++;
+        }
+      }
+      
+      res.json({ success: true, updated: updatedCount, total: mappings.length });
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 // Legacy endpoint maintained for compatibility if needed
 app.post("/integrations/:id/import-to-wialon", async (req, res) => {
   try {
@@ -3134,6 +3515,781 @@ app.post("/integrations/:id/import-to-wialon", async (req, res) => {
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+});
+
+// ── Wialon API Proxy (avoids JS SDK execute limitations) ──
+// wialonApiCall se importa de utils/wialonClient.js (con reintentos + mensajes claros).
+
+// GET /wialon/notifications - fetch notification rules from all resources
+// Data flag 0x0400 = Resource.dataFlag.notifications — field is 'unf' (dict keyed by notif id)
+app.get("/wialon/notifications", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const includeLastTrigger =
+      String(req.query.includeLastTrigger || "").toLowerCase() === "1" ||
+      String(req.query.includeLastTrigger || "").toLowerCase() === "true";
+
+    const notifications = await withDeadline(
+      listWialonNotifications({ unitIds, includeLastTrigger })
+    );
+    res.json({ notifications });
+  } catch (err) {
+    console.error("[wialon/notifications] falló:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// Process-level cache for /wialon/open-bitacoras-with-alerts (refreshed every 60s)
+let _openBitAlertsCache = null;
+let _openBitAlertsCacheTime = 0;
+const OPEN_BIT_ALERTS_CACHE_TTL = 60 * 1000;
+
+// GET /wialon/open-bitacoras-with-alerts
+// Returns { byId: { <bitacoraMongoId>: [enabledAlertName, ...] } } for OPEN bitácoras
+// whose transportes[].gpsUnits[].wialonId is covered by at least one ENABLED Wialon
+// notification rule. Soft-fails to { byId: {} } when the Wialon token is missing
+// or the Wialon API errors, so the list page can still render.
+app.get("/wialon/open-bitacoras-with-alerts", async (req, res) => {
+  try {
+    const now = Date.now();
+    if (_openBitAlertsCache && now - _openBitAlertsCacheTime < OPEN_BIT_ALERTS_CACHE_TTL) {
+      return res.json(_openBitAlertsCache);
+    }
+
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+    const sid = loginData.eid;
+
+    let searchData;
+    try {
+      searchData = await wialonApiCall(
+        "core/search_items",
+        {
+          spec: {
+            itemsType: "avl_resource",
+            propName: "*",
+            propValueMask: "*",
+            sortType: "sys_name",
+          },
+          force: 1,
+          flags: 0x0400,
+          from: 0,
+          to: 1000,
+        },
+        sid
+      );
+    } finally {
+      wialonApiCall("core/logout", {}, sid).catch(() => {});
+    }
+
+    if (!searchData || searchData.error || !searchData.items) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    // unitId (string) -> Set of enabled alert names covering it
+    const unitAlertsMap = {};
+    for (const resItem of searchData.items) {
+      const unf = resItem.unf;
+      if (!unf || typeof unf !== "object") continue;
+      for (const n of Object.values(unf)) {
+        if (!n || n.error) continue;
+        // Enabled = bit 0x2 NOT set
+        if (n.fl & 0x2) continue;
+        const name = n.n || "Sin nombre";
+        const unitIds = n.un || [];
+        for (const uid of unitIds) {
+          const key = String(uid);
+          if (!unitAlertsMap[key]) unitAlertsMap[key] = new Set();
+          unitAlertsMap[key].add(name);
+        }
+      }
+    }
+
+    const enabledUnitIds = Object.keys(unitAlertsMap);
+    if (enabledUnitIds.length === 0) {
+      const empty = { byId: {} };
+      _openBitAlertsCache = empty;
+      _openBitAlertsCacheTime = now;
+      return res.json(empty);
+    }
+
+    const col = mongoose.connection.db.collection("bitacoras");
+    const openBits = await col
+      .find(
+        {
+          deleted: false,
+          status: { $nin: ["cerrada", "cerrada (e)", "finalizada"] },
+          "transportes.gpsUnits.wialonId": { $in: enabledUnitIds },
+        },
+        {
+          projection: {
+            _id: 1,
+            bitacora_id: 1,
+            "transportes.id": 1,
+            "transportes.gpsUnits.wialonId": 1,
+          },
+        }
+      )
+      .toArray();
+
+    const byId = {};
+    for (const bit of openBits) {
+      const names = new Set();
+      for (const t of bit.transportes || []) {
+        for (const g of t.gpsUnits || []) {
+          const wid = String(g.wialonId);
+          const hits = unitAlertsMap[wid];
+          if (hits) {
+            for (const nm of hits) names.add(nm);
+          }
+        }
+      }
+      if (names.size > 0) {
+        byId[bit._id.toString()] = Array.from(names);
+      }
+    }
+
+    const result = { byId };
+    _openBitAlertsCache = result;
+    _openBitAlertsCacheTime = now;
+    return res.json(result);
+  } catch (err) {
+    console.error("open-bitacoras-with-alerts error:", err);
+    // Soft-fail so bitácoras list keeps working
+    return res.json({ byId: {} });
+  }
+});
+
+app.post("/wialon/notifications/:resourceId/:notifId/toggle", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN" });
+
+    const { resourceId, notifId } = req.params;
+    const { enabled } = req.body;
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const result = await wialonApiCall(
+      "resource/update_notification",
+      {
+        itemId: parseInt(resourceId),
+        id: parseInt(notifId),
+        callMode: "enable",
+        e: enabled ? 1 : 0,
+      },
+      sid
+    );
+
+    await wialonApiCall("core/logout", {}, sid);
+
+    if (result.error) {
+      return res.status(500).json({ error: `Toggle error: ${result.error}` });
+    }
+
+    invalidateCatalogCache();
+    res.json({ success: true, enabled: !!enabled });
+  } catch (err) {
+    console.error("Wialon notification toggle error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /wialon/notifications/toggle-bulk - batch toggle notifications
+app.post("/wialon/notifications/toggle-bulk", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN" });
+
+    const { items } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: "items array is required" });
+    }
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    let updated = 0;
+    for (const item of items) {
+      const result = await wialonApiCall(
+        "resource/update_notification",
+        {
+          itemId: parseInt(item.resourceId),
+          id: parseInt(item.notifId),
+          callMode: "enable",
+          e: item.enabled ? 1 : 0,
+        },
+        sid
+      );
+      if (!result.error) updated++;
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+    invalidateCatalogCache();
+    res.json({ success: true, updated });
+  } catch (err) {
+    console.error("Wialon notification bulk toggle error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /wialon/notifications/:resourceId/:notifId/log - fetch historical trigger log for a specific notification
+app.get("/wialon/notifications/:resourceId/:notifId/log", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const { resourceId, notifId } = req.params;
+    const { from, to } = req.query;
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    // Default to last 30 days if from/to not provided
+    const now = Math.floor(Date.now() / 1000);
+    const thirtyDaysAgo = now - (30 * 24 * 3600);
+    
+    const timeFrom = from ? parseInt(from) : thirtyDaysAgo;
+    const timeTo = to ? parseInt(to) : now;
+
+    // 1. Get the notification name by searching for it in the resource
+    const searchRes = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_resource",
+          propName: "sys_id",
+          propValueMask: String(resourceId),
+          sortType: "sys_name"
+        },
+        force: 1,
+        flags: 0x0400 | 0x01,
+        from: 0,
+        to: 1
+      },
+      sid
+    );
+
+    let notifName = "";
+    if (searchRes.items && searchRes.items.length > 0 && searchRes.items[0].unf) {
+      const notif = searchRes.items[0].unf[notifId];
+      if (notif) {
+        notifName = notif.n;
+      }
+    }
+
+    // 2. Get the notification log (Primary method)
+    let logEntries = [];
+    const logData = await wialonApiCall(
+      "resource/get_notifications_log",
+      {
+        itemId: parseInt(resourceId),
+        col: [parseInt(notifId)],
+        from: timeFrom,
+        to: timeTo,
+      },
+      sid
+    );
+
+    if (logData && !logData.error) {
+      if (logData[notifId] && Array.isArray(logData[notifId].log)) {
+        logEntries = logData[notifId].log;
+      } else {
+        // Fallback: search for any key that has a log array
+        const firstKey = Object.keys(logData).find(k => logData[k] && Array.isArray(logData[k].log));
+        if (firstKey) {
+          logEntries = logData[firstKey].log;
+        }
+      }
+    } else if (notifName) {
+      // 3. Fallback to resource messages if primary method failed and we have a name
+      const messagesData = await wialonApiCall(
+        "messages/load_interval",
+        {
+          itemId: parseInt(resourceId),
+          timeFrom: timeFrom,
+          timeTo: timeTo,
+          flags: 0,
+          flagsMask: 0,
+          loadCount: 5000
+        },
+        sid
+      );
+
+      if (messagesData && Array.isArray(messagesData.messages)) {
+        const filtered = messagesData.messages.filter(m =>
+          m.p && m.p.notification && m.p.notification.includes(notifName)
+        );
+
+        logEntries = filtered.map(m => ({
+          t: m.t,
+          u: 0, // Resource messages might not have unit ID in 'u' field, but it's in 'p.unit'
+          txt: `[Trigger] ${m.p.notification} for unit ${m.p.unit || "Unknown"}`,
+          tm: m.t,
+          unit_name: m.p.unit,
+          raw_msg: m
+        }));
+      }
+    }
+
+    // 4. Build unit name lookup if we have entries and need names
+    const unitNameMap = {};
+    const unitsToFetch = [...new Set(logEntries.map(e => e.u).filter(u => u > 0))];
+
+    if (unitsToFetch.length > 0 || logEntries.some(e => !e.unit_name)) {
+      const unitSearchData = await wialonApiCall(
+        "core/search_items",
+        {
+          spec: {
+            itemsType: "avl_unit",
+            propName: "sys_name",
+            propValueMask: "*",
+            sortType: "sys_name",
+          },
+          force: 1,
+          flags: 0x1,
+          from: 0,
+          to: 1000,
+        },
+        sid
+      );
+
+      if (unitSearchData && Array.isArray(unitSearchData.items)) {
+        unitSearchData.items.forEach(u => {
+          unitNameMap[u.id] = u.nm || `Unit ${u.id}`;
+        });
+      }
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+
+
+    // 5. Map logs to a cleaner format
+    const logs = logEntries.map(entry => ({
+      timestamp: entry.t,
+      unitId: entry.u || (entry.raw_msg?.p?.unit_id),
+      unitName: entry.unit_name || unitNameMap[entry.u] || `ID: ${entry.u}`,
+      text: entry.txt || "",
+      lng: entry.p?.x || entry.raw_msg?.p?.lon || entry.raw_msg?.pos?.x,
+      lat: entry.p?.y || entry.raw_msg?.p?.lat || entry.raw_msg?.pos?.y,
+      serverTime: entry.tm || entry.t
+    }));
+
+
+    // Sort by timestamp descending
+    logs.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.json({ logs });
+  } catch (err) {
+    console.error("Wialon notification log error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Auth guard for privileged Wialon endpoints (the global middleware skips /wialon/*)
+const requireAppAuth = (req, res, next) => {
+  const token = req.cookies.access_token;
+  if (!token) return res.status(401).json({ message: "Unauthorized: Token missing" });
+  try {
+    req.session.user = jwt.verify(token, JWT_SECRET).user;
+    next();
+  } catch (e) {
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+};
+
+// nginx (reverse proxy) closes the request after 60s. A response that late comes
+// from nginx itself, which does NOT add the CORS headers — the browser then
+// reports a CORS error instead of the real failure. Every long Wialon call is
+// therefore raced against a deadline so we always answer first, with headers.
+const WIALON_DEADLINE_MS = Number(process.env.WIALON_DEADLINE_MS || 50000);
+
+function withDeadline(promise, ms = WIALON_DEADLINE_MS, message = null) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(
+        message ||
+          "Wialon tardó demasiado en responder. Intenta de nuevo en unos segundos."
+      );
+      err.code = "WIALON_DEADLINE";
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+const upstreamStatus = (err) => (err?.code === "WIALON_DEADLINE" ? 504 : 502);
+
+// GET /wialon/notifications/catalog?unitIds=1,2&hint=ECO&q=texto
+// Catalog for the transporte wizard: which GPS units exist, which notifications
+// already cover them, and free candidates for the 4 canonical alert types.
+app.get("/wialon/notifications/catalog", requireAppAuth, async (req, res) => {
+  try {
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (unitIds.length === 0) return res.status(400).json({ error: "unitIds is required" });
+
+    const catalog = await withDeadline(
+      getWialonNotificationCatalog({
+        unitIds,
+        hint: String(req.query.hint || ""),
+        q: String(req.query.q || ""),
+      })
+    );
+    res.json(catalog);
+  } catch (err) {
+    console.error("Wialon notification catalog error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// POST /wialon/notifications/apply
+// body: { unitIds: ["123"], selections: [{resourceId, notifId, action: "link"|"unlink"}] }
+app.post("/wialon/notifications/apply", requireAppAuth, async (req, res) => {
+  try {
+    const { unitIds, selections } = req.body || {};
+    if (!Array.isArray(unitIds) || unitIds.length === 0)
+      return res.status(400).json({ error: "unitIds is required" });
+    if (!Array.isArray(selections) || selections.length === 0)
+      return res.status(400).json({ error: "selections is required" });
+
+    const results = await withDeadline(applyWialonSelections({ unitIds, selections }));
+    invalidateCatalogCache();
+    res.json(results);
+  } catch (err) {
+    // Writes may have partially landed before the failure: never leave a stale cache.
+    invalidateCatalogCache();
+    console.error("Wialon notification apply error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// POST /bitacoras/:id/transportes/:transporteId/notificaciones/unlink
+// Manual mid-trip unlink: remove GPS from a Wialon notification and clear Mongo binding.
+// body: { unitId, resourceId, notifId }
+app.post(
+  "/bitacoras/:id/transportes/:transporteId/notificaciones/unlink",
+  requireAppAuth,
+  async (req, res) => {
+    try {
+      const { id, transporteId } = req.params;
+      const { unitId, resourceId, notifId } = req.body || {};
+
+      if (unitId == null || resourceId == null || notifId == null) {
+        return res.status(400).json({
+          error: "unitId, resourceId and notifId are required",
+        });
+      }
+
+      const bitacora = await Bitacora.findOne({
+        _id: id,
+        deleted: { $ne: true },
+      });
+      if (!bitacora) return res.status(404).json({ message: "Bitacora not found" });
+
+      const tIdx = bitacora.transportes.findIndex(
+        (t) =>
+          String(t.id) === String(transporteId) ||
+          String(t.internalId) === String(transporteId)
+      );
+      if (tIdx < 0) return res.status(404).json({ message: "Transporte not found" });
+
+      const transporte = bitacora.transportes[tIdx];
+      const unitIds = [
+        ...new Set(
+          (transporte.gpsUnits || [])
+            .map((u) => (u?.wialonId != null ? String(u.wialonId).trim() : ""))
+            .filter(Boolean)
+        ),
+      ];
+      // Prefer all transporte GPS so Mongo (transporte-level list) matches Wialon.
+      const unlinkUnits = unitIds.length
+        ? unitIds
+        : [String(unitId).trim()].filter(Boolean);
+
+      let wialonSync = null;
+      if (unlinkUnits.length) {
+        try {
+          wialonSync = await withDeadline(
+            applyWialonSelections({
+              unitIds: unlinkUnits,
+              selections: [
+                {
+                  resourceId: Number(resourceId),
+                  notifId: Number(notifId),
+                  action: "unlink",
+                },
+              ],
+            })
+          );
+        } catch (err) {
+          console.error("Wialon notification unlink failed:", err);
+          wialonSync = {
+            applied: [],
+            failed: [
+              {
+                resourceId: Number(resourceId),
+                notifId: Number(notifId),
+                action: "unlink",
+                error: err.message,
+              },
+            ],
+            pruned: [],
+            prunedEnabled: false,
+            skippedUnits: [],
+            error: err.message,
+          };
+        }
+      }
+
+      // Clear Mongo binding even if Wialon is unreachable (stale local state).
+      const before = transporte.notificaciones || [];
+      transporte.notificaciones = before.filter(
+        (n) =>
+          !(
+            Number(n.resourceId) === Number(resourceId) &&
+            Number(n.notifId) === Number(notifId)
+          )
+      );
+      bitacora.markModified("transportes");
+      await bitacora.save();
+      invalidateCatalogCache();
+
+      const updated = bitacora.transportes[tIdx];
+      res.json({
+        transporte: typeof updated.toObject === "function" ? updated.toObject() : updated,
+        bitacora,
+        wialonSync,
+      });
+    } catch (err) {
+      console.error("Transporte notification unlink error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Manually process Wialon notification triggers → bitácora eventos.
+// Useful for testing without waiting for the periodic worker.
+app.post("/wialon/alert-events/process", requireAppAuth, async (req, res) => {
+  try {
+    const results = await withDeadline(processWialonTriggeredAlerts());
+    res.json(results);
+  } catch (err) {
+    console.error("Wialon alert-events process error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// GET /wialon/units - fetch all Wialon avl_unit items as [{id, name}]
+app.get("/wialon/units", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const searchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_unit",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        flags: 0x1, // base flags — just id + name
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    await wialonApiCall("core/logout", {}, sid);
+
+    if (searchData.error || !searchData.items) {
+      return res.status(500).json({ error: `Search error: ${searchData.error || "no items"}` });
+    }
+
+    const units = searchData.items.map((u) => ({ id: u.id, name: u.nm || `Unit ${u.id}` }));
+    res.json(units);
+  } catch (err) {
+    console.error("Wialon units proxy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /wialon/geofences/compliance?unitIds=1,2
+// Zones linked to geozone notifications for those GPS + live inside/outside status.
+app.get("/wialon/geofences/compliance", requireAppAuth, async (req, res) => {
+  try {
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (unitIds.length === 0) {
+      return res.status(400).json({ error: "unitIds is required" });
+    }
+    const result = await withDeadline(getGeofenceComplianceForUnits({ unitIds }));
+    res.json(result);
+  } catch (err) {
+    console.error("Wialon geofence compliance error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
+// GET /wialon/geofences - fetch geofence/zone data from all resources
+app.get("/wialon/geofences", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const searchData = await wialonApiCall(
+      "core/search_items",
+      {
+        spec: {
+          itemsType: "avl_resource",
+          propName: "*",
+          propValueMask: "*",
+          sortType: "sys_name",
+        },
+        force: 1,
+        // 0x01 = base (id/name), 0x1000 = zones list (zl)
+        flags: 0x1000 | 0x01,
+        from: 0,
+        to: 1000,
+      },
+      sid
+    );
+
+    const allZones = [];
+    if (!searchData.error && searchData.items) {
+      // Wialon no longer returns geometry for col:[]; pass zone ids from zl.
+      await Promise.all(
+        searchData.items.map(async (resItem) => {
+          const col = Object.keys(resItem.zl || {})
+            .map(Number)
+            .filter((n) => !Number.isNaN(n));
+          if (!col.length) return;
+          // Batch to keep payloads reasonable on large resources.
+          const chunkSize = 50;
+          for (let i = 0; i < col.length; i += chunkSize) {
+            const chunk = col.slice(i, i + chunkSize);
+            try {
+              const zData = await wialonApiCall(
+                "resource/get_zone_data",
+                { itemId: resItem.id, col: chunk, flags: 0x1f },
+                sid
+              );
+              if (zData?.error || !zData) continue;
+              // Wialon `d` is description — do not use it to detect zone objects.
+              const collectZone = (z) => {
+                if (!z || typeof z !== "object" || Array.isArray(z)) return;
+                if (!Array.isArray(z.p) || !z.p.length) return;
+                allZones.push({
+                  name: z.n || "Zona",
+                  type: Number(z.t),
+                  points: z.p,
+                  color: z.c
+                    ? "#" + ((z.c >>> 0).toString(16).padStart(8, "0").slice(2))
+                    : null,
+                  width: z.w,
+                });
+              };
+              if (Array.isArray(zData)) {
+                zData.forEach(collectZone);
+              } else if (Array.isArray(zData.p)) {
+                collectZone(zData);
+              } else {
+                Object.values(zData).forEach(collectZone);
+              }
+            } catch (err) {
+              console.warn(
+                `[wialon/geofences] get_zone_data failed for ${resItem.id}:`,
+                err.message
+              );
+            }
+          }
+        })
+      );
+    }
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json({ zones: allZones });
+  } catch (err) {
+    console.error("Wialon geofences proxy error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /wialon/proxy - generic Wialon API proxy for any service call
+// Body: { svc, params } — uses server's own WIALON_API_TOKEN
+app.post("/wialon/proxy", async (req, res) => {
+  try {
+    const token = process.env.WIALON_API_TOKEN;
+    const { svc, params } = req.body;
+    if (!token) return res.status(400).json({ error: "Missing WIALON_API_TOKEN in server .env" });
+    if (!svc) return res.status(400).json({ error: "Missing svc parameter" });
+
+    const loginData = await wialonApiCall("token/login", { token });
+    if (loginData.error) {
+      return res.status(401).json({ error: `Wialon auth error: ${loginData.error}` });
+    }
+    const sid = loginData.eid;
+
+    const result = await wialonApiCall(svc, params || {}, sid);
+
+    await wialonApiCall("core/logout", {}, sid);
+    res.json(result);
+  } catch (err) {
+    console.error("Wialon proxy error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -4771,735 +5927,458 @@ app.get("/bitacoras/download-location/:locationName", async (req, res) => {
 });
 
 // Dashboard Stats (for main dashboard)
-app.get('/dashboard/stats', async (req, res) => {
-  try {
-    // Get user from session (already verified by middleware)
-    const user = req.session.user;
-    if (!user) {
-      return res.status(401).json({ message: 'User not found' });
+/**
+ * Reusable helper to build bitacora filters based on dashboard query params and user role.
+ */
+async function buildBitacoraFilter(user, role, query) {
+  const {
+    timeFilter = 'all',
+    yearFilter = new Date().getFullYear(),
+    clientFilter = 'all',
+    fechaDesde = '',
+    fechaHasta = '',
+    lineaTransporte = 'all',
+    operador = 'all'
+  } = query;
+
+  // Build time filter
+  let timeFilterQuery = {};
+  if (timeFilter !== 'all') {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    switch (timeFilter) {
+      case 'today':
+        timeFilterQuery = { createdAt: { $gte: startOfDay } };
+        break;
+      case 'week':
+        const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
+        timeFilterQuery = { createdAt: { $gte: startOfWeek } };
+        break;
+      case 'month':
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        timeFilterQuery = { createdAt: { $gte: startOfMonth } };
+        break;
+      case 'quarter':
+        const currentQuarter = Math.floor(now.getMonth() / 3);
+        const startOfQuarter = new Date(now.getFullYear(), currentQuarter * 3, 1);
+        timeFilterQuery = { createdAt: { $gte: startOfQuarter } };
+        break;
+      case 'year':
+        const startOfYear = new Date(now.getFullYear(), 0, 1);
+        timeFilterQuery = { createdAt: { $gte: startOfYear } };
+        break;
     }
+  }
 
-    // Get role permissions
-    const role = await Role.findOne({ name: user.role });
-    if (!role) {
-      return res.status(401).json({ message: 'Role not found' });
-    }
+  // Build filters based on user permissions
+  let bitacoraFilter = { deleted: { $ne: true } }; // Exclude deleted bitacoras
 
-    // Get filter parameters
-    const {
-      timeFilter = 'all',
-      yearFilter = new Date().getFullYear(),
-      clientFilter = 'all',
-      fechaDesde = '',
-      fechaHasta = '',
-      lineaTransporte = 'all',
-      operador = 'all'
-    } = req.query;
-
-    // Build time filter
-    let timeFilterQuery = {};
-    if (timeFilter !== 'all') {
-      const now = new Date();
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-      switch (timeFilter) {
-        case 'today':
-          timeFilterQuery = { createdAt: { $gte: startOfDay } };
-          break;
-        case 'week':
-          const startOfWeek = new Date(now.setDate(now.getDate() - now.getDay()));
-          timeFilterQuery = { createdAt: { $gte: startOfWeek } };
-          break;
-        case 'month':
-          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-          timeFilterQuery = { createdAt: { $gte: startOfMonth } };
-          break;
-        case 'quarter':
-          const currentQuarter = Math.floor(now.getMonth() / 3);
-          const startOfQuarter = new Date(now.getFullYear(), currentQuarter * 3, 1);
-          timeFilterQuery = { createdAt: { $gte: startOfQuarter } };
-          break;
-        case 'year':
-          const startOfYear = new Date(now.getFullYear(), 0, 1);
-          timeFilterQuery = { createdAt: { $gte: startOfYear } };
-          break;
+  // Apply client permissions based on role
+  if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
+    const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
+    if (clientFilter !== 'all') {
+      if (!allowedClientNames.includes(clientFilter)) {
+        throw new Error('Access denied to this client');
       }
-    }
-
-    // Build filters based on user permissions
-    let bitacoraFilter = { deleted: { $ne: true } }; // Exclude deleted bitacoras
-
-    // Apply client permissions based on role
-    if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
-      // User can only access specific clients
-      const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
-
-      if (clientFilter !== 'all') {
-        // If a specific client is selected, verify it's in the allowed list
-        if (!allowedClientNames.includes(clientFilter)) {
-          return res.status(403).json({ message: 'Access denied to this client' });
-        }
-        bitacoraFilter.cliente = clientFilter;
-      } else {
-        // If no specific client is selected, filter by all allowed clients
-        bitacoraFilter.cliente = { $in: allowedClientNames };
-      }
+      bitacoraFilter.cliente = clientFilter;
     } else {
-      // User has access to all clients
-      if (clientFilter !== 'all') {
-        bitacoraFilter.cliente = clientFilter;
-      }
+      bitacoraFilter.cliente = { $in: allowedClientNames };
     }
-
-    // Add date range filter (priority over timeFilter and yearFilter)
-    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-      const startDate = new Date(fechaDesde);
-      const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
-
-      if (!isNaN(startDate) && !isNaN(endDate)) {
-        bitacoraFilter.createdAt = {
-          $gte: startDate,
-          $lte: endDate
-        };
-      }
+  } else {
+    if (clientFilter !== 'all') {
+      bitacoraFilter.cliente = clientFilter;
     }
+  }
 
-    // Add transport line filter
-    if (lineaTransporte !== 'all') {
-      // If we already have filters, we need to combine them properly
-      if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-        // Create a new $and filter to combine existing filters with transport line filter
-        const existingFilters = {};
-        if (bitacoraFilter.$or) {
-          existingFilters.$or = bitacoraFilter.$or;
-          delete bitacoraFilter.$or;
-        }
-        if (bitacoraFilter.$and) {
-          existingFilters.$and = bitacoraFilter.$and;
-          delete bitacoraFilter.$and;
-        }
+  // Add date range filter
+  if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
+    const startDate = new Date(fechaDesde);
+    const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
+    if (!isNaN(startDate) && !isNaN(endDate)) {
+      bitacoraFilter.createdAt = { $gte: startDate, $lte: endDate };
+    }
+  } else if (yearFilter && yearFilter !== 'all') {
+    const startOfYear = new Date(parseInt(yearFilter), 0, 1);
+    const endOfYear = new Date(parseInt(yearFilter), 11, 31, 23, 59, 59);
+    bitacoraFilter.createdAt = { $gte: startOfYear, $lte: endOfYear };
+  } else if (Object.keys(timeFilterQuery).length > 0) {
+    bitacoraFilter = { ...bitacoraFilter, ...timeFilterQuery };
+  }
 
-        // Add other existing filters
-        Object.keys(bitacoraFilter).forEach(key => {
-          if (key !== 'cliente' && key !== 'createdAt') {
-            existingFilters[key] = bitacoraFilter[key];
-            delete bitacoraFilter[key];
-          }
-        });
+  // Add transport line filter
+  if (lineaTransporte !== 'all') {
+    const lineFilter = {
+      $or: [
+        { linea_transporte: lineaTransporte },
+        { 'transportes.lineaTransporte': lineaTransporte }
+      ]
+    };
+    if (bitacoraFilter.$and) {
+      bitacoraFilter.$and.push(lineFilter);
+    } else if (Object.keys(bitacoraFilter).some(k => k.startsWith('$'))) {
+      const existing = { ...bitacoraFilter };
+      Object.keys(bitacoraFilter).forEach(k => delete bitacoraFilter[k]);
+      bitacoraFilter.$and = [existing, lineFilter];
+    } else {
+      Object.assign(bitacoraFilter, lineFilter);
+    }
+  }
 
-        bitacoraFilter.$and = [
-          existingFilters,
-          {
-            $or: [
-              { linea_transporte: lineaTransporte },
-              { 'transportes.lineaTransporte': lineaTransporte }
-            ]
-          }
-        ];
+  // Add operator filter
+  if (operador !== 'all') {
+    const opFilter = {
+      $or: [
+        { operador: operador },
+        { 'transportes.operador': operador }
+      ]
+    };
+    if (bitacoraFilter.$and) {
+      bitacoraFilter.$and.push(opFilter);
+    } else {
+      // Handle potential existing $or from line filter
+      const currentKeys = Object.keys(bitacoraFilter);
+      if (currentKeys.includes('$or')) {
+        const existingOr = { $or: bitacoraFilter.$or };
+        delete bitacoraFilter.$or;
+        bitacoraFilter.$and = [existingOr, opFilter];
       } else {
-        bitacoraFilter.$or = [
-          { linea_transporte: lineaTransporte },
-          { 'transportes.lineaTransporte': lineaTransporte }
-        ];
+        Object.assign(bitacoraFilter, opFilter);
       }
     }
+  }
 
-    // Add operator filter
-    if (operador !== 'all') {
-      // If we already have filters, we need to combine them properly
-      if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-        // Create a new $and filter to combine existing filters with operator filter
-        const existingFilters = {};
-        if (bitacoraFilter.$or) {
-          existingFilters.$or = bitacoraFilter.$or;
-          delete bitacoraFilter.$or;
-        }
-        if (bitacoraFilter.$and) {
-          existingFilters.$and = bitacoraFilter.$and;
-          delete bitacoraFilter.$and;
-        }
-
-        // Add other existing filters
-        Object.keys(bitacoraFilter).forEach(key => {
-          if (key !== 'cliente' && key !== 'createdAt') {
-            existingFilters[key] = bitacoraFilter[key];
-            delete bitacoraFilter[key];
-          }
-        });
-
-        bitacoraFilter.$and = [
-          existingFilters,
-          {
-            $or: [
-              { operador: operador },
-              { 'transportes.operador': operador }
-            ]
-          }
-        ];
-      } else {
-        bitacoraFilter.$or = [
-          { operador: operador },
-          { 'transportes.operador': operador }
-        ];
-      }
-    }
-
-    if (!role.bitacoras?.read_all) {
-      // If user can't read all bitacoras, filter by their name
-      const userFullName = `${user.firstName} ${user.lastName}`;
-      // Only override operator filter if no specific operator is selected
-      if (operador === 'all') {
-        // If we already have filters, we need to combine them properly
-        if (bitacoraFilter.$or || bitacoraFilter.$and || Object.keys(bitacoraFilter).some(key => key !== 'cliente' && key !== 'createdAt')) {
-          // Create a new $and filter to combine existing filters with user permission filter
-          const existingFilters = {};
-          if (bitacoraFilter.$or) {
-            existingFilters.$or = bitacoraFilter.$or;
-            delete bitacoraFilter.$or;
-          }
-          if (bitacoraFilter.$and) {
-            existingFilters.$and = bitacoraFilter.$and;
-            delete bitacoraFilter.$and;
-          }
-
-          // Add other existing filters
-          Object.keys(bitacoraFilter).forEach(key => {
-            if (key !== 'cliente' && key !== 'createdAt') {
-              existingFilters[key] = bitacoraFilter[key];
-              delete bitacoraFilter[key];
-            }
-          });
-
-          bitacoraFilter.$and = [
-            existingFilters,
-            {
-              $or: [
-                { operador: userFullName },
-                { 'transportes.operador': userFullName }
-              ]
-            }
-          ];
-        } else {
-          bitacoraFilter.$or = [
-            { operador: userFullName },
-            { 'transportes.operador': userFullName }
-          ];
-        }
-      }
-    }
-
-    // Add time/year filters - only if no date range filter is applied
-    if (!fechaDesde || !fechaHasta) {
-      if (yearFilter && yearFilter !== 'all') {
-        // Si hay un año específico, usar solo ese año (ignorar otros filtros de tiempo)
-        const startOfYear = new Date(parseInt(yearFilter), 0, 1);
-        const endOfYear = new Date(parseInt(yearFilter), 11, 31, 23, 59, 59);
-        bitacoraFilter.createdAt = {
-          $gte: startOfYear,
-          $lte: endOfYear
-        };
-      } else if (Object.keys(timeFilterQuery).length > 0) {
-        // Solo usar filtros de tiempo si no hay año específico
-        bitacoraFilter = { ...bitacoraFilter, ...timeFilterQuery };
-      }
-    }
-
-
-
-    // Get bitacora statistics
-    // For total cards, use January 2024 as default start date if no date filters are provided
-    let totalCardsFilter = { ...bitacoraFilter };
-    if (!fechaDesde || !fechaHasta || fechaDesde.trim() === '' || fechaHasta.trim() === '') {
-      // Default to January 2024 for total cards when no date filters are provided
-      const defaultStartDate = new Date('2024-01-01');
-      const defaultEndDate = new Date(); // Current date
-
-      totalCardsFilter.createdAt = {
-        $gte: defaultStartDate,
-        $lte: defaultEndDate
+  // Personal bitacoras only if no read_all
+  if (!role.bitacoras?.read_all) {
+    const userFullName = `${user.firstName} ${user.lastName}`;
+    if (operador === 'all') {
+      const personalFilter = {
+        $or: [
+          { operador: userFullName },
+          { 'transportes.operador': userFullName }
+        ]
       };
-    }
-
-    let totalBitacoras = await Bitacora.countDocuments(totalCardsFilter);
-    const nuevasBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: 'nueva' });
-    const enProcesoBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: { $in: ['validada', 'iniciada'] } });
-    const cerradasBitacoras = await Bitacora.countDocuments({ ...totalCardsFilter, status: { $in: ['cerrada', 'finalizada'] } });
-
-    // Get user and client counts (only if user has permission)
-    let totalUsers = 0;
-    let totalClients = 0;
-
-    if (role.usuarios?.read) {
-      totalUsers = await User.countDocuments();
-    }
-
-    if (role.clientes?.read) {
-      totalClients = await Client.countDocuments();
-    }
-
-    // Get recent activity (last 10 auditoria records)
-    let recentActivity = [];
-    try {
-      recentActivity = await Auditoria.find()
-        .sort({ createdAt: -1 })
-        .limit(10)
-        .populate('bitacora_id', 'bitacora_id')
-        .lean();
-    } catch (error) {
-      console.error('Error fetching recent activity:', error);
-    }
-
-    const formattedActivity = recentActivity.map(activity => ({
-      description: `${activity.tipo} - ${activity.seccion}`,
-      icon: getActivityIcon(activity.tipo),
-      color: getActivityColor(activity.tipo),
-      timestamp: activity.createdAt
-    }));
-
-    // Get monthly data for the specified year or last 12 months
-    let monthlyData = [];
-    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-
-    try {
-      // Create a base filter that excludes date filters (we'll apply them month by month)
-      let monthlyFilter = { ...bitacoraFilter };
-
-      // Remove date filters from monthly filter since we'll apply them month by month
-      if (monthlyFilter.createdAt) {
-        delete monthlyFilter.createdAt;
-      }
-
-      // Check if date range filters are applied
-      if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-        const startDate = new Date(fechaDesde);
-        const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
-
-        if (!isNaN(startDate) && !isNaN(endDate)) {
-          // Generate monthly data only for the date range specified
-          let currentDate = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-          const endDateMonth = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
-
-          while (currentDate <= endDateMonth) {
-            const startOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-            const endOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0, 23, 59, 59, 999);
-
-            // Make sure we don't go beyond the specified range
-            const monthStart = startOfMonth < startDate ? startDate : startOfMonth;
-            const monthEnd = endOfMonth > endDate ? endDate : endOfMonth;
-
-            const monthCount = await Bitacora.countDocuments({
-              ...monthlyFilter,
-              createdAt: { $gte: monthStart, $lte: monthEnd }
-            });
-
-            monthlyData.push({
-              month: months[currentDate.getMonth()],
-              value: monthCount
-            });
-
-            // Move to next month
-            currentDate.setMonth(currentDate.getMonth() + 1);
-          }
-        }
-      } else if (yearFilter && yearFilter !== 'all') {
-        // Si hay un año específico seleccionado, mostrar los 12 meses de ese año
-        const selectedYear = parseInt(yearFilter);
-
-        for (let i = 0; i < 12; i++) {
-          const startOfMonth = new Date(selectedYear, i, 1);
-          const endOfMonth = new Date(selectedYear, i + 1, 0, 23, 59, 59, 999);
-
-          const monthCount = await Bitacora.countDocuments({
-            ...monthlyFilter,
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          monthlyData.push({
-            month: months[i],
-            value: monthCount
-          });
-        }
+      if (bitacoraFilter.$and) {
+        bitacoraFilter.$and.push(personalFilter);
+      } else if (bitacoraFilter.$or) {
+        const existingOr = { $or: bitacoraFilter.$or };
+        delete bitacoraFilter.$or;
+        bitacoraFilter.$and = [existingOr, personalFilter];
       } else {
-        // Si no hay año específico, mostrar los últimos 12 meses
-        for (let i = 11; i >= 0; i--) {
-          const date = new Date();
-          date.setMonth(date.getMonth() - i);
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
-
-          const monthCount = await Bitacora.countDocuments({
-            ...monthlyFilter,
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          monthlyData.push({
-            month: months[date.getMonth()],
-            value: monthCount
-          });
-        }
-      }
-
-    } catch (error) {
-      console.error('Error generating monthly data:', error);
-      monthlyData = [];
-    }
-
-    // Ensure consistency between totalBitacoras and monthly data sum
-    // When date filters are applied, the total should match the sum of monthly data
-    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
-      const monthlySum = monthlyData.reduce((sum, month) => sum + month.value, 0);
-      if (monthlySum !== totalBitacoras) {
-        console.log(`⚠️ Inconsistency detected: totalBitacoras=${totalBitacoras}, monthlySum=${monthlySum}`);
-        // Use the monthly sum as the source of truth for totalBitacoras when date filters are applied
-        totalBitacoras = monthlySum;
+        Object.assign(bitacoraFilter, personalFilter);
       }
     }
-    // Note: When no date filters are applied, totalBitacoras uses January 2024 default,
-    // while monthly data shows last 12 months, so they may differ intentionally
+  }
 
-    // Get status trends data
-    const statusTrends = [
-      {
-        status: 'Activas',
-        color: '#10b981',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  return bitacoraFilter;
+}
 
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: { $nin: ['cerrada', 'finalizada'] },
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
+app.get('/dashboard/summary', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
 
-          return { month, value: count };
-        }))
-      },
-      {
-        status: 'Completadas',
-        color: '#3b82f6',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    
+    // For summary cards, we often want a wider range if no dates provided
+    let summaryFilter = { ...filter };
+    if (!req.query.fechaDesde && !req.query.fechaHasta) {
+      const defaultStartDate = new Date('2024-01-01');
+      summaryFilter.createdAt = { $gte: defaultStartDate, $lte: new Date() };
+    }
 
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: { $in: ['cerrada', 'finalizada'] },
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          return { month, value: count };
-        }))
-      },
-      {
-        status: 'Pendientes',
-        color: '#f59e0b',
-        data: await Promise.all(months.map(async (month, index) => {
-          const date = new Date();
-          date.setMonth(date.getMonth() - (11 - index));
-          const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-          const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-
-          const count = await Bitacora.countDocuments({
-            ...bitacoraFilter,
-            status: 'nueva',
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth }
-          });
-
-          return { month, value: count };
-        }))
-      }
-    ];
-
-    // Get event distribution
-    const eventDistribution = await Bitacora.aggregate([
-      { $match: bitacoraFilter },
-      { $unwind: '$eventos' },
-      { $group: { _id: '$eventos.tipo', count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
+    const [
+      total,
+      nuevas,
+      enProceso,
+      cerradas,
+      anomalias,
+      totalUsers,
+      totalClients,
+      recentActivity
+    ] = await Promise.all([
+      Bitacora.countDocuments(summaryFilter),
+      Bitacora.countDocuments({ ...summaryFilter, status: 'nueva' }),
+      Bitacora.countDocuments({ ...summaryFilter, status: { $in: ['validada', 'iniciada'] } }),
+      Bitacora.countDocuments({ ...summaryFilter, status: { $in: ['cerrada', 'finalizada'] } }),
+      // Anomaly detection logic (needs to be consistent with main stats)
+      getCachedAnomalyEventTypes().then(async (eventTypes) => {
+        const anomalyNames = eventTypes.map(et => et.evento);
+        return Bitacora.countDocuments({
+          ...summaryFilter,
+          'eventos.nombre': { $in: anomalyNames }
+        });
+      }),
+      role.usuarios?.read ? User.countDocuments() : Promise.resolve(0),
+      role.clientes?.read ? Client.countDocuments() : Promise.resolve(0),
+      Auditoria.find().sort({ createdAt: -1 }).limit(10).populate('bitacora_id', 'bitacora_id').lean()
     ]);
 
-    const eventColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'];
-    const formattedEventDistribution = eventDistribution.map((event, index) => ({
+    res.json({
+      totalBitacoras: total,
+      nuevasBitacoras: nuevas,
+      enProcesoBitacoras: enProceso,
+      cerradasBitacoras: cerradas,
+      totalBitacorasConAnomalias: anomalias,
+      totalUsers,
+      totalClients,
+      recentActivity: recentActivity.map(activity => ({
+        description: `${activity.tipo} - ${activity.seccion}`,
+        icon: getActivityIcon(activity.tipo),
+        color: getActivityColor(activity.tipo),
+        timestamp: activity.createdAt
+      }))
+    });
+  } catch (err) {
+    console.error('[GET /dashboard/summary] Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to fetch summary' });
+  }
+});
+    app.get('/dashboard/trends', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+    // We want the last 12 months by default if no date filter
+    const now = new Date();
+    const twelveMonthsAgo = new Date();
+    twelveMonthsAgo.setMonth(now.getMonth() - 11);
+    twelveMonthsAgo.setDate(1);
+    twelveMonthsAgo.setHours(0, 0, 0, 0);
+
+    const trendFilter = { ...filter };
+    if (!req.query.fechaDesde && !req.query.fechaHasta && !req.query.yearFilter) {
+      trendFilter.createdAt = { $gte: twelveMonthsAgo };
+    }
+
+    const aggregation = await Bitacora.aggregate([
+      { $match: trendFilter },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            status: "$status"
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } }
+    ]);
+
+    // Process aggregation results into the format expected by frontend
+    const monthlyDataMap = {};
+    const statusDataMap = {
+      Activas: {},
+      Completadas: {},
+      Pendientes: {}
+    };
+
+    aggregation.forEach(item => {
+      const { year, month, status } = item._id;
+      const key = `${year}-${month}`;
+      
+      // Monthly total
+      monthlyDataMap[key] = (monthlyDataMap[key] || 0) + item.count;
+
+      // Status trends
+      if (status === 'nueva') {
+        statusDataMap.Pendientes[key] = (statusDataMap.Pendientes[key] || 0) + item.count;
+      }
+      if (['cerrada', 'finalizada'].includes(status)) {
+        statusDataMap.Completadas[key] = (statusDataMap.Completadas[key] || 0) + item.count;
+      } else {
+        statusDataMap.Activas[key] = (statusDataMap.Activas[key] || 0) + item.count;
+      }
+    });
+
+    // Fill in gaps for the last 12 months (or the filtered range)
+    const monthlyData = [];
+    const statusTrends = [
+      { status: 'Activas', color: '#10b981', data: [] },
+      { status: 'Completadas', color: '#3b82f6', data: [] },
+      { status: 'Pendientes', color: '#f59e0b', data: [] }
+    ];
+
+    // Determine range
+    let start, end;
+    if (req.query.fechaDesde && req.query.fechaHasta) {
+      start = new Date(req.query.fechaDesde);
+      end = new Date(req.query.fechaHasta);
+    } else if (req.query.yearFilter && req.query.yearFilter !== 'all') {
+      const y = parseInt(req.query.yearFilter);
+      start = new Date(y, 0, 1);
+      end = new Date(y, 11, 31);
+    } else {
+      start = twelveMonthsAgo;
+      end = now;
+    }
+
+    let curr = new Date(start.getFullYear(), start.getMonth(), 1);
+    while (curr <= end) {
+      const y = curr.getFullYear();
+      const m = curr.getMonth() + 1;
+      const key = `${y}-${m}`;
+      const label = months[curr.getMonth()];
+
+      monthlyData.push({
+        month: label,
+        year: y,
+        value: monthlyDataMap[key] || 0
+      });
+
+      statusTrends[0].data.push({ month: label, value: statusDataMap.Activas[key] || 0 });
+      statusTrends[1].data.push({ month: label, value: statusDataMap.Completadas[key] || 0 });
+      statusTrends[2].data.push({ month: label, value: statusDataMap.Pendientes[key] || 0 });
+
+      curr.setMonth(curr.getMonth() + 1);
+    }
+
+    res.json({ monthlyData, statusTrends });
+  } catch (err) {
+    console.error('[GET /dashboard/trends] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch trends' });
+  }
+});
+
+app.get('/dashboard/rankings', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+
+    const rankings = await Bitacora.aggregate([
+      { $match: filter },
+      {
+        $facet: {
+          topClients: [
+            { $group: { _id: '$cliente', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          topOperadores: [
+            { $group: { _id: '$operador', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { name: '$_id', count: 1 } }
+          ],
+          topLineasTransporte: [
+            { $unwind: '$transportes' },
+            { $group: { _id: '$transportes.lineaTransporte', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          topOperadoresTransportes: [
+            { $unwind: '$transportes' },
+            { $group: { _id: '$transportes.operador', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+            { $project: { nombre: '$_id', count: 1 } }
+          ],
+          tiposMonitoreo: [
+            { $group: { _id: '$monitoreo', count: { $sum: 1 } } },
+            { $project: { nombre: '$_id', count: 1 } }
+          ]
+        }
+      }
+    ]);
+
+    const result = rankings[0];
+    const monitoringColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    result.tiposMonitoreo = (result.tiposMonitoreo || []).map((tipo, index) => ({
+      ...tipo,
+      nombre: tipo.nombre || 'N/A',
+      color: monitoringColors[index % monitoringColors.length]
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error('[GET /dashboard/rankings] Error:', err);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+app.get('/dashboard/event-stats', async (req, res) => {
+  try {
+    const user = req.session.user;
+    const role = await Role.findOne({ name: user.role });
+    const filter = await buildBitacoraFilter(user, role, req.query);
+    const eventTypes = await getCachedAnomalyEventTypes();
+    const anomalyNames = eventTypes.map(et => et.evento);
+
+    const stats = await Bitacora.aggregate([
+      { $match: filter },
+      { $unwind: '$eventos' },
+      {
+        $facet: {
+          distribution: [
+            { $group: { _id: '$eventos.tipo', count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 }
+          ],
+          allEvents: [
+            { $group: { _id: '$eventos.nombre', count: { $sum: 1 } } }
+          ]
+        }
+      }
+    ]);
+
+    const eventColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    const formattedDistribution = stats[0].distribution.map((event, index) => ({
       name: event._id || 'Sin especificar',
       count: event.count,
       color: eventColors[index % eventColors.length]
     }));
 
-    // Get event categories statistics for pie chart (excluding "General")
-    let eventCategoriesStats = [];
-    try {
-      // First, let's get all event types to understand the mapping
-      const eventTypes = await EventType.find({ categoria: { $in: ['ENA', 'ONC', 'DR', 'FM'] } });
-      console.log('Available event types:', eventTypes);
-
-      // Get event names for each category
-      const eventNamesByCategory = {};
-      eventTypes.forEach(eventType => {
-        if (!eventNamesByCategory[eventType.categoria]) {
-          eventNamesByCategory[eventType.categoria] = [];
-        }
-        eventNamesByCategory[eventType.categoria].push(eventType.evento);
-      });
-
-      console.log('Event names by category:', eventNamesByCategory);
-
-      // First, let's see how many bitacoras match our filter for event categories
-      const matchingBitacorasForCategories = await Bitacora.find(bitacoraFilter).limit(5);
-      console.log('Matching bitacoras for event categories (first 5):', matchingBitacorasForCategories.map(b => ({
-        _id: b._id,
-        bitacora_id: b.bitacora_id,
-        operador: b.operador,
-        eventos: b.eventos?.length || 0,
-        eventNames: b.eventos?.map(e => e.nombre) || []
-      })));
-
-      // Now aggregate by event names that belong to our categories
-      eventCategoriesStats = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$eventos' },
-        {
-          $match: {
-            'eventos.nombre': {
-              $in: eventTypes.map(et => et.evento)
-            }
-          }
-        },
-        {
-          $lookup: {
-            from: 'eventtypes',
-            localField: 'eventos.nombre',
-            foreignField: 'evento',
-            as: 'eventTypeInfo'
-          }
-        },
-        {
-          $group: {
-            _id: { $arrayElemAt: ['$eventTypeInfo.categoria', 0] },
-            count: { $sum: 1 }
-          }
-        },
-        { $sort: { count: -1 } }
-      ]);
-
-      console.log('Raw event categories stats:', eventCategoriesStats);
-
-      // Define colors for each category
-      const categoryColors = {
-        'ENA': '#3b82f6',  // Blue
-        'FM': '#10b981',   // Green
-        'ONC': '#f59e0b',  // Orange
-        'DR': '#ef4444'    // Red
-      };
-
-      // Format the data with colors and ensure all categories are present
-      const allCategories = ['ENA', 'FM', 'ONC', 'DR'];
-      const formattedCategories = allCategories.map(category => {
-        const found = eventCategoriesStats.find(stat => stat._id === category);
-        return {
-          categoria: category,
-          count: found ? found.count : 0,
-          color: categoryColors[category]
-        };
-      });
-
-      eventCategoriesStats = formattedCategories;
-      console.log('Formatted event categories stats:', eventCategoriesStats);
-    } catch (error) {
-      console.log('Error fetching event categories stats:', error);
-      eventCategoriesStats = [];
-    }
-
-    // Get total bitacoras with anomalies count
-    let totalBitacorasConAnomalias = 0;
-    try {
-      const totalBitacorasConAnomaliasResult = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$eventos' },
-        {
-          $lookup: {
-            from: 'eventtypes',
-            localField: 'eventos.nombre',
-            foreignField: 'evento',
-            as: 'eventTypeInfo'
-          }
-        },
-        {
-          $match: {
-            'eventTypeInfo.categoria': { $ne: 'General' }
-          }
-        },
-        // Group by bitacora ID to count unique bitacoras
-        {
-          $group: {
-            _id: '$_id'
-          }
-        },
-        {
-          $count: 'total'
-        }
-      ]);
-
-      totalBitacorasConAnomalias = totalBitacorasConAnomaliasResult.length > 0 ? totalBitacorasConAnomaliasResult[0].total : 0;
-      console.log('Total bitacoras con anomalias:', totalBitacorasConAnomalias);
-    } catch (error) {
-      console.log('Error fetching total bitacoras con anomalias:', error);
-      totalBitacorasConAnomalias = 0;
-    }
-
-    // Get geographic data
-    const geoType = req.query.geoType || 'origen';
-    let geographicData = [];
-    try {
-      console.log('=== DEBUG: Geographic Data Generation ===');
-      console.log('geoType:', geoType);
-      console.log('bitacoraFilter:', JSON.stringify(bitacoraFilter, null, 2));
-      if (geoType === 'destino') {
-        geographicData = await Bitacora.aggregate([
-          { $match: bitacoraFilter },
-          { $group: { _id: '$destino', count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-          // Add fields to handle ObjectId conversion for lookups
-          {
-            $addFields: {
-              destinoForLookup: {
-                $cond: {
-                  if: {
-                    $and: [
-                      { $eq: [{ $type: '$_id' }, 'string'] },
-                      { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
-                    ]
-                  },
-                  then: { $toObjectId: '$_id' },
-                  else: '$_id'
-                }
-              }
-            }
-          },
-          // Lookups with ObjectId conversion
-          {
-            $lookup: {
-              from: 'destinos',
-              localField: 'destinoForLookup',
-              foreignField: '_id',
-              as: 'destinoInfoById'
-            }
-          },
-          {
-            $lookup: {
-              from: 'destinos',
-              localField: '_id',
-              foreignField: 'nombre',
-              as: 'destinoInfoByName'
-            }
-          },
-          // Combine results - prefer _id match over nombre match
-          {
-            $addFields: {
-              destinoInfo: {
-                $cond: {
-                  if: { $gt: [{ $size: '$destinoInfoById' }, 0] },
-                  then: '$destinoInfoById',
-                  else: '$destinoInfoByName'
-                }
-              }
-            }
-          },
-          {
-            $project: {
-              name: {
-                $cond: {
-                  if: { $gt: [{ $size: '$destinoInfo' }, 0] },
-                  then: { $arrayElemAt: ['$destinoInfo.nombre', 0] },
-                  else: '$_id'
-                }
-              },
-              count: 1
-            }
-          }
-        ]);
-      } else {
-        geographicData = await Bitacora.aggregate([
-          { $match: bitacoraFilter },
-          { $group: { _id: '$origen', count: { $sum: 1 } } },
-          { $sort: { count: -1 } },
-          // Add fields to handle ObjectId conversion for lookups
-          {
-            $addFields: {
-              origenForLookup: {
-                $cond: {
-                  if: {
-                    $and: [
-                      { $eq: [{ $type: '$_id' }, 'string'] },
-                      { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
-                    ]
-                  },
-                  then: { $toObjectId: '$_id' },
-                  else: '$_id'
-                }
-              }
-            }
-          },
-          // Lookups with ObjectId conversion
-          {
-            $lookup: {
-              from: 'origens',
-              localField: 'origenForLookup',
-              foreignField: '_id',
-              as: 'origenInfoById'
-            }
-          },
-          {
-            $lookup: {
-              from: 'origens',
-              localField: '_id',
-              foreignField: 'nombre',
-              as: 'origenInfoByName'
-            }
-          },
-          // Combine results - prefer _id match over nombre match
-          {
-            $addFields: {
-              origenInfo: {
-                $cond: {
-                  if: { $gt: [{ $size: '$origenInfoById' }, 0] },
-                  then: '$origenInfoById',
-                  else: '$origenInfoByName'
-                }
-              }
-            }
-          },
-          {
-            $project: {
-              name: {
-                $cond: {
-                  if: { $gt: [{ $size: '$origenInfo' }, 0] },
-                  then: { $arrayElemAt: ['$origenInfo.nombre', 0] },
-                  else: '$_id'
-                }
-              },
-              count: 1
-            }
-          }
-        ]);
+    const categoryMap = { ENA: 0, ONC: 0, DR: 0, FM: 0 };
+    const categoryLabels = { ENA: 'Exceso Velocidad', ONC: 'Otras', DR: 'Desvío Ruta', FM: 'Falla Mecánica' };
+    
+    stats[0].allEvents.forEach(e => {
+      const type = eventTypes.find(et => et.evento === e._id);
+      if (type && categoryMap[type.categoria] !== undefined) {
+        categoryMap[type.categoria] += e.count;
       }
+    });
 
-      console.log('Generated geographic data:', geographicData.length, 'items');
-      console.log('Sample geographic data:', geographicData.slice(0, 3));
-    } catch (error) {
-      console.log('Error fetching geographic data:', error);
-    }
+    const formattedCategories = Object.keys(categoryMap).map(cat => ({
+      name: categoryLabels[cat],
+      value: categoryMap[cat],
+      color: cat === 'ENA' ? '#ef4444' : cat === 'ONC' ? '#f59e0b' : cat === 'DR' ? '#3b82f6' : '#10b981'
+    })).filter(c => c.value > 0);
 
-    // Get operator efficiency
-    let operatorEfficiency = [];
-    try {
-      operatorEfficiency = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
+    res.json({
+      eventDistribution: formattedDistribution,
+      eventCategoriesStats: formattedCategories
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+app.get('/dashboard/performance', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: 'User not found' });
+    const role = await Role.findOne({ name: user.role });
+    if (!role) return res.status(401).json({ message: 'Role not found' });
+
+    const filter = await buildBitacoraFilter(user, role, req.query);
+
+    const [efficiency, performance] = await Promise.all([
+      Bitacora.aggregate([
+        { $match: filter },
         {
           $group: {
             _id: '$operador',
@@ -5517,56 +6396,9 @@ app.get('/dashboard/stats', async (req, res) => {
             efficiency: { $multiply: [{ $divide: ['$completed', '$total'] }, 100] }
           }
         }
-      ]);
-    } catch (error) {
-      console.log('Error fetching operator efficiency:', error);
-    }
-
-    // Get tipos de monitoreo data
-    let tiposMonitoreo = [];
-    try {
-      tiposMonitoreo = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$monitoreo', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $lookup: {
-            from: 'monitoreos',
-            localField: '_id',
-            foreignField: 'tipoMonitoreo',
-            as: 'tipoInfo'
-          }
-        },
-        {
-          $project: {
-            nombre: {
-              $cond: {
-                if: { $gt: [{ $size: '$tipoInfo' }, 0] },
-                then: { $arrayElemAt: ['$tipoInfo.tipoMonitoreo', 0] },
-                else: '$_id'
-              }
-            },
-            count: 1,
-            color: { $arrayElemAt: ['$tipoInfo.color', 0] }
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching tipos de monitoreo:', error);
-    }
-
-    // Add colors to tipos de monitoreo if not present
-    const tipoColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16', '#f97316', '#ec4899', '#6366f1'];
-    const formattedTiposMonitoreo = tiposMonitoreo.map((tipo, index) => ({
-      ...tipo,
-      color: tipoColors[index % tipoColors.length]
-    }));
-
-    // Get client performance
-    let clientPerformance = [];
-    try {
-      clientPerformance = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
+      ]),
+      Bitacora.aggregate([
+        { $match: filter },
         {
           $group: {
             _id: '$cliente',
@@ -5577,182 +6409,24 @@ app.get('/dashboard/stats', async (req, res) => {
         { $sort: { completed: -1 } },
         { $limit: 10 },
         {
-          $lookup: {
-            from: 'clients',
-            localField: '_id',
-            foreignField: 'razon_social',
-            as: 'clientInfo'
-          }
-        },
-        {
           $project: {
-            name: {
-              $cond: {
-                if: { $gt: [{ $size: '$clientInfo' }, 0] },
-                then: { $arrayElemAt: ['$clientInfo.razon_social', 0] },
-                else: '$_id'
-              }
-            },
+            name: '$_id',
             completed: 1,
             pending: 1
           }
         }
-      ]);
-    } catch (error) {
-      console.log('Error fetching client performance:', error);
-    }
+      ])
+    ]);
 
-    // Get all clients
-    let topClients = [];
-    try {
-      topClients = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$cliente', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $lookup: {
-            from: 'clients',
-            localField: '_id',
-            foreignField: 'razon_social',
-            as: 'clientInfo'
-          }
-        },
-        {
-          $project: {
-            nombre: {
-              $cond: {
-                if: { $gt: [{ $size: '$clientInfo' }, 0] },
-                then: { $arrayElemAt: ['$clientInfo.razon_social', 0] },
-                else: '$_id'
-              }
-            },
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all clients:', error);
-    }
-
-    // Get all operadores
-    let topOperadores = [];
-    try {
-      topOperadores = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $group: { _id: '$operador', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            name: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all operadores:', error);
-    }
-
-    // Get all transport lines from transportes array
-    let topLineasTransporte = [];
-    try {
-      topLineasTransporte = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$transportes' },
-        {
-          $addFields: {
-            'transportes.lineaTransporte': {
-              $cond: {
-                if: {
-                  $or: [
-                    { $eq: ['$transportes.lineaTransporte', null] },
-                    { $eq: ['$transportes.lineaTransporte', ''] },
-                    { $eq: ['$transportes.lineaTransporte', undefined] }
-                  ]
-                },
-                then: 'N/A',
-                else: '$transportes.lineaTransporte'
-              }
-            }
-          }
-        },
-        { $group: { _id: '$transportes.lineaTransporte', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            nombre: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all transport lines:', error);
-    }
-
-    // Get all transport operators
-    let topOperadoresTransportes = [];
-    try {
-      topOperadoresTransportes = await Bitacora.aggregate([
-        { $match: bitacoraFilter },
-        { $unwind: '$transportes' },
-        {
-          $addFields: {
-            'transportes.operador': {
-              $cond: {
-                if: {
-                  $or: [
-                    { $eq: ['$transportes.operador', null] },
-                    { $eq: ['$transportes.operador', ''] },
-                    { $eq: ['$transportes.operador', undefined] }
-                  ]
-                },
-                then: 'N/A',
-                else: '$transportes.operador'
-              }
-            }
-          }
-        },
-        { $group: { _id: '$transportes.operador', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        {
-          $project: {
-            nombre: '$_id',
-            count: 1
-          }
-        }
-      ]);
-    } catch (error) {
-      console.log('Error fetching all transport operators:', error);
-    }
-
-    res.status(200).json({
-      totalBitacoras,
-      nuevasBitacoras,
-      enProcesoBitacoras,
-      cerradasBitacoras,
-      totalBitacorasConAnomalias,
-      totalUsers,
-      totalClients,
-      recentActivity: formattedActivity,
-      monthlyData,
-      statusTrends,
-      eventDistribution: formattedEventDistribution,
-      eventCategoriesStats,
-      geographicData,
-      operatorEfficiency,
-      clientPerformance,
-      tiposMonitoreo: formattedTiposMonitoreo,
-      topClients,
-      topOperadores,
-      topLineasTransporte,
-      topOperadoresTransportes
+    res.json({
+      operatorEfficiency: efficiency,
+      clientPerformance: performance
     });
-
   } catch (err) {
-    console.error('[GET /dashboard/stats] Error:', err);
-    res.status(500).json({ error: 'Failed to fetch dashboard statistics' });
+    console.error('[GET /dashboard/performance] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch performance stats' });
   }
 });
-
 // Process-level cache for anomaly EventTypes (refreshed every 5 min)
 let _anomalyEventTypeCache = null;
 let _anomalyEventTypeCacheTime = 0;
@@ -5767,7 +6441,220 @@ async function getCachedAnomalyEventTypes() {
   return eventTypes;
 }
 
+// Process-level cache for /dashboard/summary-counts (refreshed every 60s)
+let _summaryCountsCache = null;
+let _summaryCountsCacheTime = 0;
+const SUMMARY_COUNTS_CACHE_TTL = 60 * 1000;
+
 // Dashboard Stats for Anomalias Dashboard (without default time filters)
+// Get geographic data independently
+app.get('/dashboard/geographic-stats', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    const role = await Role.findOne({ name: user.role });
+    if (!role) {
+      return res.status(401).json({ message: 'Role not found' });
+    }
+
+    const {
+      clientFilter = 'all',
+      fechaDesde = '',
+      fechaHasta = '',
+      lineaTransporte = 'all',
+      operador = 'all',
+      geoType = 'origen'
+    } = req.query;
+
+    let bitacoraFilter = { deleted: { $ne: true } };
+
+    // Apply client permissions
+    if (role.client_access === 'specific' && role.allowed_clients && role.allowed_clients.length > 0) {
+      const allowedClientNames = role.allowed_clients.map(ac => ac.client_name);
+      if (clientFilter !== 'all') {
+        if (!allowedClientNames.includes(clientFilter)) {
+          return res.status(403).json({ message: 'Access denied to this client' });
+        }
+        bitacoraFilter.cliente = clientFilter;
+      } else {
+        bitacoraFilter.cliente = { $in: allowedClientNames };
+      }
+    } else if (clientFilter !== 'all') {
+      bitacoraFilter.cliente = clientFilter;
+    }
+
+    // Date filter
+    if (fechaDesde && fechaHasta && fechaDesde.trim() !== '' && fechaHasta.trim() !== '') {
+      const startDate = new Date(fechaDesde);
+      const endDate = new Date(fechaHasta + 'T23:59:59.999Z');
+      if (!isNaN(startDate) && !isNaN(endDate)) {
+        bitacoraFilter.createdAt = { $gte: startDate, $lte: endDate };
+      }
+    }
+
+    // Transport line and Operator filters (applied similarly to stats endpoint)
+    if (lineaTransporte !== 'all') {
+      bitacoraFilter.lineaTransporte = lineaTransporte;
+    }
+    if (operador !== 'all') {
+      bitacoraFilter.operador = operador;
+    }
+
+    // User permissions (non-read_all)
+    if (!role.bitacoras?.read_all) {
+      const userFullName = `${user.firstName} ${user.lastName}`;
+      const userFilter = {
+        $or: [
+          { operador: userFullName },
+          { 'transportes.operador': userFullName }
+        ]
+      };
+      
+      if (bitacoraFilter.$and) {
+        bitacoraFilter.$and.push(userFilter);
+      } else if (Object.keys(bitacoraFilter).length > 1 || bitacoraFilter.deleted) {
+        const existing = { ...bitacoraFilter };
+        bitacoraFilter = { $and: [existing, userFilter] };
+      } else {
+        Object.assign(bitacoraFilter, userFilter);
+      }
+    }
+
+    let geographicData = [];
+    if (geoType === 'destino') {
+      geographicData = await Bitacora.aggregate([
+        { $match: bitacoraFilter },
+        { $group: { _id: '$destino', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        {
+          $addFields: {
+            destinoForLookup: {
+              $cond: {
+                if: {
+                  $and: [
+                    { $eq: [{ $type: '$_id' }, 'string'] },
+                    { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
+                  ]
+                },
+                then: { $toObjectId: '$_id' },
+                else: '$_id'
+              }
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: 'destinos',
+            localField: 'destinoForLookup',
+            foreignField: '_id',
+            as: 'destinoInfoById'
+          }
+        },
+        {
+          $lookup: {
+            from: 'destinos',
+            localField: '_id',
+            foreignField: 'nombre',
+            as: 'destinoInfoByName'
+          }
+        },
+        {
+          $addFields: {
+            destinoInfo: {
+              $cond: {
+                if: { $gt: [{ $size: '$destinoInfoById' }, 0] },
+                then: '$destinoInfoById',
+                else: '$destinoInfoByName'
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            name: {
+              $cond: {
+                if: { $gt: [{ $size: '$destinoInfo' }, 0] },
+                then: { $arrayElemAt: ['$destinoInfo.nombre', 0] },
+                else: '$_id'
+              }
+            },
+            count: 1
+          }
+        }
+      ]);
+    } else {
+      geographicData = await Bitacora.aggregate([
+        { $match: bitacoraFilter },
+        { $group: { _id: '$origen', count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        {
+          $addFields: {
+            origenForLookup: {
+              $cond: {
+                if: {
+                  $and: [
+                    { $eq: [{ $type: '$_id' }, 'string'] },
+                    { $regexMatch: { input: '$_id', regex: '^[0-9a-fA-F]{24}$' } }
+                  ]
+                },
+                then: { $toObjectId: '$_id' },
+                else: '$_id'
+              }
+            }
+          }
+        },
+        {
+          $lookup: {
+            from: 'origens',
+            localField: 'origenForLookup',
+            foreignField: '_id',
+            as: 'origenInfoById'
+          }
+        },
+        {
+          $lookup: {
+            from: 'origens',
+            localField: '_id',
+            foreignField: 'nombre',
+            as: 'origenInfoByName'
+          }
+        },
+        {
+          $addFields: {
+            origenInfo: {
+              $cond: {
+                if: { $gt: [{ $size: '$origenInfoById' }, 0] },
+                then: '$origenInfoById',
+                else: '$origenInfoByName'
+              }
+            }
+          }
+        },
+        {
+          $project: {
+            name: {
+              $cond: {
+                if: { $gt: [{ $size: '$origenInfo' }, 0] },
+                then: { $arrayElemAt: ['$origenInfo.nombre', 0] },
+                else: '$_id'
+              }
+            },
+            count: 1
+          }
+        }
+      ]);
+    }
+
+    res.json(geographicData);
+  } catch (error) {
+    console.error('Error fetching geographic stats:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.get('/dashboard/anomalias-stats', async (req, res) => {
   try {
     console.log('=== DEBUG: /dashboard/anomalias-stats ===');
@@ -6079,6 +6966,7 @@ app.get('/dashboard/monthly-trend', async (req, res) => {
 
       monthlyData.push({
         month: months[i],
+        year: parseInt(yearFilter),
         value: monthCount
       });
     }
@@ -6958,10 +7846,7 @@ app.get('/dashboard/bitacoras-anomalias', async (req, res) => {
       // Build structured GPS readings per transporte unit, preserving unit identity
       const gpsTransportes = evento?.transportes || [];
       const gpsReadings = gpsTransportes.map((t) => {
-        const gpsSrc = (t.gpsData && t.gpsData.length > 0) ? t.gpsData
-                     : (t.gpsUnits && t.gpsUnits.length > 0) ? t.gpsUnits
-                     : [];
-        const g = gpsSrc[0]; // most recent reading for this unit
+        const g = (t.gpsData && t.gpsData.length > 0) ? t.gpsData[0] : null;
         const unitName = g?.name || t.gpsUnits?.[0]?.name || t.placa || null;
         const get = (field) => {
           const fromG = g?.data?.[field];
@@ -7912,6 +8797,90 @@ app.get('/dashboard/event-categories-stats', async (req, res) => {
   } catch (error) {
     console.error('[GET /dashboard/event-categories-stats] Error:', error);
     res.status(500).json({ error: 'Failed to fetch event categories statistics' });
+  }
+});
+
+// ── SUMMARY COUNTS ─────────────────────────────────────────────
+// Lightweight endpoint returning 4 KPI counts. Cached 60s in-memory.
+app.get("/dashboard/summary-counts", async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!user) return res.status(401).json({ message: "User not found" });
+
+    const now = Date.now();
+    if (_summaryCountsCache && now - _summaryCountsCacheTime < SUMMARY_COUNTS_CACHE_TTL) {
+      return res.json(_summaryCountsCache);
+    }
+
+    // 1. Total Bitácoras (not deleted)
+    const totalBitacoras = Bitacora.countDocuments({ deleted: { $ne: true } });
+
+    // 2. En Patio counts (both models)
+    const tractoresEnPatio = ControlPatios.countDocuments({ status: "En patio" });
+    const remolquesEnPatio = RemolqueVisita.countDocuments({ status: "En patio" });
+
+    // 3. Current Alerts — count of Wialon notification rules
+    const currentAlerts = (async () => {
+      const token = process.env.WIALON_API_TOKEN;
+      if (!token) return 0;
+      const loginData = await wialonApiCall("token/login", { token });
+      if (loginData.error) return 0;
+      const sid = loginData.eid;
+      try {
+        const data = await wialonApiCall("core/search_items", {
+          spec: { itemsType: "avl_resource", propName: "*", propValueMask: "*", sortType: "sys_name" },
+          force: 1,
+          flags: 0x0400,
+          from: 0, to: 1000
+        }, sid);
+        if (!data.items) return 0;
+        let count = 0;
+        for (const r of data.items) {
+          if (r.unf) count += Object.keys(r.unf).length;
+        }
+        return count;
+      } finally {
+        wialonApiCall("core/logout", {}, sid).catch(() => {});
+      }
+    })();
+
+    // 4. Active Units — units with position update in last 10 minutes
+    const activeUnits = (async () => {
+      const token = process.env.WIALON_API_TOKEN;
+      if (!token) return 0;
+      const loginData = await wialonApiCall("token/login", { token });
+      if (loginData.error) return 0;
+      const sid = loginData.eid;
+      try {
+        const data = await wialonApiCall("core/search_items", {
+          spec: { itemsType: "avl_unit", propName: "*", propValueMask: "*", sortType: "sys_name" },
+          force: 1,
+          flags: 0x1,
+          from: 0, to: 1000
+        }, sid);
+        return data.totalItemsCount || data.items?.length || 0;
+      } finally {
+        wialonApiCall("core/logout", {}, sid).catch(() => {});
+      }
+    })();
+
+    const [totalBitacorasCount, tractoresCount, remolquesCount, alertsCount, unitsCount] =
+      await Promise.all([totalBitacoras, tractoresEnPatio, remolquesEnPatio, currentAlerts, activeUnits]);
+
+    const result = {
+      totalBitacoras: totalBitacorasCount,
+      enPatio: { tractores: tractoresCount, remolques: remolquesCount },
+      currentAlerts: alertsCount,
+      activeUnits: unitsCount
+    };
+
+    _summaryCountsCache = result;
+    _summaryCountsCacheTime = now;
+
+    res.json(result);
+  } catch (err) {
+    console.error("Error in /dashboard/summary-counts:", err);
+    res.status(500).json({ error: "Failed to fetch summary counts" });
   }
 });
 
@@ -9068,4 +10037,41 @@ if (WIALON_FLUSH_INTERVAL_MS > 0) {
   console.log(`[wialon-flush] Worker enabled (interval=${WIALON_FLUSH_INTERVAL_MS}ms)`);
 } else {
   console.log("[wialon-flush] Worker disabled (WIALON_FLUSH_INTERVAL_MS=0)");
+}
+
+// -----------------------------------------------------------------------
+// Wialon alert → bitácora auto-event worker
+// Polls notification logs for GPS units linked on open bitácoras and creates
+// matching eventos. Skipped if WIALON_ALERT_EVENT_INTERVAL_MS=0.
+// -----------------------------------------------------------------------
+const WIALON_ALERT_EVENT_INTERVAL_MS = parseInt(
+  process.env.WIALON_ALERT_EVENT_INTERVAL_MS || "60000",
+  10
+);
+if (WIALON_ALERT_EVENT_INTERVAL_MS > 0) {
+  let alertEventRunning = false;
+  const runAlertEvents = async () => {
+    if (alertEventRunning) return;
+    alertEventRunning = true;
+    try {
+      const result = await processWialonTriggeredAlerts();
+      if (result && (result.created || result.failed)) {
+        console.log(
+          `[wialon-alert-events] notifs=${result.notifs} logs=${result.logEntries} created=${result.created} skipped=${result.skipped} failed=${result.failed}`
+        );
+      }
+    } catch (err) {
+      console.error("[wialon-alert-events] worker error:", err);
+    } finally {
+      alertEventRunning = false;
+    }
+  };
+  setInterval(runAlertEvents, WIALON_ALERT_EVENT_INTERVAL_MS);
+  // First pass shortly after boot so a restart still catches recent triggers.
+  setTimeout(runAlertEvents, Math.min(15000, WIALON_ALERT_EVENT_INTERVAL_MS));
+  console.log(
+    `[wialon-alert-events] Worker enabled (interval=${WIALON_ALERT_EVENT_INTERVAL_MS}ms)`
+  );
+} else {
+  console.log("[wialon-alert-events] Worker disabled (WIALON_ALERT_EVENT_INTERVAL_MS=0)");
 }

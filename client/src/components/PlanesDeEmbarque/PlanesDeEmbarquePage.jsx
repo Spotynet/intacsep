@@ -8,6 +8,10 @@ import FilterBar from "../FilterBar";
 import {useAuth} from "../../context/AuthContext";
 import {useSidebar} from "../../context/SidebarContext";
 import {useNavigate} from "react-router-dom";
+import CellBadge from "../CellBadge";
+import {Select} from "../Select";
+import TextInput from "../TextInput";
+import DatePicker from "../DatePicker";
 
 const fmt = (dt) =>
   dt ? new Date(dt).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"}) : "—";
@@ -113,6 +117,7 @@ const emptyForm = {
 
 const PlanesDeEmbarquePage = () => {
   const [planes, setPlanes]               = useState([]);
+  const [isLoading, setIsLoading]         = useState(true);
   const [clientes, setClientes]           = useState([]);
   const [destinos, setDestinos]           = useState([]);
   const [filteredDestinos, setFilteredDestinos] = useState([]);
@@ -121,8 +126,25 @@ const PlanesDeEmbarquePage = () => {
   const [isModalVisible, setModalVisible] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [idToDelete, setIdToDelete]       = useState("");
-  const [filters, setFilters]             = useState({tipoViaje: "", cliente: "", transporte: ""});
+
+  // Date helpers (Default 30 days)
+  const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
+  const lastMonthStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  }, []);
+
+  const [filters, setFilters]             = useState({
+    tipoViaje: "",
+    cliente: "",
+    destino: "",
+    transporte: "",
+    fechaDesde: lastMonthStr,
+    fechaHasta: todayStr,
+  });
   const [formError, setFormError]         = useState("");
+  const [submitting, setSubmitting]       = useState(false);
 
   // Import state
   const [importRows, setImportRows]       = useState([]); // parsed preview rows
@@ -167,6 +189,8 @@ const PlanesDeEmbarquePage = () => {
         if (destinosRes.ok) setDestinos(await destinosRes.json());
       } catch (e) {
         console.error("Error fetching data:", e);
+      } finally {
+        setIsLoading(false);
       }
     };
     fetchAll();
@@ -184,10 +208,16 @@ const PlanesDeEmbarquePage = () => {
     () =>
       planes.filter((p) => {
         const clienteNombre = p.cliente?.razon_social ?? "";
+        const destinoNombre = p.destino?.nombre ?? "";
+        const date = p.citaCarga ? new Date(p.citaCarga).toISOString().split("T")[0] : null;
+
         return (
-          p.tipoViaje.toLowerCase().includes(filters.tipoViaje.toLowerCase()) &&
-          clienteNombre.toLowerCase().includes(filters.cliente.toLowerCase()) &&
-          p.transporte.toLowerCase().includes(filters.transporte.toLowerCase())
+          (!filters.tipoViaje  || p.tipoViaje.toLowerCase().includes(filters.tipoViaje.toLowerCase())) &&
+          (!filters.cliente    || clienteNombre === filters.cliente) &&
+          (!filters.destino    || destinoNombre === filters.destino) &&
+          (!filters.transporte || p.transporte.toLowerCase().includes(filters.transporte.toLowerCase())) &&
+          (!filters.fechaDesde || !date || date >= filters.fechaDesde) &&
+          (!filters.fechaHasta || !date || date <= filters.fechaHasta)
         );
       }),
     [planes, filters]
@@ -207,7 +237,22 @@ const PlanesDeEmbarquePage = () => {
     setFilters((prev) => ({...prev, [name]: value}));
   };
 
-  const clearFilters = () => setFilters({tipoViaje: "", cliente: "", transporte: ""});
+  const clearFilters = () => setFilters({
+    tipoViaje: "",
+    cliente: "",
+    destino: "",
+    transporte: "",
+    fechaDesde: lastMonthStr,
+    fechaHasta: todayStr,
+  });
+  const hasActiveFilters = !!(
+    filters.tipoViaje ||
+    filters.cliente ||
+    filters.destino ||
+    filters.transporte ||
+    filters.fechaDesde !== lastMonthStr ||
+    filters.fechaHasta !== todayStr
+  );
 
   const openCreate = () => {
     setEditingId(null);
@@ -235,11 +280,13 @@ const PlanesDeEmbarquePage = () => {
     setModalVisible(false);
     setEditingId(null);
     setFormError("");
+    setSubmitting(false);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setFormError("");
+    setSubmitting(true);
     try {
       const method = editingId ? "PUT" : "POST";
       const url    = editingId
@@ -270,6 +317,8 @@ const PlanesDeEmbarquePage = () => {
       }
     } catch (e) {
       setFormError("Error de conexión. Intente nuevamente.");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -427,6 +476,7 @@ const PlanesDeEmbarquePage = () => {
       key: "index",
       header: "#",
       width: "55px",
+      headerClassName: "text-center",
       className: "text-center fw-bold",
       render: (_row, {rowIndex, currentPage, itemsPerPage}) =>
         (currentPage - 1) * itemsPerPage + rowIndex + 1,
@@ -464,34 +514,35 @@ const PlanesDeEmbarquePage = () => {
       header: "Bitácora",
       render: (row) =>
         row.linked_bitacora ? (
-          <button
-            type="button"
-            className="plan-bitacora-link"
-            onClick={() => navigate(`/bitacora/${row.linked_bitacora._id}`)}>
-            #{row.linked_bitacora.bitacora_id}
-          </button>
+          <CellBadge
+            label={`#${row.linked_bitacora.bitacora_id}`}
+            variant="blue"
+            onClick={() => navigate(`/bitacora/${row.linked_bitacora._id}`)}
+          />
         ) : (
           "—"
         ),
     },
+    {
+      key: "acciones",
+      header: "Acciones",
+      width: "8%",
+      headerClassName: "text-end",
+      className: "table-cell",
+      render: (row) => (
+        <div className="d-flex justify-content-end gap-2">
+          <button className="action-btn btn-primary" title="Editar" onClick={() => openEdit(row)}>
+            <i className="fas fa-edit"></i>
+          </button>
+          <button className="action-btn btn-danger" title="Eliminar" onClick={() => handleDelete(row._id)}>
+            <i className="fas fa-trash"></i>
+          </button>
+        </div>
+      ),
+    },
   ];
 
-  const actions = [
-    {
-      icon: "fas fa-edit",
-      className: "btn btn-primary",
-      title: "Editar",
-      show: true,
-      onClick: (row) => openEdit(row),
-    },
-    {
-      icon: "fas fa-trash",
-      className: "btn btn-danger",
-      title: "Eliminar",
-      show: true,
-      onClick: (row) => handleDelete(row._id),
-    },
-  ];
+  const actions = [];
 
   const planForm = (
     <>
@@ -501,58 +552,95 @@ const PlanesDeEmbarquePage = () => {
           <span>{formError}</span>
         </div>
       )}
-      <div className="row g-3">
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Tipo de Viaje <span className="text-danger">*</span></label>
-          <input className="form-control" name="tipoViaje" value={formData.tipoViaje}
-            onChange={handleChange} required />
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Carrier Move <span className="text-danger">*</span></label>
-          <input className="form-control" name="carrierMove" value={formData.carrierMove}
-            onChange={handleChange} required />
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Cliente <span className="text-danger">*</span></label>
-          <select className="form-select" name="cliente" value={formData.cliente}
-            onChange={handleChange} required>
-            <option value="">Selecciona un cliente</option>
-            {[...clientes].sort((a, b) => a.razon_social.localeCompare(b.razon_social)).map((c) => (
-              <option key={c._id} value={c._id}>{c.razon_social}</option>
-            ))}
-          </select>
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Destino <span className="text-danger">*</span></label>
-          <select className="form-select" name="destino" value={formData.destino}
-            onChange={handleChange} required disabled={!formData.cliente}>
-            <option value="">
-              {formData.cliente ? "Selecciona un destino" : "Selecciona un cliente primero"}
-            </option>
-            {[...filteredDestinos].sort((a, b) => a.nombre.localeCompare(b.nombre)).map((d) => (
-              <option key={d._id} value={d._id}>{d.nombre}</option>
-            ))}
-          </select>
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Cita de Carga <span className="text-danger">*</span></label>
-          <input type="datetime-local" className="form-control" name="citaCarga"
-            value={formData.citaCarga} onChange={handleChange} required />
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Hora de Salida <span className="text-danger">*</span></label>
-          <input type="datetime-local" className="form-control" name="horaSalida"
-            value={formData.horaSalida} onChange={handleChange} required />
-        </div>
-        <div className="col-md-6">
-          <label className="form-label fw-semibold">Cita de Entrega <span className="text-danger">*</span></label>
-          <input type="datetime-local" className="form-control" name="citaEntrega"
-            value={formData.citaEntrega} onChange={handleChange} required />
-        </div>
-        <div className="col-12">
-          <label className="form-label fw-semibold">Transporte <span className="text-danger">*</span></label>
-          <input className="form-control" name="transporte" value={formData.transporte}
-            onChange={handleChange} required />
+      <div style={{maxHeight: "60vh", overflowY: "auto", paddingRight: "6px"}}>
+        <div className="row g-3">
+          <div className="col-md-6">
+            <TextInput
+              label="Tipo de Viaje *"
+              name="tipoViaje"
+              placeholder="Ej. IMPORTACION"
+              value={formData.tipoViaje}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div className="col-md-6">
+            <TextInput
+              label="Carrier Move *"
+              name="carrierMove"
+              placeholder="Ej. ABC123"
+              value={formData.carrierMove}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div className="col-md-6">
+            <Select
+              label="Cliente *"
+              placeholder="Selecciona un cliente"
+              value={formData.cliente || null}
+              onChange={(val) => setFormData((prev) => ({...prev, cliente: val, destino: ""}))}
+              options={clientes
+                .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                .map((c) => ({value: c._id, label: c.razon_social}))}
+            />
+          </div>
+          <div className="col-md-6">
+            <Select
+              label="Destino *"
+              placeholder={formData.cliente ? "Selecciona un destino" : "Selecciona un cliente primero"}
+              value={formData.destino || null}
+              onChange={(val) => setFormData((prev) => ({...prev, destino: val}))}
+              disabled={!formData.cliente}
+              options={
+                formData.cliente
+                  ? filteredDestinos
+                      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+                      .map((d) => ({value: d._id, label: d.nombre}))
+                  : []
+              }
+            />
+          </div>
+          <div className="col-md-6">
+            <TextInput
+              label="Cita de Carga *"
+              type="datetime-local"
+              name="citaCarga"
+              value={formData.citaCarga}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div className="col-md-6">
+            <TextInput
+              label="Hora de Salida *"
+              type="datetime-local"
+              name="horaSalida"
+              value={formData.horaSalida}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div className="col-md-6">
+            <TextInput
+              label="Cita de Entrega *"
+              type="datetime-local"
+              name="citaEntrega"
+              value={formData.citaEntrega}
+              onChange={handleChange}
+              required
+            />
+          </div>
+          <div className="col-12">
+            <TextInput
+              label="Transporte *"
+              name="transporte"
+              placeholder="Ej. TRANSPORTE-001"
+              value={formData.transporte}
+              onChange={handleChange}
+              required
+            />
+          </div>
         </div>
       </div>
     </>
@@ -594,44 +682,37 @@ const PlanesDeEmbarquePage = () => {
               {errorCount > 0 && ` · ${errorCount} con error`}
             </span>
           </div>
-          <div className="import-table-wrapper">
-            <table className="table table-sm table-bordered import-table">
-              <thead>
-                <tr>
-                  <th>Fila</th>
-                  <th>Tipo de Viaje</th>
-                  <th>Cliente</th>
-                  <th>Destino</th>
-                  <th>Transporte</th>
-                  <th>Estado / Detalle</th>
-                </tr>
-              </thead>
-              <tbody>
-                {importResults.map((r) => (
-                  <tr key={r.row} className={r.status === "error" ? "table-danger" : "table-success"}>
-                    <td>{r.row}</td>
-                    <td>{r.tipoViaje ?? "—"}</td>
-                    <td>{r.clienteNombre ?? "—"}</td>
-                    <td>{r.destinoNombre ?? "—"}</td>
-                    <td>{r.transporte ?? "—"}</td>
-                    <td>
-                      {r.status === "ok"
-                        ? <span className="badge bg-success">OK</span>
-                        : (
-                          <div>
-                            <span className="badge bg-danger">Error</span>
-                            {r.message && (
-                              <div className="text-danger mt-1" style={{fontSize: "0.75rem", lineHeight: 1.3}}>
-                                {r.message}
-                              </div>
-                            )}
+          <div className="bits-table-shell" style={{maxHeight: "50vh"}}>
+            <DataTable
+              data={importResults}
+              itemsPerPageOptions={[10, 25, 50]}
+              initialItemsPerPage={10}
+              rowKey={(r) => r.row}
+              rowClassName={(r) => r.status === "error" ? "table-danger" : "table-success"}
+              columns={[
+                {key: "row", header: "Fila", width: "60px"},
+                {key: "tipoViaje", header: "Tipo de Viaje"},
+                {key: "clienteNombre", header: "Cliente"},
+                {key: "destinoNombre", header: "Destino"},
+                {key: "transporte", header: "Transporte"},
+                {
+                  key: "status",
+                  header: "Estado / Detalle",
+                  render: (r) => r.status === "ok"
+                    ? <span className="badge bg-success">OK</span>
+                    : (
+                      <div>
+                        <span className="badge bg-danger">Error</span>
+                        {r.message && (
+                          <div className="text-danger mt-1" style={{fontSize: "0.75rem", lineHeight: 1.3}}>
+                            {r.message}
                           </div>
                         )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      </div>
+                    )
+                }
+              ]}
+            />
           </div>
         </>
       ) : (
@@ -640,37 +721,24 @@ const PlanesDeEmbarquePage = () => {
             Se importarán <strong>{importRows.length}</strong> plan{importRows.length !== 1 ? "es" : ""} de embarque.
             Revisa los datos antes de confirmar.
           </p>
-          <div className="import-table-wrapper">
-            <table className="table table-sm table-bordered import-table">
-              <thead>
-                <tr>
-                  <th>Fila</th>
-                  <th>Tipo de Viaje</th>
-                  <th>Carrier Move</th>
-                  <th>Cliente</th>
-                  <th>Destino</th>
-                  <th>Cita de Carga</th>
-                  <th>Hora de Salida</th>
-                  <th>Cita de Entrega</th>
-                  <th>Transporte</th>
-                </tr>
-              </thead>
-              <tbody>
-                {importRows.map((r) => (
-                  <tr key={r._rowNum}>
-                    <td className="text-muted">{r._rowNum}</td>
-                    <td>{r.tipoViaje}</td>
-                    <td>{r.carrierMove}</td>
-                    <td>{r.clienteNombre}</td>
-                    <td>{r.destinoNombre}</td>
-                    <td>{r.citaCarga  ? fmt(r.citaCarga)  : <span className="text-danger">—</span>}</td>
-                    <td>{r.horaSalida ? fmt(r.horaSalida) : <span className="text-danger">—</span>}</td>
-                    <td>{r.citaEntrega ? fmt(r.citaEntrega) : <span className="text-danger">—</span>}</td>
-                    <td>{r.transporte}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="bits-table-shell" style={{maxHeight: "50vh"}}>
+            <DataTable
+              data={importRows}
+              itemsPerPageOptions={[10, 25, 50]}
+              initialItemsPerPage={10}
+              rowKey={(r) => r._rowNum}
+              columns={[
+                {key: "_rowNum", header: "Fila", width: "60px"},
+                {key: "tipoViaje", header: "Tipo de Viaje"},
+                {key: "carrierMove", header: "Carrier Move"},
+                {key: "clienteNombre", header: "Cliente"},
+                {key: "destinoNombre", header: "Destino"},
+                {key: "citaCarga", header: "Cita de Carga", render: (r) => r.citaCarga ? fmt(r.citaCarga) : <span className="text-danger">—</span>},
+                {key: "horaSalida", header: "Hora de Salida", render: (r) => r.horaSalida ? fmt(r.horaSalida) : <span className="text-danger">—</span>},
+                {key: "citaEntrega", header: "Cita de Entrega", render: (r) => r.citaEntrega ? fmt(r.citaEntrega) : <span className="text-danger">—</span>},
+                {key: "transporte", header: "Transporte"},
+              ]}
+            />
           </div>
         </>
       )}
@@ -696,58 +764,103 @@ const PlanesDeEmbarquePage = () => {
           <PageHeader
             title="Monitoreo — Planes de Embarque"
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
               <FilterBar onClear={clearFilters}>
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por tipo de viaje…"
-                  name="tipoViaje"
-                  value={filters.tipoViaje}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por cliente…"
-                  name="cliente"
-                  value={filters.cliente}
-                  onChange={handleFilterChange}
-                />
-                <input
-                  type="text"
-                  className="form-control form-control-sm border-0 bg-white shadow-sm"
-                  placeholder="Buscar por transporte…"
-                  name="transporte"
-                  value={filters.transporte}
-                  onChange={handleFilterChange}
-                />
+                <div>
+                  <DatePicker
+                    label="Desde"
+                    value={filters.fechaDesde}
+                    onChange={(v) => setFilters((p) => ({...p, fechaDesde: v}))}
+                  />
+                </div>
+                <div>
+                  <DatePicker
+                    label="Hasta"
+                    value={filters.fechaHasta}
+                    onChange={(v) => setFilters((p) => ({...p, fechaHasta: v}))}
+                  />
+                </div>
+                <div>
+                  <span className="pselect__label">Tipo de Viaje</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-route pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
+                      value={filters.tipoViaje}
+                      onChange={(e) => setFilters((p) => ({...p, tipoViaje: e.target.value}))}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    placeholder="Todos los clientes"
+                    value={filters.cliente || null}
+                    onChange={(v) => setFilters((p) => ({...p, cliente: v ?? ""}))}
+                    options={[...clientes]
+                      .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                      .map((c) => ({value: c.razon_social, label: c.razon_social}))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Destino"
+                    placeholder="Todos los destinos"
+                    value={filters.destino || null}
+                    onChange={(v) => setFilters((p) => ({...p, destino: v ?? ""}))}
+                    options={[...destinos]
+                      .sort((a, b) => a.nombre.localeCompare(b.nombre))
+                      .map((d) => ({value: d.nombre, label: d.nombre}))}
+                  />
+                </div>
+                <div>
+                  <span className="pselect__label">Transporte</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-truck pdt-field__icon"></i>
+                    <input
+                      type="text"
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
+                      value={filters.transporte}
+                      onChange={(e) => setFilters((p) => ({...p, transporte: e.target.value}))}
+                    />
+                  </div>
+                </div>
               </FilterBar>
             }
+            filterActions={<>
+              <button
+                className="header-action-btn header-action-btn--green"
+                title="Descargar plantilla Excel"
+                onClick={downloadTemplate}>
+                <i className="fas fa-file-download"></i>
+                <span>Plantilla</span>
+              </button>
+              <button
+                className="header-action-btn header-action-btn--indigo"
+                title="Importar desde Excel"
+                onClick={() => fileInputRef.current?.click()}>
+                <i className="fas fa-file-import"></i>
+                <span>Importar</span>
+              </button>
+            </>}
           >
-            <button
-              className="header-action-btn"
-              title="Descargar plantilla Excel"
-              onClick={downloadTemplate}>
-              <i className="fas fa-file-download"></i>
-            </button>
-            <button
-              className="header-action-btn"
-              title="Importar desde Excel"
-              onClick={() => fileInputRef.current?.click()}>
-              <i className="fas fa-file-import"></i>
-            </button>
             <button className="new-btn" title="Nuevo plan" onClick={openCreate}>
-              <i className="fas fa-plus"></i>
+              <i className="fas fa-plus"></i>Crear
             </button>
           </PageHeader>
 
-          <div className="settings-content mt-4">
+          <div className="bits-table-shell">
             <DataTable
               data={filteredPlanes}
               columns={columns}
-              actions={actions}
+              loading={isLoading}
               emptyMessage="No se encontraron planes de embarque."
+              maxHeight="100%"
             />
           </div>
         </div>
@@ -760,7 +873,9 @@ const PlanesDeEmbarquePage = () => {
           show={isModalVisible}
           title={editingId ? "Editar Plan de Embarque" : "Nuevo Plan de Embarque"}
           onClose={closeModal}
-          onSubmit={handleSubmit}>
+          onSubmit={handleSubmit}
+          submitDisabled={submitting}
+          submitText={submitting ? "Guardando..." : "Guardar"}>
           {planForm}
         </ModalTemplate>
       )}

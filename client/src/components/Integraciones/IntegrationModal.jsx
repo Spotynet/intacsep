@@ -36,6 +36,9 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
   const [loading, setLoading] = useState(false);
   const [activating, setActivar] = useState(false);
   const [scanning, setScanning] = useState({});
+  const [wialonUnits, setWialonUnits] = useState([]);
+  const [loadingWialonUnits, setLoadingWialonUnits] = useState(false);
+  const [syncingStatus, setSyncingStatus] = useState(false);
 
   const handleScanPlate = async (index, file) => {
     if (!file) return;
@@ -67,6 +70,7 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
   const [testLoading, setTestLoading] = useState(false);
   const [flushLoading, setFlushLoading] = useState(false);
   const [testIdent, setTestIdent] = useState("");
+  const [wialonStatus, setWialonStatus] = useState(null);
 
   const baseUrl = import.meta.env.VITE_BASE_URL;
 
@@ -77,6 +81,7 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
       setCopyFeedback("");
       setTestResult(null);
       setTestIdent("");
+      setWialonStatus(null);
       if (editing && integration) {
         setFormData({
           name: integration.name || "",
@@ -87,6 +92,8 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
           status: integration.status || "active",
         });
         loadVehicles(integration._id);
+        fetchWialonStatus(integration._id);
+        fetchWialonUnits(integration._id);
       } else {
         setFormData({
           name: "",
@@ -100,6 +107,47 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
       }
     }
   }, [show, editing, integration]);
+
+  const fetchWialonStatus = async (id) => {
+    try {
+      const res = await fetch(`${baseUrl}/integrations/${id}/wialon-status`, { credentials: "include" });
+      if (res.ok) setWialonStatus(await res.json());
+    } catch (e) {
+      console.error("Error fetching Wialon status:", e);
+    }
+  };
+
+  const fetchWialonUnits = async (id) => {
+    try {
+      setLoadingWialonUnits(true);
+      const res = await fetch(`${baseUrl}/integrations/${id}/wialon-units`, { credentials: "include" });
+      if (res.ok) setWialonUnits(await res.json());
+    } catch (e) {
+      console.error("Error fetching Wialon units:", e);
+    } finally {
+      setLoadingWialonUnits(false);
+    }
+  };
+
+  const handleSyncStatus = async () => {
+    if (!editing || !integration?._id) return;
+    try {
+      setSyncingStatus(true);
+      const res = await fetch(`${baseUrl}/integrations/${integration._id}/sync-status`, {
+        method: "POST",
+        credentials: "include"
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`Sincronización completada. Se actualizaron ${data.updated} vehículos.`);
+        loadVehicles(integration._id);
+      }
+    } catch (e) {
+      console.error("Error syncing status:", e);
+    } finally {
+      setSyncingStatus(false);
+    }
+  };
 
   const loadClients = async () => {
     try {
@@ -197,6 +245,7 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
       const result = await testInbound(integration._id, body);
       setTestResult(result);
       loadVehicles(integration._id);
+      fetchWialonStatus(integration._id);
     } catch (e) {
       console.error("Error testing inbound:", e);
       setTestResult({ status: "ERROR", reason: [e.message] });
@@ -212,6 +261,7 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
       const result = await flushWialon(integration._id);
       const summary = `Pushed: ${result.pushed ?? 0} · Failed: ${result.failed ?? 0} · Skipped: ${result.skipped ?? 0}`;
       alert(`Envío a Wialon completado.\n${summary}`);
+      fetchWialonStatus(integration._id);
     } catch (e) {
       console.error("Error flushing to Wialon:", e);
       alert("Error: " + e.message);
@@ -426,7 +476,7 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
 
           <div>
             <small className="text-muted d-block mb-1">Probar inbound (no requiere Postman)</small>
-            <div className="d-flex gap-2 align-items-center">
+            <div className="d-flex gap-2 align-items-center mb-3">
               <input
                 type="text"
                 className="form-control form-control-sm"
@@ -451,9 +501,32 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
                 title="Empuja mensajes pendientes a Wialon ahora"
               >
                 <i className="fas fa-cloud-upload-alt me-1"></i>
-                {flushLoading ? "Enviando..." : "Forzar envío a Wialon"}
+                {flushLoading ? "Enviando..." : "Forzar envío"}
               </button>
             </div>
+
+            {wialonStatus && (
+              <div className="d-flex gap-3 mb-3 p-2 bg-white border rounded small">
+                <div className="text-center">
+                  <div className="fw-bold text-primary">{wialonStatus.pending}</div>
+                  <div className="text-muted" style={{fontSize: '0.7rem'}}>Pendientes</div>
+                </div>
+                <div className="text-center">
+                  <div className="fw-bold text-success">{wialonStatus.pushed}</div>
+                  <div className="text-muted" style={{fontSize: '0.7rem'}}>Enviados</div>
+                </div>
+                <div className="text-center">
+                  <div className="fw-bold text-danger">{wialonStatus.failed}</div>
+                  <div className="text-muted" style={{fontSize: '0.7rem'}}>Fallidos</div>
+                </div>
+                {wialonStatus.failed > 0 && wialonStatus.details?.find(d => d._id === 'failed')?.lastError && (
+                  <div className="ms-auto text-danger" title={wialonStatus.details.find(d => d._id === 'failed').lastError}>
+                    <i className="fas fa-exclamation-triangle"></i>
+                  </div>
+                )}
+              </div>
+            )}
+
             {testResult && (
               <pre
                 className={`mt-2 mb-0 p-2 border rounded ${testResult.status === "OK" ? "bg-success-subtle" : "bg-danger-subtle"}`}
@@ -470,11 +543,26 @@ const IntegrationModal = ({ show, onClose, onSubmit, integration, editing }) => 
 
       <div className="d-flex justify-content-between align-items-center mb-3">
         <h5 className="m-0">Mapeo de Vehículos</h5>
-        <div>
+        <div className="d-flex align-items-center gap-3">
+          {editing && wialonUnits.length > 0 && (
+            <div className="d-flex align-items-center gap-2 text-muted small">
+              <i className="fas fa-sync-alt"></i>
+              <span>Wialon: <strong>{wialonUnits.length}</strong></span>
+              <button 
+                type="button" 
+                className="btn btn-link btn-sm p-0 text-decoration-none" 
+                onClick={handleSyncStatus}
+                disabled={syncingStatus}
+                title="Sincronizar estados con Wialon"
+              >
+                {syncingStatus ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-sync-alt"></i>}
+              </button>
+            </div>
+          )}
           {editing && (
             <button 
               type="button" 
-              className="btn btn-primary btn-sm me-2" 
+              className="btn btn-primary btn-sm" 
               onClick={handleActivateWialon}
               disabled={activating || loading}
             >

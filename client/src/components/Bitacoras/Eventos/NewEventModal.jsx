@@ -1,7 +1,12 @@
-import React, {useEffect, useState} from "react";
+import React, {useEffect, useMemo, useState} from "react";
 import {useAuth} from "../../../context/AuthContext";
+import {useWialon} from "../../../context/WialonProvider";
 import {useParams} from "react-router-dom";
 import ModalTemplate from "../../ModalTemplate";
+import {Select} from "../../Select";
+import TextInput from "../../TextInput";
+import TextArea from "../../TextArea";
+import WialonMap from "../../wialon/WialonMap";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -19,18 +24,15 @@ const tMatch = (a, b) =>
 
 const isManualTransporte = (t) => !t.gpsUnits || t.gpsUnits.length === 0;
 
-const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
+const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacoraId: propBitacoraId, initialTransporteId}) => {
   const [bitacora, setBitacora] = useState(null);
-  const {id} = useParams();
+  const {id: paramsId} = useParams();
+  const id = propBitacoraId || paramsId;
   const {verifyToken, user, setUser} = useAuth();
   const baseUrl = import.meta.env.VITE_BASE_URL;
   const [selectedTransportes, setSelectedTransportes] = useState([]);
   const [transportes, setTransportes] = useState([]);
-  const [units, setUnits] = useState();
-
-  // const [units, setUnits] = useState([]);
-  const token = import.meta.env.VITE_WIALON_TOKEN;
-  // const {units} = useWialon();
+  const {getUnitById} = useWialon();
   const [openTransportId, setOpenTransportId] = useState(null);
 
   const toggleCollapse = (id) => {
@@ -42,7 +44,7 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
     descripcion: "",
     frecuencia: 0,
     registrado_por: `${user?.firstName} ${user?.lastName}`,
-    transportes: transportes,
+    transportes: [],
   });
 
   useEffect(() => {
@@ -50,19 +52,18 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
       try {
         const userData = await verifyToken();
         setUser(userData);
-        await fetchBitacora();
+        if (id) await fetchBitacora();
       } catch (error) {
         console.error("Token verification or Bitacora fetch failed:", error);
-        navigate("/login");
       }
     };
 
-    if (token) init();
-  }, [token]);
+    init();
+  }, [id]);
 
   useEffect(() => {
-    if (show) fetchBitacora();
-  }, [show]);
+    if (show && id) fetchBitacora();
+  }, [show, id]);
 
   const fetchBitacora = async () => {
     try {
@@ -72,90 +73,40 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
       });
       if (response.ok) {
         const data = await response.json();
+        let targetBitacora = null;
+        let targetTransportes = [];
 
         if (edited) {
-          setBitacora(data.edited_bitacora);
-          // setEditedBitacora(data.edited_bitacora);
-          setTransportes(data.edited_bitacora.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data.edited_bitacora;
+          targetTransportes = data.edited_bitacora.transportes;
         } else if (!edited && data.edited_bitacora) {
-          setBitacora(data);
-          // setEditedBitacora(data.edited_bitacora);
-          setTransportes(data.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data;
+          targetTransportes = data.transportes;
         } else {
-          setBitacora(data);
-          // setEditedBitacora(data);
-          setTransportes(data.transportes);
-          // setSelectedTransportes(data.transportes);
+          targetBitacora = data;
+          targetTransportes = data.transportes;
+        }
+
+        setBitacora(targetBitacora);
+        setTransportes(targetTransportes);
+
+        // Pre-select unit if provided and available
+        if (initialTransporteId) {
+          const match = targetTransportes.find(t => String(t.id) === String(initialTransporteId));
+          if (match) {
+            // Need to set bitacora first so handleCheckboxChange finds it
+            // We use a slight delay or pass the bitacora directly to the function
+            setTimeout(() => {
+               handleCheckboxChange({ target: { value: String(match.id), checked: true } }, targetBitacora);
+               setOpenTransportId(match.id);
+            }, 100);
+          }
         }
       } else {
         console.error("Failed to fetch bitácora:", response.statusText);
       }
     } catch (e) {
       console.error("Error fetching bitácora:", e);
-    }
-  };
-
-  const fetchAllUnits = async (retries = 3, delay = 1000, token) => {
-    if (!token) {
-      console.error("No Wialon token available. Please log in.");
-      return;
-    }
-
-    const sess = window.wialon.core.Session.getInstance();
-    sess.initSession("https://hst-api.wialon.com");
-
-    console.log(sess);
-
-    try {
-      sess.loginToken(token, (code) => {
-        if (code) {
-          console.log("Error HERE");
-        } else {
-          console.log("Logged in successfully");
-        }
-      });
-
-      console.log("Wialon login successful.");
-      setSession(sess);
-      localStorage.setItem("wialonToken", token); // Store token for persistence
-      fetchAllUnits(sess);
-    } catch (error) {
-      console.error("Error during Wialon login:", error);
-    }
-
-    try {
-      const flags =
-        window.wialon.item.Item.dataFlag.base | window.wialon.item.Unit.dataFlag.lastMessage;
-
-      sess.loadLibrary("itemIcon");
-
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject("Library load timeout"), 5000);
-        sess.updateDataFlags([{type: "type", data: "avl_unit", flags, mode: 0}], (code) => {
-          clearTimeout(timeout);
-          if (code) {
-            reject(window.wialon.core.Errors.getErrorText(code));
-          } else {
-            resolve();
-          }
-        });
-      });
-
-      const fetchedUnits = sess.getItems("avl_unit") || [];
-      const unitDetails = fetchedUnits.map((unit) => ({id: unit.getId(), name: unit.getName()}));
-      setUnits(unitDetails);
-      console.log("Unidades obtenidas:", unitDetails);
-    } catch (error) {
-      console.error("Error al obtener unidades, reintentando...", error);
-      if (retries > 0) {
-        console.log(`Retrying in ${delay}ms...`);
-        setTimeout(() => fetchAllUnits(sess, retries - 1, delay), delay);
-      } else {
-        console.log("Max retries reached, failing...");
-        setUnits([]);
-      }
     }
   };
 
@@ -183,22 +134,7 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
   };
 
   const getUnitInfo = async (wialonId) => {
-    await fetchAllUnits(3, 1500, token);
-
-    if (!units || !units.length) {
-      console.warn("⚠️ Units not loaded.");
-      return null;
-    }
-
-    const found = units.find((u) => u.id == wialonId);
-
-    if (!found) {
-      console.warn(`❌ Unidad no encontrada para ID: ${wialonId}`);
-      return null;
-    }
-
-    const sess = window.wialon.core.Session.getInstance();
-    const unit = sess.getItems("avl_unit").find((u) => u.getId() === found.id);
+    const unit = getUnitById(wialonId);
 
     if (!unit || typeof unit.getPosition !== "function") {
       console.warn("⚠️ Unidad no disponible en sesión.");
@@ -262,11 +198,14 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
     return await Promise.all(gpsDataPromises);
   };
 
-  const handleCheckboxChange = async (e) => {
+  const handleCheckboxChange = async (e, manualBitacora = null) => {
     const {value, checked} = e.target;
     const transporteId = value;
 
-    const transporteToAdd = bitacora.transportes.find(
+    const targetBitacora = manualBitacora || bitacora;
+    if (!targetBitacora) return;
+
+    const transporteToAdd = targetBitacora.transportes.find(
       (transporte) => String(transporte.id) === transporteId
     );
 
@@ -327,6 +266,95 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
       transportes: updatedTransportes,
     }));
   };
+
+  const handleSelectChange = (val) => {
+    // Auto-set and disable frecuencia if event is Cierre de servicio
+    if (val?.toLowerCase() === "cierre de servicio") {
+      setNewEvent((prev) => ({...prev, nombre: val, frecuencia: 0}));
+    } else {
+      setNewEvent((prev) => ({...prev, nombre: val}));
+    }
+  };
+
+  const filteredEventOptions = React.useMemo(() => {
+    if (!newEvent.transportes.length || !bitacora) return [];
+
+    // Filtrar eventos con nombre "Validación"
+    const eventosValidacion =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "validación") || [];
+
+    // Filtrar eventos con nombre "Inicio de recorrido"
+    const eventosInicioRecorrido =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "inicio de recorrido") ||
+      [];
+
+    // Filtrar eventos con nombre "Arribo a destino"
+    const eventosArriboDestino =
+      bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "arribo a destino") ||
+      [];
+
+    // Build a matcher that checks id OR internalId so renamed transportes stay linked
+    const transporteInSet = (eventoTransportes, candidate) =>
+      eventoTransportes.some((et) => {
+        if (candidate.internalId && et.internalId && candidate.internalId === et.internalId) return true;
+        return et.id?.toLowerCase() === candidate.id?.toLowerCase();
+      });
+
+    const allTransportesInEvento = (candidatos, eventoList) =>
+      candidatos.every((c) =>
+        eventoList.some((ev) => transporteInSet(ev.transportes, c))
+      );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Validación"
+    const allSelectedTransportesInValidacion = allTransportesInEvento(
+      newEvent.transportes, eventosValidacion
+    );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Inicio de recorrido"
+    const allSelectedTransportesInInicioRecorrido = allTransportesInEvento(
+      newEvent.transportes, eventosInicioRecorrido
+    );
+
+    // Verificar si TODOS los selectedTransportes están en eventos de "Arribo a destino"
+    const allSelectedTransportesInArriboDestino = allTransportesInEvento(
+      newEvent.transportes, eventosArriboDestino
+    );
+
+    let finalTypes = [];
+
+    if (allSelectedTransportesInValidacion) {
+      if (allSelectedTransportesInInicioRecorrido) {
+        // Si todos los transportes están en "Validación" y "Inicio de recorrido"
+        finalTypes = eventTypes.filter(
+          (eventType) =>
+            allSelectedTransportesInArriboDestino ||
+            eventType.evento.toLowerCase() !== "cierre de servicio"
+        );
+      } else {
+        // Si todos los transportes están en "Validación" pero no en "Inicio de recorrido", mostrar solo "Inicio de recorrido"
+        const inicioRecorridoEventType = eventTypes.find(
+          (et) => et.evento.toLowerCase() === "inicio de recorrido"
+        );
+        if (inicioRecorridoEventType) {
+          finalTypes = [inicioRecorridoEventType];
+        } else {
+          finalTypes = [{_id: 'temp-ir', evento: 'Inicio de recorrido'}];
+        }
+      }
+    } else {
+      // Si algún transporte no está en "Validación", solo permitir "Validación"
+      const validacionEventType = eventTypes.find(
+        (et) => et.evento.toLowerCase() === "validación"
+      );
+      if (validacionEventType) {
+        finalTypes = [validacionEventType];
+      } else {
+        finalTypes = [{_id: 'temp-val', evento: 'Validación'}];
+      }
+    }
+
+    return finalTypes.map(et => ({ value: et.evento, label: et.evento }));
+  }, [newEvent.transportes, bitacora, eventTypes]);
 
   const handleChange = (e) => {
     const {name, value} = e.target;
@@ -390,8 +418,6 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
         if (response.ok) {
           const updatedBitacora = await response.json();
           setBitacora(updatedBitacora);
-          setIsEventStarted(true);
-          setFinishButtonDisabled(false);
         } else {
           console.error("Failed to start bitácora:", response.statusText);
         }
@@ -416,8 +442,6 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
         if (response.ok) {
           const updatedBitacora = await response.json();
           setBitacora(updatedBitacora);
-          setIsEventStarted(true);
-          setFinishButtonDisabled(false);
         } else {
           console.error("Failed to start bitácora:", response.statusText);
         }
@@ -533,287 +557,231 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded}) => {
 
   let allSelectedTransportesInArriboDestino = false;
 
+  // Map scopes to selected transportes' GPS; falls back to all bitácora GPS.
+  const mapUnitIds = useMemo(() => {
+    const source =
+      newEvent.transportes?.length > 0
+        ? newEvent.transportes
+        : bitacora?.transportes || [];
+    const ids = [];
+    const seen = new Set();
+    for (const t of source) {
+      for (const g of t.gpsUnits || []) {
+        if (g?.wialonId == null) continue;
+        const id = String(g.wialonId).trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+      }
+    }
+    return ids;
+  }, [newEvent.transportes, bitacora?.transportes]);
+
   return (
-    <ModalTemplate show={show} onClose={onClose} onSubmit={handleSubmit} title="Crear Nuevo Evento">
-      <div className="modal-body">
-        <form onSubmit={handleSubmit}>
-          <div className="mb-3">
-            <label htmlFor="transportes" className="form-label">
-              Transportes
-            </label>
-
-            {bitacora?.transportes
-              ?.filter((transporte) => {
-                const cierreEventos =
-                  bitacora?.eventos?.filter(
-                    (evento) => evento.nombre.toLowerCase() === "cierre de servicio"
-                  ) || [];
-                return !cierreEventos.some((ev) =>
-                  ev.transportes.some((t) => tMatch(t, transporte))
-                );
-              })
-              .map((transporte) => {
-                const isSelected = newEvent.transportes.some((t) => tMatch(t, transporte));
-                return (
-                  <div
-                    className={`transportes-checkbox ${isSelected ? "checked" : ""}`}
-                    key={transporte.internalId || transporte.id}>
-                    <input
-                      type="checkbox"
-                      className={`form-check-input ${isSelected ? "border-success" : ""}`}
-                      id={`transporte-${transporte.internalId || transporte.id}`}
-                      name="transportes"
-                      value={transporte.id}
-                      onChange={handleCheckboxChange}
-                      checked={isSelected}
-                    />
-                    <label className="form-check-label" htmlFor={`transporte-${transporte.internalId || transporte.id}`}>
-                      {`${getTransporteLabel(transporte)}${transporte.tracto?.eco ? ` - ${transporte.tracto.eco}` : ""}`}
-                    </label>
-                  </div>
-                );
-              })}
+    <ModalTemplate
+      show={show}
+      onClose={onClose}
+      onSubmit={handleSubmit}
+      title="Crear Nuevo Evento"
+      extraWide
+      className="split-view-modal new-event-modal--with-map"
+    >
+      <div className="new-event-modal-split">
+        <div className="new-event-modal-split__form new-event-modal">
+          <div className="mb-4">
+            <label className="pselect__label">Transportes vinculados</label>
+            <div className="transport-grid">
+              {bitacora?.transportes
+                ?.filter((transporte) => {
+                  const cierreEventos =
+                    bitacora?.eventos?.filter(
+                      (evento) => evento.nombre.toLowerCase() === "cierre de servicio"
+                    ) || [];
+                  return !cierreEventos.some((ev) =>
+                    ev.transportes.some((t) => tMatch(t, transporte))
+                  );
+                })
+                .map((transporte) => {
+                  const isSelected = newEvent.transportes.some((t) => tMatch(t, transporte));
+                  return (
+                    <div
+                      className={`transportes-checkbox ${isSelected ? "checked" : ""}`}
+                      key={transporte.internalId || transporte.id}
+                      onClick={() => handleCheckboxChange({ 
+                        target: { 
+                          value: String(transporte.id), 
+                          checked: !isSelected 
+                        } 
+                      })}
+                    >
+                      <div className={`pselect__checkbox ${isSelected ? "pselect__checkbox--checked" : ""}`}>
+                        {isSelected && <i className="fa fa-check"></i>}
+                      </div>
+                      <span className="ms-2">
+                        {`${getTransporteLabel(transporte)}${transporte.tracto?.eco ? ` - ${transporte.tracto.eco}` : ""}`}
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
           </div>
-          <div className="mb-3">
-            <label htmlFor="nombre" className="form-label">
-              Tipo de Evento
-            </label>
-            <select
-              id="nombre"
-              name="nombre"
-              className="form-select"
-              value={newEvent.nombre}
-              onChange={handleChange}
-              required>
-              <option value="">Seleccionar tipo de evento</option>
 
-              {newEvent.transportes.length == 0 ? (
-                <option value="">Seleccionar tipo de evento</option>
-              ) : (
-                (() => {
-                  // Filtrar eventos con nombre "Validación"
-                  const eventosValidacion =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "validación") || [];
-
-                  // Filtrar eventos con nombre "Inicio de recorrido"
-                  const eventosInicioRecorrido =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "inicio de recorrido") ||
-                    [];
-
-                  // Filtrar eventos con nombre "Arribo a destino"
-                  const eventosArriboDestino =
-                    bitacora?.eventos.filter((evento) => evento.nombre.toLowerCase() === "arribo a destino") ||
-                    [];
-
-                  // Build a matcher that checks id OR internalId so renamed transportes stay linked
-                  const transporteInSet = (eventoTransportes, candidate) =>
-                    eventoTransportes.some((et) => {
-                      if (candidate.internalId && et.internalId && candidate.internalId === et.internalId) return true;
-                      return et.id?.toLowerCase() === candidate.id?.toLowerCase();
-                    });
-
-                  const allTransportesInEvento = (candidatos, eventoList) =>
-                    candidatos.every((c) =>
-                      eventoList.some((ev) => transporteInSet(ev.transportes, c))
-                    );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Validación"
-                  const allSelectedTransportesInValidacion = allTransportesInEvento(
-                    newEvent.transportes, eventosValidacion
-                  );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Inicio de recorrido"
-                  const allSelectedTransportesInInicioRecorrido = allTransportesInEvento(
-                    newEvent.transportes, eventosInicioRecorrido
-                  );
-
-                  // Verificar si TODOS los selectedTransportes están en eventos de "Arribo a destino"
-                  allSelectedTransportesInArriboDestino = allTransportesInEvento(
-                    newEvent.transportes, eventosArriboDestino
-                  );
-
-                  if (allSelectedTransportesInValidacion) {
-                    if (allSelectedTransportesInInicioRecorrido) {
-                      // Si todos los transportes están en "Validación" y "Inicio de recorrido"
-                      return eventTypes
-                        .filter(
-                          (eventType) =>
-                            allSelectedTransportesInArriboDestino ||
-                            eventType.evento.toLowerCase() !== "cierre de servicio"
-                        )
-                        .map((eventType) => (
-                          <option key={eventType._id} value={eventType.evento}>
-                            {eventType.evento}
-                          </option>
-                        ));
-                    } else {
-                      // Si todos los transportes están en "Validación" pero no en "Inicio de recorrido", mostrar solo "Inicio de recorrido"
-                      const inicioRecorridoEventType = eventTypes.find(
-                        (et) => et.evento.toLowerCase() === "inicio de recorrido"
-                      );
-                      if (inicioRecorridoEventType) {
-                        return (
-                          <option value={inicioRecorridoEventType.evento}>
-                            {inicioRecorridoEventType.evento}
-                          </option>
-                        );
-                      }
-                      return <option value="">Inicio de recorrido</option>;
-                    }
-                  }
-
-                  // Si algún transporte no está en "Validación", solo permitir "Validación"
-                  const validacionEventType = eventTypes.find(
-                    (et) => et.evento.toLowerCase() === "validación"
-                  );
-                  if (validacionEventType) {
-                    return (
-                      <option value={validacionEventType.evento}>
-                        {validacionEventType.evento}
-                      </option>
-                    );
-                  }
-                  return <option value="">Validación</option>;
-                })()
+          <div className="row">
+            <div className="col-md-7 mb-4">
+              <Select
+                label="Tipo de Evento"
+                options={filteredEventOptions}
+                value={newEvent.nombre}
+                onChange={handleSelectChange}
+                placeholder="Seleccionar..."
+                disabled={newEvent.transportes.length === 0}
+              />
+              {newEvent.transportes.length === 0 && (
+                <div className="mt-1 small text-muted">
+                  Selecciona al menos un transporte para ver los eventos disponibles.
+                </div>
               )}
-            </select>
+            </div>
+
+            <div className="col-md-5 mb-4">
+              <TextInput
+                label="Frecuencia (min)"
+                type="number"
+                name="frecuencia"
+                value={newEvent.frecuencia}
+                onChange={handleChange}
+                disabled={newEvent.nombre.toLowerCase() === "cierre de servicio"}
+                required
+              />
+            </div>
           </div>
 
-          <div className="mb-3">
-            <label htmlFor="descripcion" className="form-label">
-              Descripcion
-            </label>
-            <textarea
-              id="descripcion"
+          <div className="mb-4">
+            <TextArea
+              label="Descripción / Comentario"
               name="descripcion"
-              className="form-control"
               value={newEvent.descripcion}
               onChange={handleChange}
+              rows={3}
+              placeholder="Detalles del evento..."
               required
             />
           </div>
-          <div className="mb-3">
-            <label htmlFor="frecuencia" className="form-label">
-              Frecuencia
-            </label>
-            <input
-              type="number"
-              className="form-control"
-              min="0"
-              max="99"
-              id="frecuencia"
-              name="frecuencia"
-              value={newEvent.frecuencia}
-              onChange={handleChange}
-              disabled={newEvent.nombre.toLowerCase() === "cierre de servicio"}
-              required
-            />
-          </div>
-          <div className="mb-3">
-            <label className="form-label">Fecha de registro</label>
-            <input
-              type="text"
-              className="form-control"
-              value={new Date().toLocaleString("es-MX", {hour12: false})}
+
+          <div className="mb-4">
+            <TextInput
+              label="Fecha de registro"
+              value={new Date().toLocaleString("es-MX", {hour12: false, dateStyle: "medium", timeStyle: "short"})}
               disabled
             />
           </div>
 
-          <hr />
-
-          <div>
-            {newEvent.transportes?.map((t) => {
-              const tKey = t.internalId || t.id;
-              const isManual = isManualTransporte(t);
-              return (
-              <div key={tKey} className="border mb-2 rounded shadow-sm">
-                <div
-                  className="d-flex justify-content-between align-items-center p-2 bg-light border-bottom"
-                  style={{cursor: "pointer"}}
-                  onClick={() => toggleCollapse(tKey)}>
-                  <div className="fw-bold">{getTransporteLabel(t)}</div>
-
-                  <div className="d-flex align-items-center gap-2">
-                    <span className={`badge ${isManual ? "bg-secondary" : "bg-success"}`}>
-                      {isManual ? "Manual" : "GPS"}
-                    </span>
-                    <span className="ms-2 fs-5">{openTransportId === tKey ? "−" : "+"}</span>
-                  </div>
-                </div>
-
-                {openTransportId === tKey && (
-                  <div className="p-3">
-                    {/* Mostrar múltiples GPS si existen */}
-                    {t.gpsData && t.gpsData.length > 0 ? (
-                      <div>
-                        <h6 className="fw-bold mb-3">Datos de GPS</h6>
-                        {t.gpsData.map((gps, index) => (
-                          <div key={index} className="mb-4 p-3 border rounded bg-light">
-                            <h6 className="fw-semibold text-primary mb-2">
-                              {gps.name} (ID: {gps.wialonId})
-                            </h6>
-                            {[
-                              "duracion",
-                              "ubicacion",
-                              "velocidad",
-                              "ultimo_posicionamiento",
-                              "coordenadas",
-                            ].map((field) => (
-                              <div className="mb-2" key={field}>
-                                <label className="form-label fw-bold text-capitalize small">
-                                  {field.replace("_", " ")}:
-                                </label>
-                                <input
-                                  type="text"
-                                  className="form-control form-control-sm"
-                                  value={gps.data?.[field] || ""}
-                                  onChange={(e) =>
-                                    handleGpsDataChange(tKey, index, field, e.target.value)
-                                  }
-                                  placeholder="Datos obtenidos de Wialon (editable)"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        ))}
+          {newEvent.transportes.length > 0 && (
+            <>
+              <hr className="my-4" />
+              <div className="mb-3">
+                <label className="pselect__label">Detalle por unidad</label>
+                {newEvent.transportes?.map((t) => {
+                  const tKey = t.internalId || t.id;
+                  const isManual = isManualTransporte(t);
+                  return (
+                    <div key={tKey} className="modern-unit-card mb-3">
+                      <div
+                        className="modern-unit-card__header"
+                        onClick={() => toggleCollapse(tKey)}
+                      >
+                        <div className="fw-bold text-dark">{getTransporteLabel(t)}</div>
+                        <div className="d-flex align-items-center gap-2">
+                          <span className={`badge ${isManual ? "bg-warning-subtle text-warning-emphasis" : "bg-success-subtle text-success-emphasis"}`}>
+                            {isManual ? "Manual" : "GPS"}
+                          </span>
+                          <i className={`fa fa-chevron-${openTransportId === tKey ? "up" : "down"} ms-2 text-muted small`}></i>
+                        </div>
                       </div>
-                    ) : (
-                      /* Modo manual - campos editables */
-                      <div>
-                        {[
-                          "duracion",
-                          "ubicacion",
-                          "velocidad",
-                          "ultimo_posicionamiento",
-                          "coordenadas",
-                        ].map((field) => (
-                          <div className="mb-3" key={field}>
-                            <label className="form-label fw-bold text-capitalize">
-                              {field.replace("_", " ")}{" "}
-                              {isManual && (
-                                <span className="text-danger fw-normal ms-1">(Requerido)</span>
-                              )}
-                            </label>
-                            <input
-                              type="text"
-                              className={`form-control ${isManual ? "border-danger" : ""}`}
-                              value={t.registro?.[field] || ""}
-                              onChange={(e) =>
-                                handleManualRegistroChange(tKey, field, e.target.value)
-                              }
-                              required={isManual}
-                              placeholder={isManual ? "Ingresa valor manualmente" : ""}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+
+                      {openTransportId === tKey && (
+                        <div className="modern-unit-card__body p-3">
+                          {t.gpsData && t.gpsData.length > 0 ? (
+                            <div className="row g-3">
+                              {t.gpsData.map((gps, index) => (
+                                <div key={index} className="col-12 p-3 border rounded bg-white">
+                                  <div className="d-flex align-items-center mb-3 gap-2">
+                                    <i className="fa fa-satellite-dish text-primary"></i>
+                                    <h6 className="fw-bold mb-0 small">
+                                      {gps.name} (ID: {gps.wialonId})
+                                    </h6>
+                                  </div>
+                                  <div className="row g-2">
+                                    {[
+                                      "duracion",
+                                      "ubicacion",
+                                      "velocidad",
+                                      "ultimo_posicionamiento",
+                                      "coordenadas",
+                                    ].map((field) => (
+                                      <div className="col-md-6" key={field}>
+                                        <TextInput
+                                          label={field.replace("_", " ")}
+                                          value={gps.data?.[field] || ""}
+                                          onChange={(e) => handleGpsDataChange(tKey, index, field, e.target.value)}
+                                          className="mb-2"
+                                        />
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="row g-2">
+                              {[
+                                "duracion",
+                                "ubicacion",
+                                "velocidad",
+                                "ultimo_posicionamiento",
+                                "coordenadas",
+                              ].map((field) => (
+                                <div className="col-md-6" key={field}>
+                                  <TextInput
+                                    label={`${field.replace("_", " ")}${isManual ? " *" : ""}`}
+                                    value={t.registro?.[field] || ""}
+                                    onChange={(e) => handleManualRegistroChange(tKey, field, e.target.value)}
+                                    required={isManual}
+                                    className="mb-2"
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );})}
+            </>
+          )}
+        </div>
+
+        <div className="new-event-modal-split__map">
+          <div className="new-event-modal-split__map-label">
+            Mapa Intacsep
+            {mapUnitIds.length > 0
+              ? ` · ${mapUnitIds.length} GPS`
+              : ""}
           </div>
-        </form>
+          {mapUnitIds.length > 0 ? (
+            <WialonMap
+              unitIds={mapUnitIds}
+              className="wialon-map-wrapper--embedded"
+            />
+          ) : (
+            <div className="new-event-modal-split__map-empty">
+              <i className="fa fa-map-marked-alt"></i>
+              <p>Selecciona un transporte con GPS para verlo en el mapa.</p>
+            </div>
+          )}
+        </div>
       </div>
     </ModalTemplate>
   );

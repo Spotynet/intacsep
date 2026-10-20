@@ -1,34 +1,31 @@
-import React from 'react';
-import { Box, TextField } from '@mui/material';
+import DatePicker from "./DatePicker";
 
 /**
- * Modern DateTimeRangePicker using MUI components.
+ * DateTimeRangePicker — uses portal-based CustomDatePicker for premium experience.
+ * Props: label, startValue, endValue, onStartChange, onEndChange
  */
 const DateTimeRangePicker = ({ label, startValue, endValue, onStartChange, onEndChange }) => {
   return (
-    <Box className="d-flex align-items-center gap-2">
-      <small className="text-muted fw-bold text-nowrap">{label}:</small>
-      <TextField
-        type="datetime-local"
-        size="small"
-        value={startValue}
-        onChange={(e) => onStartChange(e.target.value)}
-        sx={{ 
-          '& .MuiOutlinedInput-root': { borderRadius: '6px', backgroundColor: '#fff', fontSize: '0.8rem' },
-          '& .MuiOutlinedInput-input': { padding: '8px 10px' }
-        }}
-      />
-      <TextField
-        type="datetime-local"
-        size="small"
-        value={endValue}
-        onChange={(e) => onEndChange(e.target.value)}
-        sx={{ 
-          '& .MuiOutlinedInput-root': { borderRadius: '6px', backgroundColor: '#fff', fontSize: '0.8rem' },
-          '& .MuiOutlinedInput-input': { padding: '8px 10px' }
-        }}
-      />
-    </Box>
+    <div className="pdt-range">
+      {label && <span className="pselect__label">{label}</span>}
+      <div className="pdt-range__inputs">
+        <DatePicker
+          prefix="De"
+          showTime={true}
+          value={startValue}
+          onChange={onStartChange}
+          placeholder="Desde..."
+        />
+        <span className="pdt-range__sep">|</span>
+        <DatePicker
+          prefix="A"
+          showTime={true}
+          value={endValue}
+          onChange={onEndChange}
+          placeholder="Hasta..."
+        />
+      </div>
+    </div>
   );
 };
 

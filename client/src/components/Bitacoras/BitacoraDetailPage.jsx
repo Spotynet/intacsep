@@ -1,18 +1,30 @@
-import React, {useState, useEffect} from "react";
+import React, {useState, useEffect, useMemo} from "react";
 import {useParams, useNavigate} from "react-router-dom";
+import {useWialon} from "../../context/WialonProvider";
 import Sidebar from "../Sidebar";
+import WialonMap from "../wialon/WialonMap";
+import EventosWialonPanel from "../Wialon/EventosWialonPanel";
 import {FontAwesomeIcon} from "@fortawesome/react-fontawesome";
 import {faPlus} from "@fortawesome/free-solid-svg-icons";
 import {useAuth} from "../../context/AuthContext";
 import {Form, Tabs, Tab} from "react-bootstrap";
 import "bootstrap/dist/js/bootstrap.bundle.min.js";
 import CreateTransporteModal from "./Transportes/CreateTransporteModal";
+import WialonNotifPicker, {mergeNotificaciones, reportWialonSync} from "./Transportes/WialonNotifPicker";
 import NewEventModal from "./Eventos/NewEventModal";
 import {generateAuditoriasFromChanges} from "../../utils/auditoria";
 import {getLocationText} from "../../utils/api";
 import {convertToUpperCase} from "../../utils/utils";
 import ModalTemplate from "../../components/ModalTemplate"; // make sure path is valid
 import {useSidebar} from "../../context/SidebarContext";
+import PageHeader from "../PageHeader";
+import CellBadge from "../CellBadge";
+import TextInput from "../TextInput";
+import {Select} from "../Select";
+import TextArea from "../TextArea";
+import Toast from "../Toast";
+import {useToast} from "../../hooks/useToast";
+import {TRIGGER_LABELS, TRIGGER_COLORS, TRIGGER_ICONS} from "../../utils/wialonNotifications";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -29,44 +41,54 @@ const CollapsibleTransporte = ({transporte}) => {
   const displayId = getTransporteLabel(transporte);
 
   return (
-    <div className="mb-3">
+    <div className="evento-transporte">
       <div
-        className="d-flex justify-content-between align-items-center cursor-pointer border p-2 rounded modern-card"
+        className="evento-transporte__header"
         onClick={() => setIsOpen((o) => !o)}>
-        <div>
-          <span className="fw-medium">{displayId}</span>
+        <div className="evento-transporte__header-left">
+          <i className={`fa-solid fa-caret-${isOpen ? "down" : "right"} evento-transporte__icon`}></i>
+          <span className="evento-transporte__id">{displayId}</span>
           {transporte.gpsData && transporte.gpsData.length > 0 && (
-            <small className="d-block text-muted">
-              {transporte.gpsData.length} GPS asociados
-            </small>
+            <span className="evento-transporte__gps-badge">
+              {transporte.gpsData.length} GPS
+            </span>
           )}
         </div>
-        <span className="text-primary fw-bold">{isOpen ? "−" : "+"}</span>
       </div>
       {isOpen && (
-        <div className="mt-3 p-3 bg-light rounded">
+        <div className="evento-transporte__body">
           {transporte.gpsData && transporte.gpsData.length > 0 ? (
             <div>
-              <h6 className="fw-bold mb-3">Datos de GPS</h6>
               {transporte.gpsData.map((gps, index) => (
-                <div key={index} className="mb-4 p-3 border rounded bg-white">
-                  <h6 className="fw-semibold text-primary mb-2">
-                    {gps.name} (ID: {gps.wialonId})
-                  </h6>
+                <div key={index} className="evento-gps-card">
+                  <div className="evento-gps-card__header">
+                    <span className="evento-gps-card__name">{gps.name}</span>
+                    <span className="evento-gps-card__id">ID: {gps.wialonId}</span>
+                  </div>
                   <div className="row">
                     <div className="col-md-6">
-                      <p className="mb-2"><strong>Duración:</strong> {gps.data?.duracion || "--"}</p>
-                      <p className="mb-2"><strong>Ubicación:</strong> {gps.data?.ubicacion || "--"}</p>
-                      <p className="mb-2"><strong>Velocidad:</strong> {gps.data?.velocidad || "--"}</p>
+                      <div className="info-group mb-1">
+                        <label className="info-label">Duración:</label>
+                        <span className="info-value">{gps.data?.duracion || "--"}</span>
+                      </div>
+                      <div className="info-group mb-1">
+                        <label className="info-label">Ubicación:</label>
+                        <span className="info-value">{gps.data?.ubicacion || "--"}</span>
+                      </div>
+                      <div className="info-group mb-1">
+                        <label className="info-label">Velocidad:</label>
+                        <span className="info-value">{gps.data?.velocidad || "--"}</span>
+                      </div>
                     </div>
                     <div className="col-md-6">
-                      <p className="mb-2">
-                        <strong>Último Posicionamiento:</strong>{" "}
-                        {gps.data?.ultimo_posicionamiento || "--"}
-                      </p>
-                      <p className="mb-2">
-                        <strong>Coordenadas:</strong> {gps.data?.coordenadas || "--"}
-                      </p>
+                      <div className="info-group mb-1">
+                        <label className="info-label">Último Posicionamiento:</label>
+                        <span className="info-value">{gps.data?.ultimo_posicionamiento || "--"}</span>
+                      </div>
+                      <div className="info-group mb-1">
+                        <label className="info-label">Coordenadas:</label>
+                        <span className="info-value">{gps.data?.coordenadas || "--"}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -75,18 +97,28 @@ const CollapsibleTransporte = ({transporte}) => {
           ) : (
             <div className="row">
               <div className="col-md-6">
-                <p className="mb-2"><strong>Duración:</strong> {transporte.registro?.duracion || "--"}</p>
-                <p className="mb-2"><strong>Ubicación:</strong> {transporte.registro?.ubicacion || "--"}</p>
-                <p className="mb-2"><strong>Velocidad:</strong> {transporte.registro?.velocidad || "--"}</p>
+                <div className="info-group mb-1">
+                  <label className="info-label">Duración:</label>
+                  <span className="info-value">{transporte.registro?.duracion || "--"}</span>
+                </div>
+                <div className="info-group mb-1">
+                  <label className="info-label">Ubicación:</label>
+                  <span className="info-value">{transporte.registro?.ubicacion || "--"}</span>
+                </div>
+                <div className="info-group mb-1">
+                  <label className="info-label">Velocidad:</label>
+                  <span className="info-value">{transporte.registro?.velocidad || "--"}</span>
+                </div>
               </div>
               <div className="col-md-6">
-                <p className="mb-2">
-                  <strong>Último Posicionamiento:</strong>{" "}
-                  {transporte.registro?.ultimo_posicionamiento || "--"}
-                </p>
-                <p className="mb-2">
-                  <strong>Coordenadas:</strong> {transporte.registro?.coordenadas || "--"}
-                </p>
+                <div className="info-group mb-1">
+                  <label className="info-label">Último Posicionamiento:</label>
+                  <span className="info-value">{transporte.registro?.ultimo_posicionamiento || "--"}</span>
+                </div>
+                <div className="info-group mb-1">
+                  <label className="info-label">Coordenadas:</label>
+                  <span className="info-value">{transporte.registro?.coordenadas || "--"}</span>
+                </div>
               </div>
             </div>
           )}
@@ -119,6 +151,7 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
     const computeEventColor = () => {
       if (!frecuencia) return "#333235";
       if (!isLastEvent) {
+        if (event.isFrecuenciaMet == null) return "#9ca3b0";
         return event.isFrecuenciaMet ? "#51FF4E" : "#F82929";
       }
       const frecuenciaMs = frecuencia * 60000;
@@ -172,49 +205,49 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
   };
 
   return (
-    <div className="modern-card mb-4">
-      <div className="card-header-modern d-flex justify-content-between align-items-center pt-3 px-4">
-        <div className="d-flex align-items-center gap-3">
-          <span className="text-muted small">
-            {new Date(createdAt).toLocaleString("es-MX", {
-              dateStyle: "short",
-              timeStyle: "short",
-            })}
-          </span>
-          <h5 className="card-title fw-semibold mb-0">{nombre}</h5>
+    <div className="evento-card">
+      <div className="evento-card__header">
+        <div className="evento-card__header-left">
+          <div className="evento-card__dot" style={{backgroundColor: eventColor}}></div>
+          <div className="evento-card__meta">
+            <span className="evento-card__name">{nombre}</span>
+            <span className="evento-card__date">
+              {new Date(createdAt).toLocaleString("es-MX", {
+                dateStyle: "short",
+                timeStyle: "short",
+              })}
+            </span>
+          </div>
         </div>
         {roleData?.bit_eventos?.update && (
-          <button onClick={handleEditClick} className="action-btn btn-primary">
-            <i className="fa fa-edit"></i>
+          <button onClick={handleEditClick} className="evento-card__edit-btn" title="Editar evento">
+            <i className="fa fa-pen"></i>
           </button>
         )}
-        {!roleData?.bit_eventos?.update && <div></div>}
       </div>
 
-      <div className="card-body-modern px-4 pb-4">
+      <div className="evento-card__body">
         <div className="row">
           <div className="col-md-6">
-            <div className="info-group mb-3">
+            <div className="info-group mb-1">
               <label className="info-label">Registrado por:</label>
               <span className="info-value">{registrado_por}</span>
             </div>
-            <div className="info-group mb-3">
+            <div className="info-group mb-1">
               <label className="info-label">Descripción:</label>
               <span className="info-value">{descripcion}</span>
             </div>
-            <div className="info-group mb-3">
+            <div className="info-group mb-1">
               <label className="info-label">Frecuencia:</label>
-              <div className="d-flex align-items-center gap-2">
-                <span className="info-value">{`${frecuencia} min`}</span>
-                <div className="semaforo-container">
-                  <div className="semaforo-circle" style={{backgroundColor: eventColor}}></div>
-                </div>
-              </div>
+              <span className="info-value">{`${frecuencia} min`}</span>
             </div>
           </div>
 
           <div className="col-md-6">
-            <h6 className="fw-bold text-center mb-3">Transportes</h6>
+            <div className="evento-card__transportes-header">
+              <span>Transportes</span>
+              <span className="evento-card__transportes-count">{event.transportes.length}</span>
+            </div>
             {event.transportes.map((t, i) => (
               <CollapsibleTransporte key={t.id || i} transporte={t} />
             ))}
@@ -255,58 +288,32 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
         title="Editar Evento"
         onClose={handleClose}
         onSubmit={handleFormSubmit}>
-        <Form.Group className="mb-3">
-          <Form.Label>Nombre</Form.Label>
-          <Form.Control type="text" name="nombre" value={formData.nombre} disabled />
-        </Form.Group>
-        {roleData?.bit_evento_fecha && (
-          <Form.Group className="mb-3">
-            <Form.Label>Fecha y Hora</Form.Label>
-            <Form.Control
-              type="datetime-local"
-              name="createdAt"
-              value={(() => {
-                if (!formData.createdAt) return "";
-                const d = new Date(formData.createdAt);
-                const pad = (n) => String(n).padStart(2, "0");
-                return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-              })()}
-              onChange={handleInputChange}
-            />
-          </Form.Group>
-        )}
-        <Form.Group className="mb-3">
-          <Form.Label>Registrado Por</Form.Label>
-          <Form.Control type="text" name="registrado_por" value={formData.registrado_por} disabled />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Transportes</Form.Label>
-          <Form.Control
-            type="text"
-            name="transportes"
-            value={formData.transportes.map((t) => getTransporteLabel(t)).join(", ")}
-            disabled
-          />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Descripción</Form.Label>
-          <Form.Control
-            as="textarea"
-            rows={3}
-            name="descripcion"
-            value={formData.descripcion}
-            onChange={handleInputChange}
-          />
-        </Form.Group>
-        <Form.Group className="mb-3">
-          <Form.Label>Frecuencia</Form.Label>
-          <Form.Control
-            type="number"
-            name="frecuencia"
-            value={formData.frecuencia}
-            onChange={handleInputChange}
-          />
-        </Form.Group>
+        <TextInput label="Nombre" name="nombre" value={formData.nombre} disabled className="mb-3" />
+        <TextInput label="Registrado por" name="registrado_por" value={formData.registrado_por} disabled className="mb-3" />
+        <TextInput
+          label="Transportes"
+          name="transportes"
+          value={formData.transportes.map((t) => getTransporteLabel(t)).join(", ")}
+          disabled
+          className="mb-3"
+        />
+        <TextArea
+          label="Descripción"
+          name="descripcion"
+          value={formData.descripcion}
+          onChange={handleInputChange}
+          rows={3}
+          placeholder="Detalles del evento..."
+          className="mb-3"
+        />
+        <TextInput
+          label="Frecuencia (min)"
+          type="number"
+          name="frecuencia"
+          value={formData.frecuencia}
+          onChange={handleInputChange}
+          className="mb-3"
+        />
       </ModalTemplate>
     </div>
   );
@@ -314,6 +321,7 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
 
 const BitacoraDetailPage = ({edited}) => {
   const {id} = useParams();
+  const baseUrl = import.meta.env.VITE_BASE_URL;
   const {user, verifyToken, setUser} = useAuth();
   const [bitacora, setBitacora] = useState(null);
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -328,8 +336,12 @@ const BitacoraDetailPage = ({edited}) => {
   const [monitoreos, setMonitoreos] = useState([]);
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState("detalles");
+  // Lazy-mount heavy tabs once, then keep them mounted (CSS hide) for fast switches.
+  const [mountedTabs, setMountedTabs] = useState(() => new Set(["detalles"]));
   const [selectedTransporte, setSelectedTransporte] = useState(null);
   const [transportes, setTransportes] = useState(bitacora?.transportes || []);
+  const [mapaWialonSearch, setMapaWialonSearch] = useState("");
+  const [mapCompliance, setMapCompliance] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [isEditTransporteModalVisible, setEditTransporteModalVisible] = useState(false);
   const [editedTransporte, setEditedTransporte] = useState(null);
@@ -337,9 +349,9 @@ const BitacoraDetailPage = ({edited}) => {
   const [idMethod, setIdMethod] = useState("automatic");
   const [selectedGpsUnits, setSelectedGpsUnits] = useState([]); // Para múltiples GPS
   const [gpsSearchTerm, setGpsSearchTerm] = useState(""); // Para buscar GPS
-  const [units, setUnits] = useState([]);
+  const { units } = useWialon();
   const [modalOpen, setModalOpen] = useState(false);
-  const {isSidebarCollapsed} = useSidebar();
+  const {isSidebarCollapsed, setIsMobileSidebarOpen} = useSidebar();
   const [phoneError, setPhoneError] = useState("");
   const [isEdited, setIsEdited] = useState(false);
   const [selectedTransportes, setSelectedTransportes] = useState([]);
@@ -354,6 +366,175 @@ const BitacoraDetailPage = ({edited}) => {
   const [editIsPlanDraft, setEditIsPlanDraft] = useState(false);
   const [editTransporteStep, setEditTransporteStep] = useState(0);
   const [editTransporteSlide, setEditTransporteSlide] = useState("forward");
+  const [editNotificaciones, setEditNotificaciones] = useState([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const [gpsNotifModal, setGpsNotifModal] = useState(null); // { gps, transporte }
+  const [unlinkingKey, setUnlinkingKey] = useState(null);
+  const [pendingUnlinkNotif, setPendingUnlinkNotif] = useState(null);
+  const [showDeleteTransporteModal, setShowDeleteTransporteModal] = useState(false);
+  const [transporteToDelete, setTransporteToDelete] = useState(null);
+  const [removingTransporte, setRemovingTransporte] = useState(false);
+  const {toasts, showToast, removeToast} = useToast();
+
+  const openGpsNotificaciones = (gps, transporte) => {
+    setGpsNotifModal({gps, transporte});
+  };
+
+  const handleOpenDeleteTransporte = () => {
+    if (!selectedTransporte || removingTransporte) return;
+    setTransporteToDelete(selectedTransporte);
+    setShowDeleteTransporteModal(true);
+  };
+
+  const handleCloseDeleteTransporteModal = () => {
+    if (removingTransporte) return;
+    setShowDeleteTransporteModal(false);
+    setTransporteToDelete(null);
+  };
+
+  const handleConfirmDeleteTransporte = async (e) => {
+    e?.preventDefault?.();
+    if (!bitacora?._id || !transporteToDelete || removingTransporte) return;
+
+    const transporteKey = transporteToDelete.internalId || transporteToDelete.id;
+    setRemovingTransporte(true);
+    try {
+      const res = await fetch(
+        `${baseUrl}/bitacoras/${bitacora._id}/transportes/${encodeURIComponent(transporteKey)}`,
+        {method: "DELETE", credentials: "include"}
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+
+      if (data.bitacora) {
+        applyBitacoraPayload(data.bitacora);
+      } else {
+        setBitacora((prev) => {
+          if (!prev) return prev;
+          const transportesNext = (prev.transportes || []).filter(
+            (t) =>
+              !(
+                (t.internalId &&
+                  transporteToDelete.internalId &&
+                  t.internalId === transporteToDelete.internalId) ||
+                t.id === transporteToDelete.id
+              )
+          );
+          return {...prev, transportes: transportesNext};
+        });
+        setTransportes((prev) =>
+          (prev || []).filter(
+            (t) =>
+              !(
+                (t.internalId &&
+                  transporteToDelete.internalId &&
+                  t.internalId === transporteToDelete.internalId) ||
+                t.id === transporteToDelete.id
+              )
+          )
+        );
+      }
+
+      const wasSelected =
+        selectedTransporte &&
+        ((selectedTransporte.internalId &&
+          transporteToDelete.internalId &&
+          selectedTransporte.internalId === transporteToDelete.internalId) ||
+          selectedTransporte.id === transporteToDelete.id);
+      if (wasSelected) setSelectedTransporte(null);
+
+      if (
+        gpsNotifModal?.transporte &&
+        ((gpsNotifModal.transporte.internalId &&
+          transporteToDelete.internalId &&
+          gpsNotifModal.transporte.internalId === transporteToDelete.internalId) ||
+          gpsNotifModal.transporte.id === transporteToDelete.id)
+      ) {
+        setGpsNotifModal(null);
+      }
+
+      setShowDeleteTransporteModal(false);
+      setTransporteToDelete(null);
+
+      if (data.wialonSync) {
+        reportWialonSync(data.wialonSync, showToast);
+      } else {
+        showToast("Transporte eliminado de la bitácora.", "success");
+      }
+    } catch (err) {
+      showToast(err.message || "No se pudo eliminar el transporte", "error");
+    } finally {
+      setRemovingTransporte(false);
+    }
+  };
+
+  const requestUnlinkNotificacion = (notif) => {
+    if (!gpsNotifModal || !bitacora?._id || unlinkingKey) return;
+    setPendingUnlinkNotif(notif);
+  };
+
+  const handleConfirmUnlinkNotificacion = async (e) => {
+    e?.preventDefault?.();
+    const notif = pendingUnlinkNotif;
+    if (!gpsNotifModal || !bitacora?._id || !notif || unlinkingKey) return;
+    const {gps, transporte} = gpsNotifModal;
+    const key = `${notif.resourceId}_${notif.notifId}`;
+
+    setUnlinkingKey(key);
+    try {
+      const transporteKey = transporte.internalId || transporte.id;
+      const res = await fetch(
+        `${baseUrl}/bitacoras/${bitacora._id}/transportes/${encodeURIComponent(transporteKey)}/notificaciones/unlink`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          credentials: "include",
+          body: JSON.stringify({
+            unitId: gps.wialonId,
+            resourceId: notif.resourceId,
+            notifId: notif.notifId,
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+
+      const updatedT = data.transporte;
+      if (updatedT) {
+        setBitacora((prev) => {
+          if (!prev) return prev;
+          const transportesNext = (prev.transportes || []).map((t) =>
+            (t.internalId && updatedT.internalId && t.internalId === updatedT.internalId) ||
+            t.id === updatedT.id
+              ? {...t, ...updatedT}
+              : t
+          );
+          return {...prev, transportes: transportesNext};
+        });
+        setSelectedTransporte((prev) =>
+          prev &&
+          ((prev.internalId && updatedT.internalId && prev.internalId === updatedT.internalId) ||
+            prev.id === updatedT.id)
+            ? {...prev, ...updatedT}
+            : prev
+        );
+        setGpsNotifModal((prev) =>
+          prev ? {...prev, transporte: {...prev.transporte, ...updatedT}} : prev
+        );
+      }
+
+      setPendingUnlinkNotif(null);
+      if (data.wialonSync) {
+        reportWialonSync(data.wialonSync, showToast);
+      } else {
+        showToast("Notificación desvinculada.", "success");
+      }
+    } catch (err) {
+      showToast(err.message || "No se pudo desvincular la notificación", "error");
+    } finally {
+      setUnlinkingKey(null);
+    }
+  };
 
   const validatePhoneNumber = (phone) => {
     // Regex para validar número de teléfono mexicano de exactamente 10 dígitos seguidos
@@ -363,6 +544,25 @@ const BitacoraDetailPage = ({edited}) => {
     // Debe ser exactamente 10 dígitos seguidos
     return phoneRegex.test(phone);
   };
+
+  // Unique Wialon unit IDs across every transporte's gpsUnits. Used to scope
+  // the Mapa Wialon and Alertas Wialon tabs to just this bitácora.
+  // Memoize on a stable key so poll/setBitacora does not churn child effects.
+  const bitacoraUnitIdsKey = useMemo(() => {
+    const ids = new Set();
+    for (const t of bitacora?.transportes || []) {
+      for (const g of t?.gpsUnits || []) {
+        if (g && g.wialonId != null && String(g.wialonId).trim() !== "") {
+          ids.add(String(g.wialonId));
+        }
+      }
+    }
+    return Array.from(ids).sort().join("|");
+  }, [bitacora?.transportes]);
+  const bitacoraUnitIds = useMemo(
+    () => (bitacoraUnitIdsKey ? bitacoraUnitIdsKey.split("|") : []),
+    [bitacoraUnitIdsKey]
+  );
 
   const handleEditTransporte = async () => {
     const selected = selectedTransporte;
@@ -406,6 +606,8 @@ const BitacoraDetailPage = ({edited}) => {
 
     setEditDraftLineaText("");
     setEditDraftOperadorText("");
+    setEditNotificaciones([]);
+    setEditSaving(false);
     setEditTransporteStep(0);
     setEditTransporteSlide("forward");
     setEditTransporteModalVisible(true);
@@ -448,6 +650,13 @@ const BitacoraDetailPage = ({edited}) => {
       setSelectedGpsUnits((prev) => [...prev, ...newSelections]);
     }
   };
+
+  const editUnitIds = useMemo(
+    () => selectedGpsUnits.map((u) => String(u.id)).sort(),
+    [selectedGpsUnits]
+  );
+  const editCatalogHint =
+    editedTransporte?.tracto?.eco || editedTransporte?.lineaTransporte || bitacora?.cliente || "";
 
   //TRANSPORTES LOGIC
   const handleClose = () => setShowModal(false);
@@ -538,16 +747,21 @@ const BitacoraDetailPage = ({edited}) => {
       // _originalId lets the server locate this transporte when the display id changed
       _originalId: editedTransporte.originalId,
       gpsUnits: selectedGpsUnits.map((unit) => ({
-        wialonId: unit.id,
+        wialonId: String(unit.id),
         name: unit.name,
         data: {}, // Se llenará cuando se obtengan los datos
       })),
+      notificaciones:
+        idMethod === "wialon" && selectedGpsUnits.length > 0
+          ? mergeNotificaciones(editedTransporte.notificaciones, editNotificaciones)
+          : editedTransporte.notificaciones || [],
     };
 
     const updatedTransportes = bitacora.transportes.map((transporte) =>
       transporte.id === editedTransporte.originalId ? updatedEditedTransporte : transporte
     );
 
+    setEditSaving(true);
     try {
       const response = await fetch(`${baseUrl}/bitacora/${bitacora._id}`, {
         method: "PATCH",
@@ -563,7 +777,9 @@ const BitacoraDetailPage = ({edited}) => {
       }
 
       const data = await response.json();
-      setBitacora(data);
+      const {wialonSync, ...bitacoraData} = data;
+      reportWialonSync(wialonSync, showToast);
+      setBitacora(bitacoraData);
 
       // Check for draft values in edited transporte (skip for plan drafts — values already confirmed)
       if (!editIsPlanDraft && roleData?.crear_draft_transporte) {
@@ -626,6 +842,8 @@ const BitacoraDetailPage = ({edited}) => {
     } catch (error) {
       console.error("Error al guardar transporte editado:", error);
       alert("No se pudo guardar el transporte. Intenta nuevamente.");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -660,18 +878,25 @@ const BitacoraDetailPage = ({edited}) => {
       // Assuming the updatedBitacora contains the updated transportes array
       setTransportes(updatedBitacora.transportes);
       fetchBitacora();
+      return updatedBitacora;
     } catch (error) {
       console.error("Error adding transporte:", error);
+      return null;
     }
   };
 
   //TABS
   const handleTabClick = (tabName) => {
+    setMountedTabs((prev) => {
+      if (prev.has(tabName)) return prev;
+      const next = new Set(prev);
+      next.add(tabName);
+      return next;
+    });
     setActiveTab(tabName);
   };
 
   const [eventTypes, setEventTypes] = useState([]);
-  const baseUrl = import.meta.env.VITE_BASE_URL;
 
   // Helper function to process bitacora data for edited_bitacora
   const processBitacoraForEdit = (bitacoraData) => {
@@ -848,6 +1073,17 @@ const BitacoraDetailPage = ({edited}) => {
     }
   };
 
+  const applyBitacoraPayload = (data) => {
+    if (!data) return;
+    setBitacora(data);
+    setEventos(data.eventos || []);
+    setEditedBitacora(processBitacoraForEdit(data));
+    setTransportes(data.transportes);
+    setSelectedTransportes(data.transportes);
+    setIsEventStarted(data.status === "iniciada");
+    setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
+  };
+
   const fetchBitacora = async () => {
     try {
       const response = await fetch(`${baseUrl}/bitacora/${id}`, {
@@ -869,22 +1105,14 @@ const BitacoraDetailPage = ({edited}) => {
               const r2 = await fetch(`${baseUrl}/bitacora/${id}`, { credentials: "include" });
               if (r2.ok) {
                 const fixed = await r2.json();
-                setBitacora(fixed);
-                setEditedBitacora(processBitacoraForEdit(fixed));
-                setTransportes(fixed.transportes);
-                setSelectedTransportes(fixed.transportes);
+                applyBitacoraPayload(fixed);
               }
             }
           }
         }).catch(() => {});
 
-        setBitacora(data);
-        setEditedBitacora(processBitacoraForEdit(data));
-        setTransportes(data.transportes);
-        setSelectedTransportes(data.transportes);
-
-        setIsEventStarted(data.status === "iniciada");
-        setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
+        applyBitacoraPayload(data);
+        return data;
       } else {
         console.error("Failed to fetch bitácora:", response.statusText);
       }
@@ -893,45 +1121,55 @@ const BitacoraDetailPage = ({edited}) => {
     }
   };
 
-  const fetchEventos = async () => {
+  // Full refresh (also returns data for callers that need the latest bitácora).
+  const fetchEventos = async () => fetchBitacora();
+
+  // Soft poll for Alertas: update eventos/status without replacing transportes identity
+  // when unchanged, and without forcing catalog refetches (deps use cliente only).
+  const refreshEventosSoft = async () => {
     try {
       const response = await fetch(`${baseUrl}/bitacora/${id}`, {
         method: "GET",
         credentials: "include",
       });
-      if (response.ok) {
-        const data = await response.json();
-
-        setBitacora(data);
-        setEventos(data.eventos);
-        setEditedBitacora(processBitacoraForEdit(data));
-        setTransportes(data.transportes);
-        setSelectedTransportes(data.transportes);
-
-        setIsEventStarted(data.status === "iniciada");
-        setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
-
-        return data; // <-- ✅ Return updated bitacora
-      } else {
-        console.error("Failed to fetch bitácora:", response.statusText);
-      }
+      if (!response.ok) return;
+      const data = await response.json();
+      setEventos(data.eventos || []);
+      setBitacora((prev) => {
+        if (!prev) return data;
+        return {
+          ...prev,
+          eventos: data.eventos,
+          status: data.status,
+          activa: data.activa,
+          inicioMonitoreo: data.inicioMonitoreo,
+          finalMonitoreo: data.finalMonitoreo,
+        };
+      });
+      setIsEventStarted(data.status === "iniciada");
+      setFinishButtonDisabled(data.status === "finalizada" || data.status === "cerrada");
     } catch (e) {
-      console.error("Error fetching bitácora:", e);
+      console.error("Error soft-refreshing eventos:", e);
     }
   };
 
+  // Keep eventos fresh while Alertas Wialon tab is open (auto-Registrado badges).
   useEffect(() => {
-    fetchEventos();
-  }, []);
+    if (activeTab !== "alertas_wialon") return undefined;
+    const timer = setInterval(() => {
+      refreshEventosSoft();
+    }, 25000);
+    return () => clearInterval(timer);
+  }, [activeTab, id]);
 
-  // Update filtered data when bitacora is loaded
+  // Update filtered data when cliente changes (not on every bitacora object replace).
   useEffect(() => {
-    if (bitacora && bitacora.cliente) {
+    if (bitacora?.cliente) {
       fetchOrigenes(bitacora.cliente);
       fetchDestinos(bitacora.cliente);
       fetchLineasTransporte(bitacora.cliente);
     }
-  }, [bitacora]);
+  }, [bitacora?.cliente]);
 
   // Update edited_bitacora when origenes and destinos are loaded
   useEffect(() => {
@@ -1071,7 +1309,7 @@ const BitacoraDetailPage = ({edited}) => {
   };
 
   useEffect(() => {
-    fetchWialonUnits();
+    fetchBitacora();
   }, []);
 
   // useEffect to handle lineaTransporte changes and update operadores
@@ -1108,41 +1346,6 @@ const BitacoraDetailPage = ({edited}) => {
       return prev;
     });
   }, [operadores, isEditTransporteModalVisible]);
-
-  const token = import.meta.env.VITE_WIALON_TOKEN;
-
-  const fetchWialonUnits = (retryCount = 0) => {
-    const sess = window.wialon.core.Session.getInstance();
-    const MAX_RETRIES = 5;
-    const RETRY_DELAY = 3000;
-
-    if (!token) return;
-
-    if (!sess.getBaseUrl()) {
-      sess.initSession("https://hst-api.wialon.com");
-    }
-
-    sess.loginToken(token, "", (code) => {
-      if (code) {
-        if (retryCount < MAX_RETRIES) {
-          setTimeout(() => fetchWialonUnits(retryCount + 1), RETRY_DELAY);
-        }
-        return;
-      }
-
-      const flags = window.wialon.item.Item.dataFlag.base;
-      sess.updateDataFlags([{type: "type", data: "avl_unit", flags, mode: 0}], (code) => {
-        if (code) return;
-        const fetchedUnits = sess.getItems("avl_unit") || [];
-        const unitList = fetchedUnits.map((unit) => ({
-          id: unit.getId(),
-          name: unit.getName(),
-        }));
-        setUnits(unitList);
-        console.log(unitList);
-      });
-    });
-  };
 
   const formatDate = (dateString) => {
     const date = new Date(dateString);
@@ -1483,46 +1686,14 @@ const BitacoraDetailPage = ({edited}) => {
           <Sidebar />
         </div>
         <div className={`content-wrapper ${isSidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-          <div className="page-header-modern">
-            <div className="back-button" onClick={() => navigate("/bitacoras")}>
-              <i className="fa fa-chevron-left"></i>
-              <span>Volver</span>
-            </div>
+          <PageHeader
+            title={bitacora?.bitacora_id || "Detalle"}
+            subtitle={bitacora?.bitacora_id || "Detalle"}
+            onToggleSidebar={() => setIsMobileSidebarOpen(true)}>
 
-            {/* Modern Tab Navigation */}
-            <div className="modern-tabs">
-              {roleData?.bit_detalles.read && (
-                <button
-                  className={`tab-button ${activeTab === "detalles" ? "active" : ""}`}
-                  onClick={() => handleTabClick("detalles")}>
-                  <span className="tab-title">Detalles</span>
-                  <span className="tab-subtitle">ID: {bitacora.bitacora_id}</span>
-                </button>
-              )}
-
-              {roleData?.bit_transportes.read && (
-                <button
-                  className={`tab-button ${activeTab === "transportes" ? "active" : ""}`}
-                  onClick={() => handleTabClick("transportes")}>
-                  <span className="tab-title">Transportes</span>
-                  <span className="tab-subtitle">Total: {bitacora.transportes.length}</span>
-                </button>
-              )}
-
-              {roleData?.bit_eventos.read && (
-                <button
-                  className={`tab-button ${activeTab === "eventos" ? "active" : ""}`}
-                  onClick={() => handleTabClick("eventos")}>
-                  <span className="tab-title">Eventos</span>
-                  <span className="tab-subtitle">Total: {bitacora.eventos.length}</span>
-                </button>
-              )}
-            </div>
-
-            {/* Draft badge */}
             {roleData?.aceptar_draft && bitacora.draft_pendiente && (
               <button
-                className="action-btn btn-warning position-relative"
+                className="header-action-btn header-action-btn--warning position-relative"
                 onClick={() => setShowDraftsModal(true)}
                 title="Borradores pendientes de aprobación">
                 <i className="fa-solid fa-file-pen"></i>
@@ -1536,9 +1707,8 @@ const BitacoraDetailPage = ({edited}) => {
               </button>
             )}
 
-            {/* Action Buttons */}
             {activeTab === "detalles" && roleData?.bit_detalles?.update && (
-              <button className="action-btn btn-primary" onClick={() => {
+              <button className="new-btn" onClick={() => {
                 if (bitacora.monitoreo?.toLowerCase() === "custodia fisica" && !bitacora.custodia) {
                   setBitacora((prev) => ({
                     ...prev,
@@ -1551,28 +1721,69 @@ const BitacoraDetailPage = ({edited}) => {
                 }
                 setEditModalVisible(true);
               }}>
-                <i className="fa fa-edit"></i>
+                <i className="fa fa-edit"></i> Editar
               </button>
             )}
             {activeTab === "transportes" && roleData?.bit_transportes?.create && (
-              <button className="action-btn btn-primary" onClick={handleShow}>
-                <i className="fa fa-plus"></i>
+              <button className="new-btn" onClick={handleShow}>
+                <i className="fa fa-plus"></i> Nuevo
               </button>
             )}
-            {activeTab === "eventos" && roleData?.bit_eventos?.create && (
+            {activeTab === "mapa_eventos" && roleData?.bit_eventos?.create && (
               <button
-                className="action-btn btn-primary"
+                className="new-btn"
                 disabled={areAllTransportesClosed()}
                 onClick={() => setModalOpen(true)}>
-                <FontAwesomeIcon icon={faPlus} />
+                <FontAwesomeIcon icon={faPlus} /> Nuevo
               </button>
             )}
-          </div>
+          </PageHeader>
 
           <div className="content-area">
+            {/* Tab Navigation */}
+            <div className="modern-tabs">
+              {roleData?.bit_detalles?.read && (
+                <button
+                  className={`tab-button ${activeTab === "detalles" ? "active" : ""}`}
+                  onClick={() => handleTabClick("detalles")}>
+                  <span className="tab-title">Detalles</span>
+                  <span className="tab-subtitle">ID: {bitacora.bitacora_id}</span>
+                </button>
+              )}
+
+              {roleData?.bit_transportes?.read && (
+                <button
+                  className={`tab-button ${activeTab === "transportes" ? "active" : ""}`}
+                  onClick={() => handleTabClick("transportes")}>
+                  <span className="tab-title">Transportes</span>
+                  <span className="tab-subtitle">{bitacora.transportes.length} registrados</span>
+                </button>
+              )}
+
+              {(roleData?.bit_eventos?.read || roleData?.map_wialon?.read) && (
+                <button
+                  className={`tab-button ${activeTab === "mapa_eventos" ? "active" : ""}`}
+                  onClick={() => handleTabClick("mapa_eventos")}>
+                  <span className="tab-title">Mapa & Eventos</span>
+                  <span className="tab-subtitle">
+                    {bitacora.eventos.length} eventos · {bitacoraUnitIds.length} GPS
+                  </span>
+                </button>
+              )}
+
+              {roleData?.eventos_wialon?.read && (
+                <button
+                  className={`tab-button ${activeTab === "alertas_wialon" ? "active" : ""}`}
+                  onClick={() => handleTabClick("alertas_wialon")}>
+                  <span className="tab-title">Alertas Intacsep</span>
+                  <span className="tab-subtitle">{bitacoraUnitIds.length} GPS</span>
+                </button>
+              )}
+            </div>
+
             <div className="tab-content-modern">
               {/* Detalles Tab Content */}
-              {roleData?.bit_detalles.read && (
+              {roleData?.bit_detalles?.read && (
                 <div className={`tab-pane-modern ${activeTab === "detalles" ? "active" : ""}`}>
                   <div className="modern-card">
                     <div className="card-header-modern">
@@ -1595,9 +1806,16 @@ const BitacoraDetailPage = ({edited}) => {
                           </div>
                           <div className="info-group mb-3">
                             <label className="info-label">Estatus:</label>
-                            <span className={`status-badge status-${bitacora.status}`}>
-                              {capitalizeFirstLetter(bitacora.status)}
-                            </span>
+                            <CellBadge
+                              label={bitacora.status ? (bitacora.status === "plan de embarque" ? "Embarque" : bitacora.status.charAt(0).toUpperCase() + bitacora.status.slice(1)) : ""}
+                              variant={
+                                bitacora.status === "nueva"      ? "blue"   :
+                                bitacora.status === "validada"   ? "yellow" :
+                                bitacora.status === "iniciada"   ? "green"  :
+                                bitacora.status === "cerrada"    ? "red"    :
+                                bitacora.status === "finalizada" ? "purple" : "gray"
+                              }
+                            />
                           </div>
                         </div>
 
@@ -1750,64 +1968,97 @@ const BitacoraDetailPage = ({edited}) => {
               )}
 
               {/* Transportes Tab Content */}
-              {roleData?.bit_transportes.read && (
+              {roleData?.bit_transportes?.read && (
                 <div className={`tab-pane-modern ${activeTab === "transportes" ? "active" : ""}`}>
                   <div className="modern-card">
-                    <div className="card-header-modern">
-                      <h5 className="fw-bold mb-0">Gestión de Transportes</h5>
-                    </div>
                     <div className="card-body-modern">
-                      <div className="row">
-                        <div className="col-md-4 border-end pe-4">
-                          <h6 className="fw-semibold mb-3">Lista de Transportes</h6>
-                          {roleData?.gps_id?.read && (
-                            <div className="transporte-list">
-                              {bitacora.transportes.map((transporte) => {
-                                const isBeingEdited = editedTransporte && selectedTransporte &&
-                                  transporteMatch(transporte, selectedTransporte);
-                                const liveTransporte = isBeingEdited
-                                  ? { ...transporte, id: editedTransporte.id }
-                                  : transporte;
-                                return (
-                                  <div
-                                    key={transporte.id}
-                                    className={`transporte-item ${
-                                      selectedTransporte?.id === transporte.id ? "active" : ""
-                                    }`}
-                                    onClick={() => handleSelectTransporte(transporte)}>
-                                    <span className="transporte-id">
-                                      {getTransporteLabel(liveTransporte)}
-                                    </span>
-                                    {transporte.gpsUnits && transporte.gpsUnits.length > 0 && (
-                                      <small className="d-block text-muted">
-                                        {transporte.gpsUnits.length} GPS
-                                      </small>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                      <div className="row" style={{margin: 0}}>
+                        <div className="col-md-4" style={{padding: 0, borderRight: '1px solid #f0f1f5'}}>
+                          <div className="transporte-list-header">
+                            <span className="transporte-list-header__title">Lista de Transportes</span>
+                            <span className="transporte-list-header__count">{bitacora.transportes.length}</span>
+                          </div>
+                          <div className="transporte-list">
+                              {bitacora.transportes.length === 0 ? (
+                                <div className="transporte-list-empty">
+                                  <i className="fa-solid fa-truck"></i>
+                                  <span>Sin transportes</span>
+                                </div>
+                              ) : (
+                                bitacora.transportes.map((transporte, index) => {
+                                  const isBeingEdited = editedTransporte && selectedTransporte &&
+                                    transporteMatch(transporte, selectedTransporte);
+                                  const liveTransporte = isBeingEdited
+                                    ? { ...transporte, id: editedTransporte.id }
+                                    : transporte;
+                                  return (
+                                    <div
+                                      key={transporte.id}
+                                      className={`transporte-item ${
+                                        selectedTransporte?.id === transporte.id ? "active" : ""
+                                      }`}
+                                      onClick={() => handleSelectTransporte(transporte)}>
+                                      <div className="transporte-item__left">
+                                        <span className="transporte-item__index">{index + 1}</span>
+                                        <div className="transporte-item__info">
+                                          <span className="transporte-id">
+                                            {getTransporteLabel(liveTransporte)}
+                                          </span>
+                                          {transporte.gpsUnits && transporte.gpsUnits.length > 0 && (
+                                            <span className="transporte-item__gps">
+                                              <i className="fa-solid fa-satellite-dish"></i>
+                                              {transporte.gpsUnits.length} GPS
+                                              {(transporte.notificaciones?.length || 0) > 0
+                                                ? ` · ${transporte.notificaciones.length} alerta${
+                                                    transporte.notificaciones.length === 1 ? "" : "s"
+                                                  }`
+                                                : ""}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      <i className="fa-solid fa-chevron-right transporte-item__arrow"></i>
+                                    </div>
+                                  );
+                                })
+                              )}
+                          </div>
                         </div>
 
-                        <div className="col-md-8 ps-4">
+                        <div className="col-md-8" style={{padding: '0 0 0 16px'}}>
                           {selectedTransporte ? (
                             <div className="transporte-details" ref={transporteDetailRef}>
-                              <div className="d-flex justify-content-end mb-3">
-                                {roleData.bit_transportes.update && (
-                                  <button
-                                    className="action-btn btn-primary"
-                                    onClick={handleEditTransporte}>
-                                    <i className="fa fa-edit"></i>
-                                  </button>
-                                )}
-                              </div>
+                              {(roleData?.bit_transportes?.update ||
+                                roleData?.bit_transportes?.delete) && (
+                                <div className="transporte-details__actions">
+                                  {roleData?.bit_transportes?.update && (
+                                    <button
+                                      type="button"
+                                      className="action-btn btn-primary"
+                                      onClick={handleEditTransporte}
+                                      title="Editar"
+                                      disabled={removingTransporte}>
+                                      <i className="fa fa-pen"></i>
+                                    </button>
+                                  )}
+                                  {roleData?.bit_transportes?.delete && (
+                                    <button
+                                      type="button"
+                                      className="action-btn btn-danger"
+                                      onClick={handleOpenDeleteTransporte}
+                                      title="Eliminar"
+                                      disabled={removingTransporte}>
+                                      <i className="fa fa-trash"></i>
+                                    </button>
+                                  )}
+                                </div>
+                              )}
 
                               <div className="row">
                                 {roleData?.tracto?.read && (
                                   <div className="col-md-6">
                                     <div className="detail-section">
-                                      <h6 className="fw-semibold mb-3">Tracto</h6>
+                                      <h6>Tracto</h6>
                                       <div className="info-group mb-2">
                                         <label className="info-label">Eco:</label>
                                         <span className="info-value">
@@ -1851,7 +2102,7 @@ const BitacoraDetailPage = ({edited}) => {
                                 {roleData?.remolque?.read && (
                                   <div className="col-md-6">
                                     <div className="detail-section">
-                                      <h6 className="fw-semibold mb-3">Remolque</h6>
+                                      <h6>Remolque</h6>
                                       <div className="info-group mb-2">
                                         <label className="info-label">Eco:</label>
                                         <span className="info-value">
@@ -1888,8 +2139,8 @@ const BitacoraDetailPage = ({edited}) => {
                               </div>
 
                               {roleData?.bit_transportes?.read && (
-                                <div className="operador-section mt-4">
-                                  <h6 className="fw-semibold mb-3">Información del Operador</h6>
+                                <div className="operador-section">
+                                  <h6>Información del Operador</h6>
                                   <div className="row">
                                     <div className="col-md-4">
                                       <div className="info-group mb-2">
@@ -1917,11 +2168,11 @@ const BitacoraDetailPage = ({edited}) => {
                                     </div>
                                   </div>
 
-                                  {/* GPS Asociados - Compatible con versiones anteriores y nuevas */}
+                                  {/* GPS Asociados - click to view/unlink notifications */}
                                   {selectedTransporte.gpsUnits &&
                                   selectedTransporte.gpsUnits.length > 0 ? (
-                                    <div className="gps-asociados-section mt-3">
-                                      <h6 className="fw-semibold mb-3">GPS Asociados</h6>
+                                    <div className="gps-asociados-section">
+                                      <h6>GPS Asociados</h6>
                                       <div className="row">
                                         <div className="col-12">
                                           <div className="info-group mb-2">
@@ -1929,9 +2180,23 @@ const BitacoraDetailPage = ({edited}) => {
                                             <div className="info-value">
                                               <div className="d-flex flex-wrap gap-2">
                                                 {selectedTransporte.gpsUnits.map((gps, index) => (
-                                                  <span key={index} className="badge bg-primary">
+                                                  <button
+                                                    type="button"
+                                                    key={index}
+                                                    className="gps-tag gps-tag--clickable"
+                                                    onClick={() =>
+                                                      openGpsNotificaciones(gps, selectedTransporte)
+                                                    }
+                                                    title="Ver notificaciones vinculadas"
+                                                  >
                                                     {gps.name} (ID: {gps.wialonId})
-                                                  </span>
+                                                    {(selectedTransporte.notificaciones?.length || 0) >
+                                                      0 && (
+                                                      <span className="gps-tag__badge">
+                                                        {selectedTransporte.notificaciones.length}
+                                                      </span>
+                                                    )}
+                                                  </button>
                                                 ))}
                                               </div>
                                             </div>
@@ -1946,29 +2211,42 @@ const BitacoraDetailPage = ({edited}) => {
                               {/* Información de GPS asociados */}
                               {selectedTransporte.gpsUnits &&
                                 selectedTransporte.gpsUnits.length > 0 && (
-                                  <div className="gps-section mt-4">
-                                    <h6 className="fw-semibold mb-3">GPS Asociados</h6>
+                                  <div className="gps-section">
+                                    <h6>GPS Asociados</h6>
+                                    <p className="gps-section__hint">
+                                      Haz clic en un GPS para ver y desvincular sus notificaciones.
+                                    </p>
                                     <div className="row">
                                       {selectedTransporte.gpsUnits.map((gps, index) => (
                                         <div key={index} className="col-md-6 mb-3">
-                                          <div className="p-3 border rounded bg-light">
-                                            <h6 className="fw-semibold text-primary mb-2">
+                                          <button
+                                            type="button"
+                                            className="gps-card gps-card--clickable"
+                                            onClick={() =>
+                                              openGpsNotificaciones(gps, selectedTransporte)
+                                            }
+                                          >
+                                            <h6 className="gps-card__name">
                                               {gps.name}
                                             </h6>
                                             <div className="info-group mb-1">
-                                              <label className="info-label small">ID Wialon:</label>
+                                              <label className="info-label small">ID GPS:</label>
                                               <span className="info-value small">
                                                 {gps.wialonId}
                                               </span>
                                             </div>
-                                            {gps.data && Object.keys(gps.data).length > 0 && (
-                                              <div className="mt-2">
-                                                <small className="text-muted">
-                                                  Datos disponibles
-                                                </small>
-                                              </div>
-                                            )}
-                                          </div>
+                                            <div className="gps-card__footer">
+                                              <span className="gps-card__alerts">
+                                                <i className="fa fa-bell"></i>
+                                                {selectedTransporte.notificaciones?.length || 0}{" "}
+                                                alerta
+                                                {(selectedTransporte.notificaciones?.length || 0) === 1
+                                                  ? ""
+                                                  : "s"}
+                                              </span>
+                                              <span className="gps-card__cta">Ver detalles</span>
+                                            </div>
+                                          </button>
                                         </div>
                                       ))}
                                     </div>
@@ -1992,33 +2270,136 @@ const BitacoraDetailPage = ({edited}) => {
                 </div>
               )}
 
-              {/* Eventos Tab Content */}
-              {roleData?.bit_eventos.read && (
-                <div className={`tab-pane-modern ${activeTab === "eventos" ? "active" : ""}`}>
-                  <div className="eventos-container">
-                    {eventos.length === 0 ? (
-                      <div className="eventos-empty">
-                        <i className="fa-regular fa-calendar-xmark"></i>
-                        <p>No hay eventos registrados aún</p>
-                      </div>
-                    ) : (
-                      eventos
-                        .slice()
-                        .reverse()
-                        .map((event, index) => (
-                          <EventCard
-                            key={event._id || index}
-                            event={event}
-                            events={events}
-                            bitacora={bitacora}
-                            setBitacora={setBitacora}
-                            setEventos={setEventos}
-                            handleEditSubmit={handleEditSubmit}
-                            roleData={roleData}
-                          />
-                        ))
-                    )}
-                  </div>
+              {/* Mapa & Eventos — split: map left, event list right (keep-alive after first visit) */}
+              {(roleData?.bit_eventos?.read || roleData?.map_wialon?.read) && (
+                <div className={`tab-pane-modern ${activeTab === "mapa_eventos" ? "active" : ""}`}>
+                  {mountedTabs.has("mapa_eventos") ? (
+                    <div
+                      className={`mapa-eventos-split${
+                        roleData?.map_wialon?.read && roleData?.bit_eventos?.read
+                          ? ""
+                          : " mapa-eventos-split--single"
+                      }`}>
+                      {roleData?.map_wialon?.read && (
+                        <div className="mapa-eventos-split__map">
+                          {bitacoraUnitIds.length === 0 ? (
+                            <div className="eventos-empty">
+                              <i className="fa fa-map-marked-alt"></i>
+                              <p>Sin GPS asociados a los transportes de esta bitácora.</p>
+                            </div>
+                          ) : (
+                            <div className="wialon-tab-mapa">
+                              <div className="wialon-tab-mapa__toolbar">
+                                <input
+                                  type="text"
+                                  className="wialon-map-search"
+                                  placeholder="Buscar unidad..."
+                                  value={mapaWialonSearch}
+                                  onChange={(e) => setMapaWialonSearch(e.target.value)}
+                                />
+                                {mapCompliance && (
+                                  <div className="wialon-tab-mapa__summary" aria-live="polite">
+                                    <span className="wialon-tab-mapa__chip">
+                                      {mapCompliance.unitCount} GPS
+                                    </span>
+                                    <span className="wialon-tab-mapa__chip">
+                                      {mapCompliance.zoneCount} geocerca
+                                      {mapCompliance.zoneCount === 1 ? "" : "s"}
+                                    </span>
+                                    {mapCompliance.okCount > 0 && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--ok">
+                                        {mapCompliance.okCount} en ruta
+                                      </span>
+                                    )}
+                                    {mapCompliance.breachCount > 0 && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--breach">
+                                        {mapCompliance.breachCount} fuera
+                                      </span>
+                                    )}
+                                    {mapCompliance.emptyReason === "no_zones" && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--muted">
+                                        Sin geocercas vinculadas a alertas
+                                      </span>
+                                    )}
+                                    {mapCompliance.error && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--breach">
+                                        No se pudo cargar cumplimiento
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              <WialonMap
+                                searchTerm={mapaWialonSearch}
+                                unitIds={bitacoraUnitIds}
+                                isActive={activeTab === "mapa_eventos"}
+                                className="wialon-map-wrapper--embedded"
+                                onComplianceChange={setMapCompliance}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {roleData?.bit_eventos?.read && (
+                        <div className="mapa-eventos-split__eventos">
+                          <div className="mapa-eventos-split__eventos-header">
+                            <h5 className="mb-0">Eventos</h5>
+                            <span className="text-muted small">
+                              {eventos.length} registrado{eventos.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                          <div className="eventos-container">
+                            {eventos.length === 0 ? (
+                              <div className="eventos-empty">
+                                <i className="fa-regular fa-calendar-xmark"></i>
+                                <p>No hay eventos registrados aún</p>
+                              </div>
+                            ) : (
+                              eventos
+                                .slice()
+                                .reverse()
+                                .map((event, index) => (
+                                  <EventCard
+                                    key={event._id || index}
+                                    event={event}
+                                    events={events}
+                                    bitacora={bitacora}
+                                    setBitacora={setBitacora}
+                                    setEventos={setEventos}
+                                    handleEditSubmit={handleEditSubmit}
+                                    roleData={roleData}
+                                  />
+                                ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Alertas Wialon Tab — keep-alive after first visit */}
+              {roleData?.eventos_wialon?.read && (
+                <div className={`tab-pane-modern ${activeTab === "alertas_wialon" ? "active" : ""}`}>
+                  {bitacoraUnitIds.length === 0 ? (
+                    <div className="eventos-empty">
+                      <i className="fa fa-bell"></i>
+                      <p>Sin GPS asociados; no hay alertas Intacsep que mostrar.</p>
+                    </div>
+                  ) : mountedTabs.has("alertas_wialon") ? (
+                    <EventosWialonPanel
+                      embedded
+                      isActive={activeTab === "alertas_wialon"}
+                      unitIds={bitacoraUnitIds}
+                      bitacoraId={bitacora?._id}
+                      bitacoraEventos={eventos}
+                      onEventSaved={async () => {
+                        await fetchEventos();
+                      }}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>
@@ -2044,136 +2425,126 @@ const BitacoraDetailPage = ({edited}) => {
           title="Editar Bitácora"
           onClose={() => setEditModalVisible(false)}
           onSubmit={handleEditSubmit}>
-          <Form.Group className="mb-3">
-            <Form.Label htmlFor="folio_servicio">Folio de servicio</Form.Label>
-            <Form.Control
-              type="text"
-              id="folio_servicio"
-              name="folio_servicio"
-              value={bitacora.folio_servicio}
-              onChange={handleEditChange}
-            />
-          </Form.Group>
+          <TextInput
+            label="Folio de servicio"
+            name="folio_servicio"
+            value={bitacora.folio_servicio || ""}
+            onChange={handleEditChange}
+            className="mb-3"
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label htmlFor="bitacora_id">No. Bitácora</Form.Label>
-            <Form.Control
-              type="text"
-              id="bitacora_id"
-              name="bitacora_id"
-              value={bitacora.bitacora_id}
-              onChange={handleEditChange}
-              disabled
-            />
-          </Form.Group>
+          <TextInput
+            label="No. Bitácora"
+            name="bitacora_id"
+            value={bitacora.bitacora_id || ""}
+            onChange={handleEditChange}
+            disabled
+            className="mb-3"
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Cliente</Form.Label>
-            <Form.Select
-              name="cliente"
-              value={bitacora.cliente || ""}
-              onChange={handleEditChange}
-              required>
-              <option value="">Selecciona una opción</option>
-              {clients.length > 0 ? (
-                clients.map((cliente) => (
-                  <option key={cliente._id} value={cliente.razon_social}>
-                    {cliente.razon_social}
-                  </option>
-                ))
-              ) : (
-                <option value="" disabled>
-                  Cargando clientes...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Cliente"
+            value={bitacora.cliente || ""}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                cliente: val || "",
+                origen: null,
+                destino: null,
+              }))
+            }
+            options={clients.map((cliente) => ({
+              value: cliente.razon_social,
+              label: cliente.razon_social,
+            }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Tipo de Monitoreo</Form.Label>
-            <Form.Select
-              name="monitoreo"
-              value={bitacora.monitoreo || ""}
-              onChange={handleEditChange}
-              required>
-              <option value="">Selecciona una opción</option>
-              {monitoreos.length > 0 ? (
-                monitoreos.map((monitoreo) => (
-                  <option key={monitoreo._id} value={monitoreo.tipoMonitoreo}>
-                    {monitoreo.tipoMonitoreo}
-                  </option>
-                ))
-              ) : (
-                <option value="" disabled>
-                  Cargando monitoreos...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Tipo de Monitoreo"
+            value={bitacora.monitoreo || ""}
+            onChange={(val) => {
+              setBitacora((prev) => {
+                const updates = {monitoreo: val || ""};
+                const isCustodia =
+                  val === "Custodia fisica" ||
+                  val === "CUSTODIA FISICA" ||
+                  val?.toLowerCase() === "custodia fisica";
+                if (isCustodia && !prev.custodia) {
+                  updates.custodia = {
+                    custodio1_nombre: "",
+                    custodio1_telefono: "",
+                    custodio2_nombre: "",
+                    custodio2_telefono: "",
+                    placa: "",
+                    modelo: "",
+                    color: "",
+                    marca: "",
+                  };
+                }
+                return {...prev, ...updates};
+              });
+            }}
+            options={monitoreos.map((monitoreo) => ({
+              value: monitoreo.tipoMonitoreo,
+              label: monitoreo.tipoMonitoreo,
+            }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Origen</Form.Label>
-            <Form.Select
-              name="origen"
-              value={getLocationValue(
-                edited_bitacora.origen,
-                origenes.filter((origen) => origen.cliente === bitacora?.cliente)
-              )}
-              onChange={(e) =>
-                setBitacora((prev) => ({
-                  ...prev,
-                  origen: e.target.value ? JSON.parse(e.target.value) : null,
-                }))
-              }
-              required>
-              <option value="">Selecciona una opción</option>
-              {origenes.length > 0 ? (
-                origenes
-                  .filter((origen) => origen.cliente === bitacora?.cliente)
-                  .map((origen) => (
-                    <option key={origen._id} value={JSON.stringify(origen)}>
-                      {`${origen.nombre}, ${origen.estado}`}
-                    </option>
-                  ))
-              ) : (
-                <option value="" disabled>
-                  Cargando origenes...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Origen"
+            value={getLocationValue(
+              edited_bitacora.origen,
+              origenes.filter((origen) => origen.cliente === bitacora?.cliente)
+            )}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                origen: val ? JSON.parse(val) : null,
+              }))
+            }
+            options={origenes
+              .filter((origen) => origen.cliente === bitacora?.cliente)
+              .map((origen) => ({
+                value: JSON.stringify(origen),
+                label: `${origen.nombre}, ${origen.estado}`,
+              }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
-          <Form.Group className="mb-3">
-            <Form.Label>Destino</Form.Label>
-            <Form.Select
-              name="destino"
-              value={getLocationValue(
-                edited_bitacora.destino,
-                destinos.filter((destino) => destino.cliente === bitacora?.cliente)
-              )}
-              onChange={(e) =>
-                setBitacora((prev) => ({
-                  ...prev,
-                  destino: e.target.value ? JSON.parse(e.target.value) : null,
-                }))
-              }
-              required>
-              <option value="">Selecciona una opción</option>
-              {destinos.length > 0 ? (
-                destinos
-                  .filter((destino) => destino.cliente === bitacora?.cliente)
-                  .map((destino) => (
-                    <option key={destino._id} value={JSON.stringify(destino)}>
-                      {`${destino.nombre}, ${destino.estado}`}
-                    </option>
-                  ))
-              ) : (
-                <option value="" disabled>
-                  Cargando destinos...
-                </option>
-              )}
-            </Form.Select>
-          </Form.Group>
+          <Select
+            label="Destino"
+            value={getLocationValue(
+              edited_bitacora.destino,
+              destinos.filter((destino) => destino.cliente === bitacora?.cliente)
+            )}
+            onChange={(val) =>
+              setBitacora((prev) => ({
+                ...prev,
+                destino: val ? JSON.parse(val) : null,
+              }))
+            }
+            options={destinos
+              .filter((destino) => destino.cliente === bitacora?.cliente)
+              .map((destino) => ({
+                value: JSON.stringify(destino),
+                label: `${destino.nombre}, ${destino.estado}`,
+              }))}
+            placeholder="Selecciona una opción"
+            className="mb-3"
+            searchable
+            clearable
+          />
 
           {/* Campos de Custodia Física - Solo para tipo "Custodia fisica" */}
           {(bitacora.monitoreo === "Custodia fisica" ||
@@ -2185,87 +2556,71 @@ const BitacoraDetailPage = ({edited}) => {
 
               <div className="row">
                 <div className="col-md-6">
-                  <Form.Group className="mb-3">
-                    <Form.Label>Nombre Custodio 1</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio1_nombre"
-                      value={bitacora.custodia?.custodio1_nombre || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Nombre Custodio 1"
+                    name="custodia.custodio1_nombre"
+                    value={bitacora.custodia?.custodio1_nombre || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Teléfono Custodio 1</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio1_telefono"
-                      value={bitacora.custodia?.custodio1_telefono || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Teléfono Custodio 1"
+                    name="custodia.custodio1_telefono"
+                    value={bitacora.custodia?.custodio1_telefono || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Nombre Custodio 2</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio2_nombre"
-                      value={bitacora.custodia?.custodio2_nombre || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Nombre Custodio 2"
+                    name="custodia.custodio2_nombre"
+                    value={bitacora.custodia?.custodio2_nombre || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Teléfono Custodio 2</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.custodio2_telefono"
-                      value={bitacora.custodia?.custodio2_telefono || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Teléfono Custodio 2"
+                    name="custodia.custodio2_telefono"
+                    value={bitacora.custodia?.custodio2_telefono || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
                 </div>
 
                 <div className="col-md-6">
-                  <Form.Group className="mb-3">
-                    <Form.Label>Placa</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.placa"
-                      value={bitacora.custodia?.placa || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Placa"
+                    name="custodia.placa"
+                    value={bitacora.custodia?.placa || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Modelo</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.modelo"
-                      value={bitacora.custodia?.modelo || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Modelo"
+                    name="custodia.modelo"
+                    value={bitacora.custodia?.modelo || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Color</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.color"
-                      value={bitacora.custodia?.color || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Color"
+                    name="custodia.color"
+                    value={bitacora.custodia?.color || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
 
-                  <Form.Group className="mb-3">
-                    <Form.Label>Marca</Form.Label>
-                    <Form.Control
-                      type="text"
-                      name="custodia.marca"
-                      value={bitacora.custodia?.marca || ""}
-                      onChange={handleEditChange}
-                    />
-                  </Form.Group>
+                  <TextInput
+                    label="Marca"
+                    name="custodia.marca"
+                    value={bitacora.custodia?.marca || ""}
+                    onChange={handleEditChange}
+                    className="mb-3"
+                  />
                 </div>
               </div>
             </>
@@ -2323,219 +2678,95 @@ const BitacoraDetailPage = ({edited}) => {
             {/* GPS step */}
             {currentKey === "gps" && (
               <div className="wizard-step-content">
-                <>
-                  <Form.Group className="mb-3">
-                    <Form.Label>Método de ID</Form.Label>
-                      <div>
-                        <Form.Check
-                          type="radio"
-                          label="Automático"
-                          name="idMethod"
-                          value="automatic"
-                          checked={idMethod === "automatic"}
-                          onChange={() => setIdMethod("automatic")}
-                        />
-                        <Form.Check
-                          type="radio"
-                          label="GPS ID"
-                          name="idMethod"
-                          value="wialon"
-                          checked={idMethod === "wialon"}
-                          onChange={() => setIdMethod("wialon")}
-                        />
-                      </div>
-                    </Form.Group>
-                    {idMethod === "wialon" && (
-                      <Form.Group className="mb-3">
-                        <Form.Label>Seleccionar unidades Wialon (múltiples)</Form.Label>
+                <div className="mb-3">
+                  <span className="ptext__label">Método de identificación</span>
+                  <div className="wizard-radio-group">
+                    {[
+                      {value: "automatic", label: "Automático", icon: "fa-solid fa-magic-wand-sparkles"},
+                      {value: "wialon", label: "GPS ID", icon: "fa-solid fa-satellite-dish"},
+                    ].map(({value, label, icon}) => (
+                      <label key={value} className={`wizard-radio-card ${idMethod === value ? "selected" : ""}`}>
+                        <input type="radio" name="idMethod" value={value} checked={idMethod === value} onChange={() => setIdMethod(value)} className="visually-hidden" />
+                        <i className={icon}></i>
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-                        {/* Barra de búsqueda */}
-                        <div className="mb-3">
-                          <div className="input-group">
-                            <span className="input-group-text">
-                              <i className="fa fa-search"></i>
-                            </span>
-                            <input
-                              type="text"
-                              className="form-control"
-                              placeholder="Buscar por nombre o ID..."
-                              value={gpsSearchTerm}
-                              onChange={(e) => setGpsSearchTerm(e.target.value)}
-                            />
-                            {gpsSearchTerm && (
-                              <button
-                                className="btn btn-outline-secondary"
-                                type="button"
-                                onClick={() => setGpsSearchTerm("")}>
-                                <i className="fa fa-times"></i>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Controles de selección */}
-                        {filteredGpsUnits.length > 0 && (
-                          <div className="mb-2 d-flex justify-content-between align-items-center">
-                            <small className="text-muted">
-                              {filteredGpsUnits.length} GPS encontrados
-                            </small>
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-outline-primary"
-                              onClick={handleSelectAllFiltered}>
-                              {filteredGpsUnits.every((unit) =>
-                                selectedGpsUnits.some((selected) => selected.id === unit.id)
-                              )
-                                ? "Deseleccionar todos"
-                                : "Seleccionar todos"}
-                            </button>
-                          </div>
-                        )}
-
-                        {/* Lista de GPS con mejor diseño */}
-                        <div
-                          className="gps-units-selection"
-                          style={{
-                            maxHeight: "300px",
-                            overflowY: "auto",
-                            border: "1px solid #dee2e6",
-                            borderRadius: "0.375rem",
-                            padding: "0",
-                          }}>
-                          {units?.length === 0 ? (
-                            <div className="p-3 text-muted text-center">
-                              <i className="fa fa-spinner fa-spin me-2"></i>
-                              Cargando unidades...
-                            </div>
-                          ) : filteredGpsUnits.length === 0 ? (
-                            <div className="p-3 text-muted text-center">
-                              <i className="fa fa-search me-2"></i>
-                              No se encontraron GPS con "{gpsSearchTerm}"
-                            </div>
-                          ) : (
-                            <div className="list-group list-group-flush">
-                              {filteredGpsUnits.map((unit) => {
-                                const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
-                                return (
-                                  <div
-                                    key={unit.id}
-                                    className={`list-group-item list-group-item-action d-flex align-items-center ${
-                                      isSelected ? "active" : ""
-                                    }`}
-                                    style={{cursor: "pointer", border: "none"}}
-                                    onClick={() => handleGpsUnitToggle(unit)}>
-                                    <div className="form-check me-3">
-                                      <input
-                                        className="form-check-input"
-                                        type="checkbox"
-                                        checked={isSelected}
-                                        onChange={() => handleGpsUnitToggle(unit)}
-                                        onClick={(e) => e.stopPropagation()}
-                                      />
-                                    </div>
-                                    <div className="flex-grow-1">
-                                      <div className="fw-semibold">{unit.name}</div>
-                                      <small className="text-muted">ID: {unit.id}</small>
-                                    </div>
-                                    {isSelected && (
-                                      <div className="text-success">
-                                        <i className="fa fa-check-circle"></i>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Resumen de selección */}
-                        {selectedGpsUnits.length > 0 && (
-                          <div className="mt-3 p-2 bg-light rounded">
-                            <div className="d-flex justify-content-between align-items-center">
-                              <small className="text-muted">
-                                <strong>{selectedGpsUnits.length}</strong> GPS seleccionados
-                              </small>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-outline-danger"
-                                onClick={() => setSelectedGpsUnits([])}>
-                                Limpiar selección
-                              </button>
-                            </div>
-                            <div className="mt-2">
-                              <div className="d-flex flex-wrap gap-1">
-                                {selectedGpsUnits.map((unit) => (
-                                  <span
-                                    key={unit.id}
-                                    className="badge bg-primary"
-                                    style={{fontSize: "0.75rem"}}>
-                                    {unit.name}
-                                    <button
-                                      type="button"
-                                      className="btn-close btn-close-white ms-1"
-                                      style={{fontSize: "0.5rem"}}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleGpsUnitToggle(unit);
-                                      }}></button>
-                                  </span>
-                                ))}
+                {idMethod === "wialon" && (
+                  <div className="unit-picker">
+                    <div className="up-search">
+                      <i className="fa fa-search up-search-icon"></i>
+                      <input className="up-search-input" placeholder="Buscar por nombre o ID…" value={gpsSearchTerm} onChange={(e) => setGpsSearchTerm(e.target.value)} />
+                      {gpsSearchTerm && (
+                        <button type="button" className="up-search-clear" onClick={() => setGpsSearchTerm("")}>
+                          <i className="fa fa-times"></i>
+                        </button>
+                      )}
+                      <span className="up-count">{filteredGpsUnits.length} unidades</span>
+                      {filteredGpsUnits.length > 0 && (
+                        <button type="button" className="up-select-all" onClick={handleSelectAllFiltered}>
+                          {filteredGpsUnits.every((unit) => selectedGpsUnits.some((selected) => selected.id === unit.id)) ? "Deseleccionar" : "Seleccionar todos"}
+                        </button>
+                      )}
+                    </div>
+                    <div className="up-list">
+                      {units?.length === 0 ? (
+                        <div className="up-empty"><i className="fa fa-spinner fa-spin"></i>Cargando unidades…</div>
+                      ) : filteredGpsUnits.length === 0 ? (
+                        <div className="up-empty"><i className="fa fa-search"></i>Sin resultados para &quot;{gpsSearchTerm}&quot;</div>
+                      ) : (
+                        filteredGpsUnits.map((unit) => {
+                          const isSelected = selectedGpsUnits.some((u) => u.id === unit.id);
+                          return (
+                            <div key={unit.id} className={`up-item ${isSelected ? "selected" : ""}`} onClick={() => handleGpsUnitToggle(unit)}>
+                              <div className="up-item-icon"><i className="fa-solid fa-satellite-dish"></i></div>
+                              <div className="up-item-info">
+                                <div className="up-item-name">{unit.name}</div>
+                                <div className="up-item-id">ID: {unit.id}</div>
                               </div>
+                              <div className="up-item-check"><i className="fa fa-check"></i></div>
                             </div>
-                          </div>
-                        )}
-                      </Form.Group>
+                          );
+                        })
+                      )}
+                    </div>
+                    {selectedGpsUnits.length > 0 && (
+                      <div className="up-floating-pill">
+                        <span>{selectedGpsUnits.length} unidades seleccionadas</span>
+                        <button type="button" className="up-pill-clear" onClick={() => setSelectedGpsUnits([])}>Limpiar</button>
+                      </div>
                     )}
+                  </div>
+                )}
 
-                    {idMethod === "automatic" && (
-                      <Form.Group className="mb-3">
-                        <Form.Label>ID generado</Form.Label>
-                        <Form.Control
-                          type="text"
-                          value={(() => {
-                            // FIXED: Extract and preserve existing numeric ID
-                            let numericId;
-                            if (
-                              editedTransporte?.originalId?.startsWith("T") &&
-                              editedTransporte.originalId.includes("_")
-                            ) {
-                              // Extract numeric part from existing ID (e.g., "003" from "T003_1243")
-                              const match = editedTransporte.originalId.match(/^T(\d+)_/);
-                              numericId = match
-                                ? match[1]
-                                : (transportes.length + 1).toString().padStart(3, "0");
-                            } else {
-                              // For new/blank transports, generate new numeric ID
-                              numericId = (transportes.length + 1).toString().padStart(3, "0");
-                            }
-                            return `T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
-                          })()}
-                          disabled
-                        />
-                        <Form.Text className="text-muted">
-                          {(() => {
-                            // Show the same logic in the hint
-                            let numericId;
-                            if (
-                              editedTransporte?.originalId?.startsWith("T") &&
-                              editedTransporte.originalId.includes("_")
-                            ) {
-                              const match = editedTransporte.originalId.match(/^T(\d+)_/);
-                              numericId = match
-                                ? match[1]
-                                : (transportes.length + 1).toString().padStart(3, "0");
-                            } else {
-                              numericId = (transportes.length + 1).toString().padStart(3, "0");
-                            }
-                            return `Formato: T${numericId}_${
-                              editedTransporte?.tracto?.placa || "N/A"
-                            }`;
-                          })()}
-                        </Form.Text>
-                      </Form.Group>
-                    )}
-                  </>
+                {idMethod === "automatic" && (
+                  <div className="mt-3">
+                    <TextInput label="ID generado" value={(() => {
+                      let numericId;
+                      if (editedTransporte?.originalId?.startsWith("T") && editedTransporte.originalId.includes("_")) {
+                        const match = editedTransporte.originalId.match(/^T(\d+)_/);
+                        numericId = match ? match[1] : (transportes.length + 1).toString().padStart(3, "0");
+                      } else {
+                        numericId = (transportes.length + 1).toString().padStart(3, "0");
+                      }
+                      return `T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
+                    })()} disabled />
+                    <small className="text-muted d-block mt-1">
+                      {(() => {
+                        let numericId;
+                        if (editedTransporte?.originalId?.startsWith("T") && editedTransporte.originalId.includes("_")) {
+                          const match = editedTransporte.originalId.match(/^T(\d+)_/);
+                          numericId = match ? match[1] : (transportes.length + 1).toString().padStart(3, "0");
+                        } else {
+                          numericId = (transportes.length + 1).toString().padStart(3, "0");
+                        }
+                        return `Formato: T${numericId}_${editedTransporte?.tracto?.placa || "N/A"}`;
+                      })()}
+                    </small>
+                  </div>
+                )}
               </div>
             )}
 
@@ -2544,44 +2775,17 @@ const BitacoraDetailPage = ({edited}) => {
               <div className="wizard-step-content">
                 <div className="wizard-grid-2">
                 {["eco", "placa", "marca", "modelo", "color", "tipo"].map((field) => (
-                  <Form.Group className="mb-3" key={field}>
-                    <Form.Label className="fw-semibold">{field.toUpperCase()}</Form.Label>
-                    <Form.Control
-                      type="text"
-                      value={editedTransporte.tracto[field] || ""}
-                      onChange={(e) => {
-                        const value = e.target.value;
-
-                        setEditedTransporte((prev) => {
-                          const updatedTracto = {
-                            ...prev.tracto,
-                            [field]: value,
-                          };
-
-                          // Only regenerate ID if editing 'eco' and in 'automatic' mode and editable
-                          if (
-                            field === "eco" &&
-                            idMethod === "automatic" &&
-                            (prev.originalId?.startsWith("blank_") || prev.id?.startsWith("0_"))
-                          ) {
-                            const updatedId = `0_${(transportes.length + 1)
-                              .toString()
-                              .padStart(2, "0")}_${value || "N/A"}`;
-                            return {
-                              ...prev,
-                              id: updatedId,
-                              tracto: updatedTracto,
-                            };
-                          }
-
-                          return {
-                            ...prev,
-                            tracto: updatedTracto,
-                          };
-                        });
-                      }}
-                    />
-                  </Form.Group>
+                  <TextInput key={field} label={field.charAt(0).toUpperCase()+field.slice(1)} value={editedTransporte.tracto[field] || ""} onChange={(e) => {
+                    const value = e.target.value;
+                    setEditedTransporte((prev) => {
+                      const updatedTracto = {...prev.tracto, [field]: value};
+                      if (field === "eco" && idMethod === "automatic" && (prev.originalId?.startsWith("blank_") || prev.id?.startsWith("0_"))) {
+                        const updatedId = `0_${(transportes.length + 1).toString().padStart(2, "0")}_${value || "N/A"}`;
+                        return {...prev, id: updatedId, tracto: updatedTracto};
+                      }
+                      return {...prev, tracto: updatedTracto};
+                    });
+                  }} className="mb-3" placeholder={field.charAt(0).toUpperCase()+field.slice(1)} />
                 ))}
                 </div>
               </div>
@@ -2592,19 +2796,7 @@ const BitacoraDetailPage = ({edited}) => {
               <div className="wizard-step-content">
                 <div className="wizard-grid-2">
                 {["eco", "placa", "color", "capacidad", "sello"].map((field) => (
-                  <Form.Group className="mb-3" key={field}>
-                    <Form.Label className="fw-semibold">{field.toUpperCase()}</Form.Label>
-                    <Form.Control
-                      type="text"
-                      value={editedTransporte.remolque[field] || ""}
-                      onChange={(e) =>
-                        setEditedTransporte((prev) => ({
-                          ...prev,
-                          remolque: {...prev.remolque, [field]: e.target.value},
-                        }))
-                      }
-                    />
-                  </Form.Group>
+                  <TextInput key={field} label={field.charAt(0).toUpperCase()+field.slice(1)} value={editedTransporte.remolque[field] || ""} onChange={(e) => setEditedTransporte((prev) => ({...prev, remolque: {...prev.remolque, [field]: e.target.value}}))} className="mb-3" placeholder={field.charAt(0).toUpperCase()+field.slice(1)} />
                 ))}
                 </div>
               </div>
@@ -2613,102 +2805,55 @@ const BitacoraDetailPage = ({edited}) => {
             {/* Operador step */}
             {currentKey === "operador" && (
               <div className="wizard-step-content">
-                <Form.Group className="mb-3">
-                  <Form.Label>Línea de Transporte</Form.Label>
-                  <Form.Select
-                    value={editDraftLineaText ? "" : (editedTransporte.lineaTransporte || "")}
-                    onChange={(e) => {
-                      const selectedLinea = e.target.value;
-                      setEditDraftLineaText("");
-                      setOperadores([]);
-                      setEditedTransporte((prev) => ({ ...prev, lineaTransporte: selectedLinea, operador: "" }));
-                      // fetch is handled by the useEffect watching editedTransporte.lineaTransporte
-                    }}>
-                    <option value="">Selecciona una línea de transporte</option>
-                    {lineasTransporte.map((linea) => (
-                      <option key={linea._id} value={linea.nombre}>
-                        {linea.nombre}
-                      </option>
-                    ))}
-                  </Form.Select>
-                  {(roleData?.crear_draft_transporte || editDraftLineaText) && (
-                    <Form.Control
-                      type="text"
-                      className="mt-2"
-                      value={editDraftLineaText}
-                      placeholder="O escribe una línea nueva..."
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditDraftLineaText(val);
-                        setOperadores([]);
-                        setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val, operador: "" }));
-                        // fetch handled by useEffect watching editedTransporte.lineaTransporte
-                      }}
-                    />
-                  )}
-                </Form.Group>
-                <Form.Group className="mb-3">
-                  <Form.Label>Operador</Form.Label>
-                  <Form.Select
-                    value={editDraftOperadorText ? "" : (editedTransporte.operador || "")}
-                    onChange={(e) => {
-                      setEditDraftOperadorText("");
-                      setEditedTransporte((prev) => ({ ...prev, operador: e.target.value }));
-                    }}
-                    disabled={!editedTransporte.lineaTransporte}>
-                    <option value="">
-                      {editedTransporte.lineaTransporte
-                        ? "Selecciona un operador"
-                        : "Selecciona una línea de transporte primero"}
-                    </option>
-                    {operadores.map((operador) => (
-                      <option key={operador._id} value={operador.nombre}>
-                        {operador.nombre}
-                      </option>
-                    ))}
-                  </Form.Select>
-                  {(roleData?.crear_draft_transporte || editDraftOperadorText) && (
-                    <Form.Control
-                      type="text"
-                      className="mt-2"
-                      value={editDraftOperadorText}
-                      placeholder="O escribe un operador nuevo..."
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setEditDraftOperadorText(val);
-                        setEditedTransporte((prev) => ({ ...prev, operador: val }));
-                      }}
-                    />
-                  )}
-                </Form.Group>
-                <Form.Group className="mb-3">
-                  <Form.Label>Teléfono</Form.Label>
-                  <Form.Control
-                    type="text"
-                    value={editedTransporte.telefono || ""}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      // Validar teléfono en tiempo real
-                      if (value && !validatePhoneNumber(value)) {
-                        setPhoneError(
-                          "El número de teléfono debe tener exactamente 10 dígitos seguidos (ej: 1234567890)"
-                        );
-                      } else {
-                        setPhoneError("");
-                      }
-                      setEditedTransporte((prev) => ({...prev, telefono: value}));
-                    }}
-                    isInvalid={!!phoneError}
-                  />
-                  {phoneError && (
-                    <Form.Control.Feedback type="invalid">{phoneError}</Form.Control.Feedback>
-                  )}
-                  <Form.Text className="text-muted">Formato: 1234567890</Form.Text>
-                </Form.Group>
+                <Select label="Línea de transporte" value={editDraftLineaText ? "" : (editedTransporte.lineaTransporte || "")} onChange={(val) => {
+                  setEditDraftLineaText("");
+                  setOperadores([]);
+                  setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val || "", operador: "" }));
+                }} options={lineasTransporte.map((linea) => ({value: linea.nombre, label: linea.nombre}))} placeholder="Selecciona una línea" searchable clearable className="mb-3" />
+                {(roleData?.crear_draft_transporte || editDraftLineaText) && (
+                  <TextInput placeholder="O escribe una línea nueva…" value={editDraftLineaText} onChange={(e) => {
+                    const val = e.target.value;
+                    setEditDraftLineaText(val);
+                    setOperadores([]);
+                    setEditedTransporte((prev) => ({ ...prev, lineaTransporte: val, operador: "" }));
+                  }} className="mb-3" />
+                )}
+                <Select label="Operador" value={editDraftOperadorText ? "" : (editedTransporte.operador || "")} onChange={(val) => {
+                  setEditDraftOperadorText("");
+                  setEditedTransporte((prev) => ({ ...prev, operador: val || "" }));
+                }} options={operadores.map((op) => ({value: op.nombre, label: op.nombre}))} placeholder={editedTransporte.lineaTransporte ? "Selecciona un operador" : "Selecciona una línea primero"} searchable clearable className="mb-3" disabled={!editedTransporte.lineaTransporte} />
+                {(roleData?.crear_draft_transporte || editDraftOperadorText) && (
+                  <TextInput placeholder="O escribe un operador nuevo…" value={editDraftOperadorText} onChange={(e) => {
+                    const val = e.target.value;
+                    setEditDraftOperadorText(val);
+                    setEditedTransporte((prev) => ({ ...prev, operador: val }));
+                  }} className="mb-3" />
+                )}
+                <TextInput label="Teléfono" value={editedTransporte.telefono || ""} onChange={(e) => {
+                  const value = e.target.value;
+                  if (value && !validatePhoneNumber(value)) {
+                    setPhoneError("El número de teléfono debe tener exactamente 10 dígitos seguidos (ej: 1234567890)");
+                  } else {
+                    setPhoneError("");
+                  }
+                  setEditedTransporte((prev) => ({...prev, telefono: value}));
+                }} placeholder="1234567890" className="mb-2" />
+                {phoneError ? <small className="text-danger d-block mb-2">{phoneError}</small> : <small className="text-muted d-block mb-2">Exactamente 10 dígitos sin espacios</small>}
               </div>
             )}
 
           </div>{/* end step content wrapper */}
+
+          <div style={{display: currentKey === "gps" ? undefined : "none"}}>
+            <WialonNotifPicker
+              open={isEditTransporteModalVisible}
+              active={idMethod === "wialon" && selectedGpsUnits.length > 0}
+              unitIds={editUnitIds}
+              hint={editCatalogHint}
+              onChange={setEditNotificaciones}
+              showToast={showToast}
+            />
+          </div>
 
           {/* Wizard footer */}
           <div className="wizard-footer">
@@ -2719,8 +2864,12 @@ const BitacoraDetailPage = ({edited}) => {
                 : <><i className="fa-solid fa-arrow-left me-1"></i>Anterior</>}
             </button>
             {isLastEditStep ? (
-              <button type="button" className="btn btn-success" onClick={handleTransportEdit}>
-                <i className="fa-solid fa-check me-1"></i>Guardar
+              <button type="button" className="btn btn-success" onClick={handleTransportEdit} disabled={editSaving}>
+                {editSaving ? (
+                  <><i className="fa fa-spinner fa-spin me-1"></i>Guardando y activando alertas…</>
+                ) : (
+                  <><i className="fa-solid fa-check me-1"></i>Guardar</>
+                )}
               </button>
             ) : (
               <button type="button" className="btn btn-primary" onClick={goEditNext}>
@@ -2902,6 +3051,143 @@ const BitacoraDetailPage = ({edited}) => {
           )}
         </ModalTemplate>
       )}
+
+      {showDeleteTransporteModal && transporteToDelete && (
+        <ModalTemplate
+          show={showDeleteTransporteModal}
+          title="Confirmar Eliminación"
+          onClose={handleCloseDeleteTransporteModal}
+          onSubmit={handleConfirmDeleteTransporte}
+          submitClass="btn btn-danger"
+          submitText={removingTransporte ? "Eliminando..." : "Eliminar"}
+          cancelText="Cancelar">
+          <p>
+            ¿Está seguro de que desea eliminar el transporte{" "}
+            <strong>{getTransporteLabel(transporteToDelete)}</strong> de esta bitácora?
+          </p>
+          <p className="text-muted small">
+            Se desvincularán sus alertas GPS si no las usan otras bitácoras abiertas. Los eventos
+            ya registrados se conservan.
+          </p>
+        </ModalTemplate>
+      )}
+
+      {pendingUnlinkNotif && gpsNotifModal && (
+        <ModalTemplate
+          show
+          elevated
+          width={440}
+          formId="unlink-gps-notif-form"
+          title="Desvincular alerta"
+          onClose={() => {
+            if (unlinkingKey) return;
+            setPendingUnlinkNotif(null);
+          }}
+          onSubmit={handleConfirmUnlinkNotificacion}
+          cancelText="Cancelar"
+          submitText={unlinkingKey ? "Desvinculando…" : "Desvincular"}
+          submitClass="btn btn-danger"
+          submitDisabled={!!unlinkingKey}
+        >
+          <p>
+            ¿Desvincular{" "}
+            <strong>
+              {pendingUnlinkNotif.name || `Alerta ${pendingUnlinkNotif.notifId}`}
+            </strong>{" "}
+            del transporte{" "}
+            <strong>{getTransporteLabel(gpsNotifModal.transporte)}</strong>?
+          </p>
+          <p className="text-muted small mb-0">
+            Se quitará de todos sus GPS y del registro de este transporte.
+          </p>
+        </ModalTemplate>
+      )}
+
+      {gpsNotifModal && (
+        <ModalTemplate
+          show
+          title={`Notificaciones · ${gpsNotifModal.gps.name || "GPS"}`}
+          onClose={() => {
+            if (unlinkingKey) return;
+            setPendingUnlinkNotif(null);
+            setGpsNotifModal(null);
+          }}
+          hideFooter
+          wide
+          className="gps-notif-modal"
+        >
+          <div className="gps-notif-modal__body">
+            <div className="gps-notif-modal__meta">
+              <span>
+                <i className="fa fa-satellite-dish me-1"></i>
+                ID GPS: <strong>{gpsNotifModal.gps.wialonId}</strong>
+              </span>
+              <span>
+                Transporte:{" "}
+                <strong>{getTransporteLabel(gpsNotifModal.transporte)}</strong>
+              </span>
+            </div>
+
+            {(gpsNotifModal.transporte.notificaciones || []).length === 0 ? (
+              <div className="gps-notif-modal__empty">
+                <i className="fa fa-bell-slash"></i>
+                <p>Sin notificaciones vinculadas</p>
+              </div>
+            ) : (
+              <ul className="gps-notif-list">
+                {(gpsNotifModal.transporte.notificaciones || []).map((notif) => {
+                  const key = `${notif.resourceId}_${notif.notifId}`;
+                  const icon = TRIGGER_ICONS[notif.triggerType] || "fa-bell";
+                  const color = TRIGGER_COLORS[notif.triggerType] || "#6b7280";
+                  const typeLabel =
+                    TRIGGER_LABELS[notif.triggerType] || notif.triggerType || "Alerta";
+                  const busy = unlinkingKey === key;
+                  return (
+                    <li key={key} className="gps-notif-list__item">
+                      <div className="gps-notif-list__info">
+                        <i className={`fa ${icon}`} style={{color}}></i>
+                        <div>
+                          <div className="gps-notif-list__name">
+                            {notif.name || `Notificación ${notif.notifId}`}
+                          </div>
+                          <div className="gps-notif-list__meta">
+                            {typeLabel}
+                            {notif.kind ? ` · ${notif.kind}` : ""}
+                            {notif.appliedAt
+                              ? ` · vinculada ${new Date(notif.appliedAt).toLocaleString("es-MX", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}`
+                              : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="gps-notif-list__unlink"
+                        disabled={!!unlinkingKey}
+                        onClick={() => requestUnlinkNotificacion(notif)}
+                      >
+                        {busy ? (
+                          <>
+                            <i className="fa fa-spinner fa-spin"></i> Desvinculando…
+                          </>
+                        ) : (
+                          <>
+                            <i className="fa fa-unlink"></i> Desvincular
+                          </>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </ModalTemplate>
+      )}
+
+      <Toast toasts={toasts} removeToast={removeToast} />
     </section>
   );
 };

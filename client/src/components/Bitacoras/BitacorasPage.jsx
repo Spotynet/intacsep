@@ -7,6 +7,10 @@ import Sidebar from "../Sidebar";
 import "jspdf-autotable"; // For table support in jsPDF
 import {convertToUpperCase} from "../../utils/utils"; // Assume these functions exist
 import PageHeader from "../PageHeader";
+import FilterBar from "../FilterBar";
+import DataTable from "../DataTable";
+import { Select } from "../Select";
+import DatePicker from "../DatePicker";
 import BitacoraDetail from "./BitacoraDetail";
 import OldBitacoraDetail from "./OldBitacoraPDF";
 import ModalTemplate from "../ModalTemplate";
@@ -18,22 +22,10 @@ import {
   fetchOrigenes,
   fetchDestinos,
   fetchOperadores,
+  fetchOpenBitacorasWithWialonAlerts,
 } from "../../utils/api";
 import {generateAuditoriaForCreation} from "../../utils/auditoria";
-
-const getPageNumbers = (currentPage, totalPages) => {
-  if (totalPages <= 7) return Array.from({length: totalPages}, (_, i) => i + 1);
-  const visible = new Set([1, totalPages, currentPage]);
-  if (currentPage > 1) visible.add(currentPage - 1);
-  if (currentPage < totalPages) visible.add(currentPage + 1);
-  const sorted = Array.from(visible).sort((a, b) => a - b);
-  const result = [];
-  for (let i = 0; i < sorted.length; i++) {
-    if (i > 0 && sorted[i] - sorted[i - 1] > 1) result.push("...");
-    result.push(sorted[i]);
-  }
-  return result;
-};
+import CellBadge from "../CellBadge";
 
 const defaultFormData = {
   bitacora_id: "",
@@ -84,6 +76,7 @@ const BitacorasPage = () => {
   const {user} = useAuth();
   const {isSidebarCollapsed, toggleSidebar, setIsMobileSidebarOpen} = useSidebar();
   const [showModal, setShowModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [roleData, setRoleData] = useState(null);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [selectedOption, setSelectedOption] = useState("all");
@@ -101,14 +94,19 @@ const BitacorasPage = () => {
   const [sortField, setSortField] = useState("bitacora_id"); // Default sort field
   const [sortOrder, setSortOrder] = useState("desc"); // Default sort order
   const [statusFilter, setStatusFilter] = useState("");
-  const [creationDateFilter, setCreationDateFilter] = useState("");
+  const [fechaDesde, setFechaDesde] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  });
+  const [fechaHasta, setFechaHasta] = useState(() => {
+    return new Date().toISOString().split("T")[0];
+  });
   const [clienteFilter, setClienteFilter] = useState("");
   const [operadorFilter, setOperadorFilter] = useState("");
   const [monitoreoFilter, setMonitoreoFilter] = useState("");
   const [lineaTransporteFilter, setLineaTransporteFilter] = useState("");
   const [idFilter, setIdFilter] = useState("");
-  const startItem = (currentPage - 1) * itemsPerPage + 1;
-  const endItem = Math.min(currentPage * itemsPerPage, totalItems);
   const [loadingBitacoras, setLoadingBitacoras] = useState(false);
   const [selectedTransporte, setSelectedTransporte] = useState(null);
   const [showFrecuenciaModal, setShowFrecuenciaModal] = useState(false);
@@ -117,10 +115,19 @@ const BitacorasPage = () => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [bitacoraToDelete, setBitacoraToDelete] = useState(null);
   const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [wialonAlertsById, setWialonAlertsById] = useState({});
+
+  const todayStr = new Date().toISOString().split("T")[0];
+  const lastMonthStr = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString().split("T")[0];
+  })();
 
   const hasActiveFilters =
     idFilter || clienteFilter || statusFilter || monitoreoFilter ||
-    operadorFilter || lineaTransporteFilter || creationDateFilter;
+    operadorFilter || lineaTransporteFilter || 
+    fechaDesde !== lastMonthStr || fechaHasta !== todayStr;
 
   const updateFormDataFromUser = useCallback(() => {
     if (user) {
@@ -143,7 +150,8 @@ const BitacorasPage = () => {
         // Build filters object
         const filters = {
           statusFilter,
-          creationDateFilter,
+          fechaDesde,
+          fechaHasta,
           clienteFilter,
           monitoreoFilter,
           operadorFilter,
@@ -160,6 +168,7 @@ const BitacorasPage = () => {
           origenesData,
           destinosData,
           operadoresData,
+          wialonAlertsData,
         ] = await Promise.all([
           fetchBitacoras(
             currentPage,
@@ -173,6 +182,7 @@ const BitacorasPage = () => {
           fetchOrigenes(),
           fetchDestinos(),
           fetchOperadores(),
+          fetchOpenBitacorasWithWialonAlerts(),
         ]);
 
         setBitacoras(bitacorasData.bitacoras);
@@ -183,6 +193,7 @@ const BitacorasPage = () => {
         setOrigenes(origenesData);
         setDestinos(destinosData);
         setOperadores(operadoresData);
+        setWialonAlertsById(wialonAlertsData?.byId || {});
 
         // Console log to show Cliente field from one bitacora per client
         console.log("=== CLIENTE FIELD ANALYSIS ===");
@@ -248,7 +259,8 @@ const BitacorasPage = () => {
     currentPage,
     itemsPerPage,
     statusFilter,
-    creationDateFilter,
+    fechaDesde,
+    fechaHasta,
     clienteFilter,
     monitoreoFilter,
     operadorFilter,
@@ -293,6 +305,21 @@ const BitacorasPage = () => {
     fetchRolePermissions();
   }, [user, baseUrl]);
 
+  // Light poll (60s) for Wialon alert bell state, aligned with Sidebar summary counts
+  useEffect(() => {
+    if (!user || !roleData) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      const data = await fetchOpenBitacorasWithWialonAlerts();
+      if (!cancelled) setWialonAlertsById(data?.byId || {});
+    };
+    const interval = setInterval(tick, 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user, roleData]);
+
   const handleChange = (e) => {
     const {id, value} = e.target;
 
@@ -332,6 +359,7 @@ const BitacorasPage = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setSubmitting(true);
     try {
       // Validate ObjectIds before processing
       const validateObjectId = (id) => {
@@ -343,11 +371,13 @@ const BitacorasPage = () => {
       // Check if origen and destino are valid ObjectIds
       if (!validateObjectId(formData.origen)) {
         alert("Error: El origen debe ser un ID válido (24 caracteres hexadecimales sin espacios)");
+        setSubmitting(false);
         return;
       }
 
       if (!validateObjectId(formData.destino)) {
         alert("Error: El destino debe ser un ID válido (24 caracteres hexadecimales sin espacios)");
+        setSubmitting(false);
         return;
       }
 
@@ -410,6 +440,7 @@ const BitacorasPage = () => {
             origenesData,
             destinosData,
             operadoresData,
+            wialonAlertsData,
           ] = await Promise.all([
             fetchBitacoras(
               currentPage,
@@ -423,6 +454,7 @@ const BitacorasPage = () => {
             fetchOrigenes(),
             fetchDestinos(),
             fetchOperadores(),
+            fetchOpenBitacorasWithWialonAlerts(),
           ]);
 
           setBitacoras(bitacorasData.bitacoras);
@@ -433,6 +465,7 @@ const BitacorasPage = () => {
           setOrigenes(origenesData);
           setDestinos(destinosData);
           setOperadores(operadoresData);
+          setWialonAlertsById(wialonAlertsData?.byId || {});
 
           updateFormDataFromUser();
         } catch (e) {
@@ -442,6 +475,7 @@ const BitacorasPage = () => {
         }
 
         handleModalToggle();
+        window.location.href = `/bitacora/${createdBitacora._id}`;
       } else {
         // Handle validation errors from backend
         if (response.status === 400) {
@@ -458,6 +492,8 @@ const BitacorasPage = () => {
       }
     } catch (e) {
       console.error("Error creating bitácora:", e);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -484,13 +520,14 @@ const BitacorasPage = () => {
     }
   };
 
-  // Server-side filtering is now handled by the API
-  const sortedFilteredBitacoras = bitacoras;
-
   // Clear filters function
   const clearFilters = () => {
     setStatusFilter("");
-    setCreationDateFilter("");
+    const today = new Date().toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    setFechaDesde(thirtyDaysAgo.toISOString().split("T")[0]);
+    setFechaHasta(today);
     setClienteFilter("");
     setMonitoreoFilter("");
     setOperadorFilter("");
@@ -507,8 +544,13 @@ const BitacorasPage = () => {
     setCurrentPage(1);
   };
 
-  const handleCreationDateFilterChange = (value) => {
-    setCreationDateFilter(value);
+  const handleFechaDesdeChange = (value) => {
+    setFechaDesde(value);
+    setCurrentPage(1);
+  };
+
+  const handleFechaHastaChange = (value) => {
+    setFechaHasta(value);
     setCurrentPage(1);
   };
 
@@ -541,10 +583,9 @@ const BitacorasPage = () => {
     setCurrentPage(newPage);
   };
 
-  const handleItemsPerPageChange = (event) => {
-    const newLimit = Number(event.target.value);
-    setItemsPerPage(newLimit);
-    setCurrentPage(1); // Reset to first page when changing items per page
+  const handleItemsPerPageChange = (newLimit) => {
+    setItemsPerPage(Number(newLimit));
+    setCurrentPage(1);
   };
 
   const generatePDF = async (bitacora, transporteId = "") => {
@@ -829,7 +870,7 @@ const BitacorasPage = () => {
   const getAllUniqueTransportLines = () => {
     const transportLines = new Set();
 
-    bitacoras.forEach((bitacora) => {
+    (bitacoras ?? []).forEach((bitacora) => {
       // Check eventos
       if (bitacora.eventos && Array.isArray(bitacora.eventos)) {
         bitacora.eventos.forEach((evento) => {
@@ -868,445 +909,306 @@ const BitacorasPage = () => {
             title="Bitácoras"
             count={totalItems}
             onToggleSidebar={() => setIsMobileSidebarOpen(true)}
+            hasActiveFilters={hasActiveFilters}
+            onClearFilters={clearFilters}
             filters={
-              <div className="bits-filters-panel">
-                <div className="row g-2">
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">ID</label>
+              <FilterBar onClear={clearFilters}>
+                <div>
+                  <span className="pselect__label">ID</span>
+                  <div className="pdt-field">
+                    <i className="fa fa-hashtag pdt-field__icon"></i>
                     <input
                       type="text"
-                      className="form-control form-control-sm"
-                      placeholder="Buscar ID..."
+                      className="pdt-field__input"
+                      placeholder="Buscar..."
                       value={idFilter}
                       onChange={(e) => handleIdFilterChange(e.target.value)}
                     />
                   </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Cliente</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={clienteFilter}
-                      onChange={(e) => handleClienteFilterChange(e.target.value)}>
-                      <option value="">Todos los clientes</option>
-                      {clients
-                        .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
-                        .map((c, i) => (
-                          <option key={i} value={c.razon_social}>{c.razon_social}</option>
-                        ))}
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Línea Transporte</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={lineaTransporteFilter}
-                      onChange={(e) => handleLineaTransporteFilterChange(e.target.value)}>
-                      <option value="">Todas las líneas</option>
-                      {getAllUniqueTransportLines().map((linea, id) => (
-                        <option key={id} value={linea}>
-                          {linea}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Tipo Monitoreo</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={monitoreoFilter}
-                      onChange={(e) => handleMonitoreoFilterChange(e.target.value)}>
-                      <option value="">Todos los tipos</option>
-                      {monitoreos
-                        .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
-                        .map((monitreo, id) => (
-                          <option key={id} value={monitreo.tipoMonitoreo}>
-                            {monitreo.tipoMonitoreo}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Usuario</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={operadorFilter}
-                      onChange={(e) => handleOperadorFilterChange(e.target.value)}>
-                      <option value="">Todos los usuarios</option>
-                      {operadores
-                        .filter((operador) => operador && operador.name)
-                        .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-                        .map((operador, id) => (
-                          <option key={id} value={operador.name}>
-                            {operador.name}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Fecha Creación</label>
-                    <input
-                      type="date"
-                      className="form-control form-control-sm"
-                      value={creationDateFilter}
-                      onChange={(e) => handleCreationDateFilterChange(e.target.value)}
-                    />
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2">
-                    <label className="small fw-bold mb-1">Estatus</label>
-                    <select
-                      className="form-select form-select-sm"
-                      value={statusFilter}
-                      onChange={(e) => handleStatusFilterChange(e.target.value)}>
-                      <option value="">Todos los estatus</option>
-                      <option value="nueva">Nueva</option>
-                      <option value="validada">Validada</option>
-                      <option value="iniciada">Iniciada</option>
-                      {roleData?.ver_bitacoras_cerradas !== false && (
-                        <>
-                          <option value="cerrada">Cerrada</option>
-                          <option value="cerrada (e)">Cerrada (e)</option>
-                        </>
-                      )}
-                      <option value="finalizada">Finalizada</option>
-                    </select>
-                  </div>
-                  <div className="col-12 col-sm-6 col-md-3 col-lg-2 d-flex align-items-end">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-outline-secondary w-100"
-                      onClick={() => { clearFilters(); }}>
-                      <i className="fa fa-eraser me-1"></i>Limpiar
-                    </button>
-                  </div>
                 </div>
-              </div>
+                <div>
+                  <Select
+                    label="Cliente"
+                    placeholder="Todos los clientes"
+                    value={clienteFilter || null}
+                    onChange={(v) => handleClienteFilterChange(v ?? "")}
+                    options={clients
+                      .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
+                      .map((c) => ({ value: c.razon_social, label: c.razon_social }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Línea Transporte"
+                    placeholder="Todas las líneas"
+                    value={lineaTransporteFilter || null}
+                    onChange={(v) => handleLineaTransporteFilterChange(v ?? "")}
+                    options={getAllUniqueTransportLines().map((l) => ({ value: l, label: l }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Tipo Monitoreo"
+                    placeholder="Todos los tipos"
+                    value={monitoreoFilter || null}
+                    onChange={(v) => handleMonitoreoFilterChange(v ?? "")}
+                    options={monitoreos
+                      .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
+                      .map((m) => ({ value: m.tipoMonitoreo, label: m.tipoMonitoreo }))}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Usuario"
+                    placeholder="Todos los usuarios"
+                    value={operadorFilter || null}
+                    onChange={(v) => handleOperadorFilterChange(v ?? "")}
+                    options={operadores
+                      .filter((o) => o?.name)
+                      .sort((a, b) => a.name.localeCompare(b.name))
+                      .map((o) => ({ value: o.name, label: o.name }))}
+                  />
+                </div>
+                <div>
+                  <DatePicker
+                    label="Desde"
+                    value={fechaDesde}
+                    onChange={handleFechaDesdeChange}
+                  />
+                </div>
+                <div>
+                  <DatePicker
+                    label="Hasta"
+                    value={fechaHasta}
+                    onChange={handleFechaHastaChange}
+                  />
+                </div>
+                <div>
+                  <Select
+                    label="Estatus"
+                    placeholder="Todos los estatus"
+                    value={statusFilter || null}
+                    onChange={(v) => handleStatusFilterChange(v ?? "")}
+                    options={[
+                      { value: "nueva", label: "Nueva" },
+                      { value: "validada", label: "Validada" },
+                      { value: "iniciada", label: "Iniciada" },
+                      ...(roleData?.ver_bitacoras_cerradas !== false
+                        ? [{ value: "cerrada", label: "Cerrada" }, { value: "cerrada (e)", label: "Cerrada (e)" }]
+                        : []),
+                      { value: "finalizada", label: "Finalizada" },
+                    ]}
+                  />
+                </div>
+              </FilterBar>
             }
           >
             {roleData?.bitacoras?.create && (
                 <button className="new-btn" onClick={() => setShowModal(!showModal)}>
-                  <i className="fa fa-plus"></i>
+                  <i className="fa fa-plus"></i>Crear
                 </button>
               )}
           </PageHeader>
 
           {/* Table */}
           {roleData?.bitacoras?.read && (
-            <div className="bits-table-shell mt-4">
-            <div className="table-wrapper">
-              <div className="table-container">
-                <div className="table-responsive">
-                  <table className="table table-hover modern-table">
-                    <thead className="table-header">
-                      <tr>
-                        <th
-                          className="sortable-header"
-                          onClick={() => handleSortChange("frecuencia")}
-                          style={{cursor: "pointer", width: "80px"}}>
-                          <div className="header-content">
-                            <span className="header-text">Frec</span>
-                            {sortField === "frecuencia" && (
+            <div className="bits-table-shell">
+              <DataTable
+                data={bitacoras}
+                loading={loadingBitacoras}
+                maxHeight="100%"
+                emptyMessage="No se encontraron bitácoras que coincidan con los filtros."
+                serverSide
+                serverPage={currentPage}
+                serverTotalItems={totalItems}
+                serverTotalPages={totalPages}
+                serverItemsPerPage={itemsPerPage}
+                onPageChange={handlePageChange}
+                onItemsPerPageChange={handleItemsPerPageChange}
+                sortField={sortField}
+                sortOrder={sortOrder}
+                onSortChange={handleSortChange}
+                columns={[
+                  {
+                    key: "frec",
+                    header: "Frec",
+                    width: "8%",
+                    className: "table-cell",
+                    headerClassName: "text-center",
+                    sortable: true,
+                    sortKey: "frecuencia",
+                    render: (row) => (
+                      <Tooltip text="Tracking de Monitoreo" position="right">
+                        <div
+                          className="semaforo-container"
+                          onClick={() => openFrecuenciaModal(row)}
+                          style={{cursor: "pointer"}}>
+                          {getEventColor(row).map((color, i) => (
+                            <div key={i} className="semaforo-circle" style={{backgroundColor: color}} />
+                          ))}
+                        </div>
+                      </Tooltip>
+                    ),
+                  },
+                  {
+                    key: "bitacora_id",
+                    header: "ID",
+                    width: "8%",
+                    className: "table-cell",
+                    sortable: true,
+                    render: (row) => {
+                      const alertNames = wialonAlertsById[row._id];
+                      const hasAlert = Array.isArray(alertNames) && alertNames.length > 0;
+                      return (
+                        <div className="bitacora-id-with-alert">
+                          <Tooltip text="Ver Detalles" position="top">
+                            <CellBadge
+                              label={row.bitacora_id}
+                              color={getLatestFrecuenciaColor(row)}
+                              className="cell-badge--nowrap"
+                              onClick={() => window.location.href = `/bitacora/${row._id}`}
+                            />
+                          </Tooltip>
+                          {hasAlert && (
+                            <Tooltip
+                              text={`Alerta Intacsep activa: ${alertNames.join(", ")}`}
+                              position="top"
+                            >
                               <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header"
-                          onClick={() => handleSortChange("bitacora_id")}
-                          style={{cursor: "pointer", width: "100px"}}>
-                          <div className="header-content">
-                            <span className="header-text">ID</span>
-                            {sortField === "bitacora_id" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header"
-                          onClick={() => handleSortChange("cliente")}
-                          style={{cursor: "pointer", width: "150px"}}>
-                          <div className="header-content">
-                            <span className="header-text">Cliente</span>
-                            {sortField === "cliente" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header d-none d-lg-table-cell"
-                          style={{cursor: "pointer", width: "180px"}}>
-                          <div className="header-content">
-                            <span className="header-text">
-                              Líneas de
-                              <br />
-                              Transporte
-                            </span>
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header d-none d-md-table-cell"
-                          onClick={() => handleSortChange("monitoreo")}
-                          style={{cursor: "pointer", width: "120px"}}>
-                          <div className="header-content">
-                            <span className="header-text">
-                              Tipo
-                              <br />
-                              Monitoreo
-                            </span>
-                            {sortField === "monitoreo" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header d-none d-lg-table-cell"
-                          onClick={() => handleSortChange("operador")}
-                          style={{cursor: "pointer", width: "140px"}}>
-                          <div className="header-content">
-                            <span className="header-text">Usuario</span>
-                            {sortField === "operador" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header d-none d-md-table-cell"
-                          onClick={() => handleSortChange("createdAt")}
-                          style={{cursor: "pointer", width: "110px"}}>
-                          <div className="header-content">
-                            <span className="header-text">
-                              Fecha
-                              <br />
-                              Creación
-                            </span>
-                            {sortField === "createdAt" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th
-                          className="sortable-header"
-                          onClick={() => handleSortChange("status")}
-                          style={{cursor: "pointer", width: "120px"}}>
-                          <div className="header-content">
-                            <span className="header-text">Estatus</span>
-                            {sortField === "status" && (
-                              <i
-                                className={`fa fa-sort-${
-                                  sortOrder === "asc" ? "up" : "down"
-                                } ms-1`}></i>
-                            )}
-                          </div>
-                        </th>
-                        <th className="text-center d-none d-lg-table-cell" style={{width: "150px"}}>
-                          <span className="header-text">
-                            Estatus
-                            <br />
-                            Documentación
-                          </span>
-                        </th>
-                        <th className="text-center" style={{width: "80px"}}>
-                          <i className="fa fa-download text-muted"></i>
-                        </th>
-                        <th className="text-center" style={{width: "80px"}}>
-                          <i className="fa fa-trash text-muted"></i>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="table-body">
-                      {loadingBitacoras ? (
-                        <tr>
-                          <td colSpan="12" className="text-center py-5">
-                            <div className="loading-container">
-                              <i className="fa fa-spinner fa-spin text-primary me-2"></i>
-                              <span className="text-muted">Cargando bitácoras...</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        sortedFilteredBitacoras.map((bitacora) => (
-                          <tr key={bitacora._id} className="table-row">
-                            <td data-label="Frec" className="table-cell" style={{width: "80px"}}>
-                              <div
-                                className="semaforo-container"
-                                onClick={() => openFrecuenciaModal(bitacora)}
-                                style={{cursor: "pointer"}}>
-                                {getEventColor(bitacora).map((color, index) => (
-                                  <div
-                                    key={index}
-                                    className="semaforo-circle"
-                                    style={{
-                                      backgroundColor: color,
-                                    }}></div>
-                                ))}
-                              </div>
-                            </td>
-                            <td data-label="ID" className="table-cell" style={{width: "100px"}}>
-                              <a
-                                href={`/bitacora/${bitacora._id}`}
-                                className={`bitacora-link ${
-                                  getLatestFrecuenciaColor(bitacora) === "#000000"
-                                    ? "text-white"
-                                    : "text-dark"
-                                }`}
-                                style={{
-                                  backgroundColor: getLatestFrecuenciaColor(bitacora),
-                                }}>
-                                {bitacora.bitacora_id}
-                              </a>
-                            </td>
-                            <td data-label="Cliente" className="table-cell" style={{width: "150px"}}>
-                              <span className="cell-text">{bitacora.cliente}</span>
-                            </td>
-                            <td
-                              className="table-cell d-none d-lg-table-cell"
-                              style={{width: "180px"}}>
-                              <span className="cell-text">{getUniqueTransportLines(bitacora)}</span>
-                            </td>
-                            <td
-                              className="table-cell d-none d-md-table-cell"
-                              style={{width: "120px"}}>
-                              <span className="cell-text">{bitacora.monitoreo}</span>
-                            </td>
-                            <td
-                              className="table-cell d-none d-lg-table-cell"
-                              style={{width: "140px"}}>
-                              <span className="cell-text">{bitacora.operador}</span>
-                            </td>
-                            <td
-                              className="table-cell d-none d-md-table-cell"
-                              style={{width: "110px"}}>
-                              <span className="cell-text">
-                                {new Date(bitacora.createdAt).toLocaleDateString()}
-                              </span>
-                            </td>
-                            <td data-label="Estatus" className="table-cell text-center" style={{width: "120px"}}>
-                              <div style={{display: "flex", justifyContent: "center", alignItems: "center", gap: "0.375rem"}}>
-                                <span className={`status-badge status-${bitacora.status}`}>
-                                  {bitacora.status}
-                                  {bitacora.edited ? " (e)" : ""}
-                                </span>
-                                {roleData?.aceptar_draft && bitacora.draft_pendiente && (
-                                  <Tooltip text="Borrador pendiente de aprobación" position="top">
-                                    <span className="draft-dot" />
-                                  </Tooltip>
-                                )}
-                              </div>
-                            </td>
-                            <td
-                              className="table-cell d-none d-lg-table-cell"
-                              style={{width: "150px"}}>
-                              <span className="cell-text">{getRecorrido(bitacora)}</span>
-                            </td>
-                            <td className="table-cell table-cell-actions text-center" style={{width: "80px"}}>
-                              <div className="d-flex justify-content-center">
-                                <button
-                                  className={`action-btn ${
-                                    isAnyTransporteClosed(bitacora) ? "btn-primary" : "btn-secondary"
-                                  }`}
-                                  onClick={() => handlePDFToggle(bitacora)}
-                                  disabled={!isAnyTransporteClosed(bitacora)}
-                                  title="Descargar PDF">
-                                  <i className="fa fa-file-pdf"></i>
-                                </button>
-                              </div>
-                            </td>
-                            <td className="table-cell table-cell-actions text-center" style={{width: "80px"}}>
-                              <div className="d-flex justify-content-center">
-                                {roleData?.bitacoras?.delete && (
-                                  <button
-                                    className="action-btn btn-danger"
-                                    onClick={() => handleDeleteClick(bitacora)}
-                                    title="Eliminar bitácora">
-                                    <i className="fa fa-trash"></i>
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <div className="pagination-container">
-                <div className="pagination-content">
-                  <div className="pagination-info">
-                    <div className="items-per-page">
-                      <label htmlFor="itemsPerPage" className="form-label">
-                        Items por página:
-                      </label>
-                      <select
-                        id="itemsPerPage"
-                        className="form-select form-select-sm modern-select"
-                        value={itemsPerPage}
-                        onChange={handleItemsPerPageChange}>
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="pagination-stats">
-                    <span className="stats-text">{`${startItem}-${endItem} de ${totalItems}`}</span>
-                  </div>
-
-                  <div className="pagination-controls">
-                    <button
-                      type="button"
-                      className="pagination-btn"
-                      disabled={currentPage === 1}
-                      onClick={() => handlePageChange(currentPage - 1)}>
-                      <i className="fa fa-chevron-left"></i>
-                    </button>
-
-                    <div className="page-numbers">
-                      {getPageNumbers(currentPage, totalPages).map((page, i) =>
-                        page === "..." ? (
-                          <span key={`ellipsis-${i}`} className="page-ellipsis">...</span>
-                        ) : (
+                                className="fa fa-bell bitacora-wialon-alert-bell"
+                                role="button"
+                                tabIndex={0}
+                                aria-label="Alerta Intacsep activa"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.location.href = "/eventos-wialon";
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    window.location.href = "/eventos-wialon";
+                                  }
+                                }}
+                              />
+                            </Tooltip>
+                          )}
+                        </div>
+                      );
+                    },
+                  },
+                  {
+                    key: "cliente",
+                    header: "Cliente",
+                    width: "10%",
+                    className: "table-cell",
+                    sortable: true,
+                    render: (row) => <span className="cell-text">{row.cliente}</span>,
+                  },
+                  {
+                    key: "lineas",
+                    header: "Líneas de Transporte",
+                    width: "12%",
+                    className: "table-cell",
+                    headerClassName: "d-none d-lg-table-cell",
+                    cellClassName: "d-none d-lg-table-cell",
+                    render: (row) => <span className="cell-text">{getUniqueTransportLines(row)}</span>,
+                  },
+                  {
+                    key: "monitoreo",
+                    header: "Tipo Monitoreo",
+                    width: "12%",
+                    className: "table-cell",
+                    sortable: true,
+                    headerClassName: "d-none d-md-table-cell",
+                    cellClassName: "d-none d-md-table-cell",
+                    render: (row) => <span className="cell-text">{row.monitoreo ? row.monitoreo.charAt(0).toUpperCase() + row.monitoreo.slice(1) : ""}</span>,
+                  },
+                  {
+                    key: "operador",
+                    header: "Usuario",
+                    width: "12%",
+                    className: "table-cell",
+                    sortable: true,
+                    headerClassName: "d-none d-lg-table-cell",
+                    cellClassName: "d-none d-lg-table-cell",
+                    render: (row) => <span className="cell-text">{row.operador ? row.operador.charAt(0).toUpperCase() + row.operador.slice(1) : ""}</span>,
+                  },
+                  {
+                    key: "createdAt",
+                    header: "Fecha Creación",
+                    width: "10%",
+                    className: "table-cell",
+                    sortable: true,
+                    headerClassName: "d-none d-md-table-cell",
+                    cellClassName: "d-none d-md-table-cell",
+                    render: (row) => <span className="cell-text">{new Date(row.createdAt).toLocaleDateString()}</span>,
+                  },
+                  {
+                    key: "status",
+                    header: "Estatus",
+                    width: "10%",
+                    sortable: true,
+                    className: "table-cell",
+                    render: (row) => (
+                      <div style={{display: "flex", justifyContent: "flex-start", alignItems: "center", gap: "0.375rem"}}>
+                        <CellBadge
+                          label={`${row.status === "plan de embarque" ? "Embarque" : row.status ? row.status.charAt(0).toUpperCase() + row.status.slice(1) : ""}${row.edited ? " (e)" : ""}`}
+                          variant={
+                            row.status === "nueva"      ? "blue"   :
+                            row.status === "validada"   ? "yellow" :
+                            row.status === "iniciada"   ? "green"  :
+                            row.status === "cerrada"    ? "red"    :
+                            row.status === "finalizada" ? "purple" : "gray"
+                          }
+                        />
+                        {roleData?.aceptar_draft && row.draft_pendiente && (
+                          <Tooltip text="Borrador pendiente de aprobación" position="top">
+                            <span className="draft-dot" />
+                          </Tooltip>
+                        )}
+                      </div>
+                    ),
+                  },
+                  {
+                    key: "estatusDoc",
+                    header: "Documentación",
+                    width: "12%",
+                    className: "table-cell",
+                    headerClassName: "d-none d-lg-table-cell",
+                    cellClassName: "d-none d-lg-table-cell",
+                    render: (row) => <span className="cell-text">{getRecorrido(row)}</span>,
+                  },
+                  {
+                    key: "acciones",
+                    header: "Acciones",
+                    width: "8%",
+                    className: "table-cell table-cell-actions text-end",
+                    headerClassName: "text-end",
+                    render: (row) => (
+                      <div className="d-flex justify-content-end gap-2">
+                        <Tooltip text="Descargar PDF" position="left">
                           <button
-                            key={page}
-                            type="button"
-                            className={`page-btn ${page === currentPage ? "active" : ""}`}
-                            onClick={() => handlePageChange(page)}>
-                            {page}
+                            className={`action-btn ${isAnyTransporteClosed(row) ? "btn-pdf" : "btn-secondary"}`}
+                            onClick={() => handlePDFToggle(row)}
+                            disabled={!isAnyTransporteClosed(row)}>
+                            <i className="fa fa-file-pdf"></i>
                           </button>
-                        )
-                      )}
-                    </div>
-
-                    <button
-                      type="button"
-                      className="pagination-btn"
-                      disabled={currentPage === totalPages}
-                      onClick={() => handlePageChange(currentPage + 1)}>
-                      <i className="fa fa-chevron-right"></i>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
+                        </Tooltip>
+                        {roleData?.bitacoras?.delete && (
+                          <Tooltip text="Eliminar bitácora" position="left">
+                            <button
+                              className="action-btn btn-danger"
+                              onClick={() => handleDeleteClick(row)}>
+                              <i className="fa fa-trash"></i>
+                            </button>
+                          </Tooltip>
+                        )}
+                      </div>
+                    ),
+                  },
+                ]}
+              />
             </div>
           )}
         </div>
@@ -1397,54 +1299,40 @@ const BitacorasPage = () => {
           show={showModal}
           title="Nueva Bitácora"
           onClose={handleModalToggle}
-          onSubmit={handleSubmit}>
+          onSubmit={handleSubmit}
+          submitDisabled={submitting}
+          submitText={submitting ? "Guardando..." : "Guardar"}>
           <div style={{maxHeight: "60vh", overflowY: "auto", paddingRight: "6px"}}>
             {/* Tipo de Monitoreo */}
             <div className="mb-3">
-              <label htmlFor="monitoreo" className="form-label">
-                Tipo de Monitoreo <span className="text-danger">*</span>
-              </label>
-              <select
-                className="form-select"
-                id="monitoreo"
-                value={formData.monitoreo}
-                onChange={handleChange}
-                required>
-                <option value="">Selecciona una opción</option>
-                {monitoreos
+              <Select
+                label="Tipo de Monitoreo *"
+                placeholder="Selecciona una opción"
+                value={formData.monitoreo || null}
+                onChange={(val) => setFormData((prev) => ({...prev, monitoreo: val}))}
+                options={monitoreos
                   .sort((a, b) => a.tipoMonitoreo.localeCompare(b.tipoMonitoreo))
-                  .map((monitoreo) => (
-                    <option key={monitoreo._id} value={monitoreo.tipoMonitoreo}>
-                      {monitoreo.tipoMonitoreo}
-                    </option>
-                  ))}
-              </select>
+                  .map((m) => ({value: m.tipoMonitoreo, label: m.tipoMonitoreo}))}
+              />
             </div>
 
             {/* Cliente */}
             <div className="mb-3">
-              <label htmlFor="cliente" className="form-label">
-                Cliente <span className="text-danger">*</span>
-              </label>
-              <select
-                className="form-select"
-                id="cliente"
-                value={formData.cliente}
-                onChange={handleChange}
-                required>
-                <option value="">Selecciona una opción</option>
-                {clients
+              <Select
+                label="Cliente *"
+                placeholder="Selecciona una opción"
+                value={formData.cliente || null}
+                onChange={(val) =>
+                  setFormData((prev) => ({...prev, cliente: val, origen: "", destino: ""}))
+                }
+                options={clients
                   .sort((a, b) => a.razon_social.localeCompare(b.razon_social))
-                  .map((client) => (
-                    <option key={client._id} value={client.razon_social}>
-                      {client.razon_social}
-                    </option>
-                  ))}
-              </select>
+                  .map((c) => ({value: c.razon_social, label: c.razon_social}))}
+              />
             </div>
 
             <div className="form-group mb-3">
-              <label htmlFor="folio_servicio">Folio de Servicio <span className="text-danger">*</span></label>
+              <label htmlFor="folio_servicio" className="form-label">Folio de Servicio <span className="text-danger">*</span></label>
               <input
                 id="folio_servicio"
                 type="text"
@@ -1457,60 +1345,40 @@ const BitacorasPage = () => {
 
             {/* Origen */}
             <div className="mb-3">
-              <label htmlFor="origen" className="form-label">
-                Origen <span className="text-danger">*</span>
-              </label>
-              <select
-                id="origen"
-                className="form-select"
-                value={formData.origen}
-                onChange={handleChange}
+              <Select
+                label="Origen *"
+                placeholder={formData.cliente ? "Seleccionar origen" : "Primero selecciona un cliente"}
+                value={formData.origen || null}
+                onChange={(val) => setFormData((prev) => ({...prev, origen: val}))}
                 disabled={!formData.cliente}
-                required>
-                <option value="">
-                  {formData.cliente ? "Seleccionar origen" : "Primero selecciona un cliente"}
-                </option>
-                {formData.cliente &&
-                  origenes
-                    .filter((origen) => origen.cliente === formData.cliente)
-                    .sort((a, b) =>
-                      `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`)
-                    )
-                    .map((origen) => (
-                      <option key={origen._id} value={origen._id}>
-                        {`${origen.nombre}, ${origen.estado}`}
-                      </option>
-                    ))}
-              </select>
+                options={
+                  formData.cliente
+                    ? origenes
+                        .filter((o) => o.cliente === formData.cliente)
+                        .sort((a, b) => `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`))
+                        .map((o) => ({value: o._id, label: `${o.nombre}, ${o.estado}`}))
+                    : []
+                }
+              />
             </div>
 
             {/* Destino */}
             <div className="mb-3">
-              <label htmlFor="destino" className="form-label">
-                Destino <span className="text-danger">*</span>
-              </label>
-              <select
-                id="destino"
-                className="form-select"
-                value={formData.destino}
-                onChange={handleChange}
+              <Select
+                label="Destino *"
+                placeholder={formData.cliente ? "Seleccionar destino" : "Primero selecciona un cliente"}
+                value={formData.destino || null}
+                onChange={(val) => setFormData((prev) => ({...prev, destino: val}))}
                 disabled={!formData.cliente}
-                required>
-                <option value="">
-                  {formData.cliente ? "Seleccionar destino" : "Primero selecciona un cliente"}
-                </option>
-                {formData.cliente &&
-                  destinos
-                    .filter((destino) => destino.cliente === formData.cliente)
-                    .sort((a, b) =>
-                      `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`)
-                    )
-                    .map((destino) => (
-                      <option key={destino._id} value={destino._id}>
-                        {`${destino.nombre}, ${destino.estado}`}
-                      </option>
-                    ))}
-              </select>
+                options={
+                  formData.cliente
+                    ? destinos
+                        .filter((d) => d.cliente === formData.cliente)
+                        .sort((a, b) => `${a.nombre}, ${a.estado}`.localeCompare(`${b.nombre}, ${b.estado}`))
+                        .map((d) => ({value: d._id, label: `${d.nombre}, ${d.estado}`}))
+                    : []
+                }
+              />
             </div>
             {(formData.monitoreo === "Custodia fisica" ||
               formData.monitoreo === "CUSTODIA FISICA" ||
