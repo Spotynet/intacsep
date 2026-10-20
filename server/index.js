@@ -229,6 +229,23 @@ const normalizeNotificaciones = (notificaciones) => {
   return out;
 };
 
+// One-shot Wialon instruction. Not stored on the transporte.
+const dropUnitIdsByNotif = (notificaciones) => {
+  const map = new Map();
+  if (!Array.isArray(notificaciones)) return map;
+  for (const n of notificaciones) {
+    if (!n) continue;
+    const resourceId = Number(n.resourceId);
+    const notifId = Number(n.notifId);
+    if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
+    const ids = Array.isArray(n.dropUnitIds)
+      ? [...new Set(n.dropUnitIds.map((id) => String(id).trim()).filter(Boolean))]
+      : [];
+    map.set(`${resourceId}_${notifId}`, ids);
+  }
+  return map;
+};
+
 dotenv.config();
 
 const transporter = nodemailer.createTransport({
@@ -2337,6 +2354,8 @@ app.patch("/bitacora/:id", async (req, res) => {
         const { _originalId, ...rest } = t;
         const units = normalizeGpsUnits(rest.gpsUnits);
         const stored = existing?.notificaciones || [];
+        const rawNotifs = Array.isArray(rest.notificaciones) ? rest.notificaciones : [];
+        const dropByKey = dropUnitIdsByNotif(rawNotifs);
         const nextNotifs = Array.isArray(rest.notificaciones)
           ? normalizeNotificaciones(rest.notificaciones)
           : normalizeNotificaciones(stored.map((n) => (n.toObject ? n.toObject() : n)));
@@ -2349,6 +2368,7 @@ app.patch("/bitacora/:id", async (req, res) => {
               resourceId: n.resourceId,
               notifId: n.notifId,
               action: "link",
+              dropUnitIds: dropByKey.get(notifKeyOf(n)) || [],
             })),
           });
         }
@@ -2557,6 +2577,7 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
     }
 
     const normalizedUnits = normalizeGpsUnits(gpsUnits);
+    const dropByKey = dropUnitIdsByNotif(notificaciones);
     const normalizedNotifs = normalizeNotificaciones(notificaciones);
 
     // Create a new Transporte object (internalId auto-assigned by schema default)
@@ -2589,6 +2610,7 @@ app.post("/bitacoras/:id/transportes", async (req, res) => {
             resourceId: n.resourceId,
             notifId: n.notifId,
             action: "link",
+            dropUnitIds: dropByKey.get(`${n.resourceId}_${n.notifId}`) || [],
           })),
         });
       } catch (err) {

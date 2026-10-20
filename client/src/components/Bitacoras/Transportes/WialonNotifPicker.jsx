@@ -85,6 +85,8 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
   // type starts enabled without depending on the async catalog. Turning one off
   // drops its pick: the row is inert until it is switched back on.
   const [disabledCanonical, setDisabledCanonical] = useState({});
+  // notifKey -> { [gpsId]: boolean }. Missing means checked (keep the old GPS).
+  const [keptUnits, setKeptUnits] = useState({});
   const [unlinkingKey, setUnlinkingKey] = useState(null);
   const [pendingUnlink, setPendingUnlink] = useState(null);
   const baseUrl = import.meta.env.VITE_BASE_URL;
@@ -112,6 +114,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
     setNotifRetry(0);
     setSelectedCanonical({});
     setDisabledCanonical({});
+    setKeptUnits({});
     setUnlinkingKey(null);
     setPendingUnlink(null);
     prevUnitIdsRef.current = null;
@@ -126,6 +129,7 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
     if (prevUnitIdsRef.current === unitIdsKey) return;
     setNotifQuery("");
     setSelectedCanonical({});
+    setKeptUnits({});
   }, [open, active, unitIdsKey]);
 
   useEffect(() => {
@@ -296,17 +300,23 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
       const candidate =
         t.candidates.find((c) => notifKey(c) === value) || candidatesSeenRef.current[value];
       if (candidate) {
+        const units = Array.isArray(candidate.existingUnits) ? candidate.existingUnits : [];
+        const kept = keptUnits[value] || {};
+        const dropUnitIds = units
+          .map((u) => String(u.id))
+          .filter((id) => kept[id] === false);
         out.push({
           resourceId: candidate.resourceId,
           notifId: candidate.notifId,
           name: candidate.name,
           triggerType: candidate.triggerType || t.triggerType,
           kind: "canonica",
+          ...(dropUnitIds.length ? {dropUnitIds} : {}),
         });
       }
     });
     return out;
-  }, [active, notifCatalog, selectedCanonical, disabledCanonical]);
+  }, [active, notifCatalog, selectedCanonical, disabledCanonical, keptUnits]);
 
   useEffect(() => {
     onChangeRef.current?.(selectedNotificaciones);
@@ -479,51 +489,103 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
                       : notifQuery.trim().length >= 2
                         ? "Sin coincidencias"
                         : "Sin resultados";
+                const picked =
+                  (value && candidates.find((c) => notifKey(c) === value)) ||
+                  (value && candidatesSeenRef.current[value]) ||
+                  null;
+                const existingUnits =
+                  !isOff && picked && Array.isArray(picked.existingUnits)
+                    ? picked.existingUnits
+                    : [];
                 return (
-                  <div key={t.key} className={`notif-canonical__row${isOff ? " is-off" : ""}`}>
-                    <span className="notif-canonical__label" title={t.label}>
-                      <i className={`fa-solid ${TRIGGER_ICONS[t.triggerType] || "fa-bell"}`}></i>
-                      <span className="notif-canonical__text">{t.label}</span>
-                    </span>
-                    <Select
-                      options={options}
-                      value={value}
-                      onChange={(val) =>
-                        setSelectedCanonical((prev) => ({...prev, [t.key]: val || ""}))
-                      }
-                      placeholder={
-                        candidates.length > 0
-                          ? `Elegir (${candidates.length}${
-                              t.total > candidates.length ? ` de ${t.total}` : ""
-                            })`
-                          : t.total === 0
-                            ? "Sin candidatas disponibles"
-                            : notifLoading
-                              ? "Cargando alertas…"
-                              : notifQuery.trim().length >= 2
-                                ? "Sin coincidencias"
-                                : "Sin candidatas disponibles"
-                      }
-                      // Typing here searches the same catalog as the section bar.
-                      onSearch={setNotifQuery}
-                      loading={notifLoading}
-                      emptyText={emptyText}
-                      disabled={t.total === 0 || isOff}
-                      searchable
-                      clearable
-                      className="notif-canonical__select"
-                    />
-                    <button
-                      type="button"
-                      className={`notif-power${isOff ? " is-off" : ""}`}
-                      onClick={() => toggleCanonical(t.key)}
-                      aria-pressed={!isOff}
-                      aria-label={`${isOff ? "Activar" : "Desactivar"} ${t.label}`}
-                      title={`${isOff ? "Activar" : "Desactivar"} ${t.label}`}
-                    >
-                      <i className="fa-solid fa-power-off"></i>
-                      <span>{isOff ? "Off" : "On"}</span>
-                    </button>
+                  <div key={t.key} className="notif-canonical__item">
+                    <div className={`notif-canonical__row${isOff ? " is-off" : ""}`}>
+                      <span className="notif-canonical__label" title={t.label}>
+                        <i className={`fa-solid ${TRIGGER_ICONS[t.triggerType] || "fa-bell"}`}></i>
+                        <span className="notif-canonical__text">{t.label}</span>
+                      </span>
+                      <Select
+                        options={options}
+                        value={value}
+                        onChange={(val) => {
+                          setSelectedCanonical((prev) => ({...prev, [t.key]: val || ""}));
+                          if (!val) return;
+                          const chosen =
+                            candidates.find((c) => notifKey(c) === val) ||
+                            candidatesSeenRef.current[val];
+                          const ids = (chosen?.existingUnits || []).map((u) => String(u.id));
+                          setKeptUnits((prev) => ({
+                            ...prev,
+                            [val]: Object.fromEntries(ids.map((id) => [id, true])),
+                          }));
+                        }}
+                        placeholder={
+                          candidates.length > 0
+                            ? `Elegir (${candidates.length}${
+                                t.total > candidates.length ? ` de ${t.total}` : ""
+                              })`
+                            : t.total === 0
+                              ? "Sin candidatas disponibles"
+                              : notifLoading
+                                ? "Cargando alertas…"
+                                : notifQuery.trim().length >= 2
+                                  ? "Sin coincidencias"
+                                  : "Sin candidatas disponibles"
+                        }
+                        // Typing here searches the same catalog as the section bar.
+                        onSearch={setNotifQuery}
+                        loading={notifLoading}
+                        emptyText={emptyText}
+                        disabled={t.total === 0 || isOff}
+                        searchable
+                        clearable
+                        className="notif-canonical__select"
+                      />
+                      <button
+                        type="button"
+                        className={`notif-power${isOff ? " is-off" : ""}`}
+                        onClick={() => toggleCanonical(t.key)}
+                        aria-pressed={!isOff}
+                        aria-label={`${isOff ? "Activar" : "Desactivar"} ${t.label}`}
+                        title={`${isOff ? "Activar" : "Desactivar"} ${t.label}`}
+                      >
+                        <i className="fa-solid fa-power-off"></i>
+                        <span>{isOff ? "Off" : "On"}</span>
+                      </button>
+                      {existingUnits.length > 0 && (
+                        <div className="notif-canonical__existing">
+                          {existingUnits.map((unit) => {
+                            const gpsId = String(unit.id);
+                            const gpsLabel = unit.name || "GPS";
+                            const checked = keptUnits[value]?.[gpsId] !== false;
+                            const bitacoras = Array.isArray(unit.bitacoras)
+                              ? unit.bitacoras.filter(Boolean)
+                              : [];
+                            const caption = bitacoras.length
+                              ? `Desmarca para quitar la alerta. En bitácora ${bitacoras.join(", ")}.`
+                              : "Desmarca para quitar la alerta de este GPS.";
+                            return (
+                              <label key={gpsId} className="notif-canonical__gps">
+                                <span className="notif-canonical__gps-name">{gpsLabel}</span>
+                                <span className="notif-canonical__gps-text">{caption}</span>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const on = e.target.checked;
+                                    setKeptUnits((prev) => ({
+                                      ...prev,
+                                      [value]: {...(prev[value] || {}), [gpsId]: on},
+                                    }));
+                                  }}
+                                  aria-label={`${caption} ${gpsLabel}`}
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -532,8 +594,8 @@ const WialonNotifPicker = ({open, active, unitIds = [], hint = "", onChange, sho
               <i className="fa fa-circle-info"></i>
               <span>
                 Al guardar se vinculan al GPS y se activan. Si alguna se rechaza porque el
-                GPS no tiene acceso a ese recurso, se avisará con el motivo. Las unidades que ya
-                no pertenezcan a ninguna bitácora abierta se desvinculan automáticamente.
+                GPS no tiene acceso a ese recurso, se avisará con el motivo. Los GPS que ya
+                estaban en la alerta se mantienen, salvo que los desmarques.
               </span>
             </div>
           </div>

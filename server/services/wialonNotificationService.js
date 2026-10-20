@@ -123,38 +123,53 @@ function flattenNotifications(resources) {
 }
 
 /**
- * Units referenced by any notification of a non-deleted, non-closed bitácora.
- * Those are the only ones we consider "in use" when pruning orphans.
+ * Units referenced by any GPS of a non-deleted, non-closed bitácora.
+ * `usage` maps each wialon id to the open bitácora_id values that still carry it.
  */
 export async function getUnitsInUse() {
   const set = new Set();
+  const usage = new Map();
   try {
     const col = mongoose.connection.db.collection("bitacoras");
     const docs = await col
       .find(
         { deleted: { $ne: true }, status: { $nin: CLOSED_STATUSES } },
-        { projection: { "transportes.gpsUnits.wialonId": 1 } }
+        { projection: { bitacora_id: 1, "transportes.gpsUnits.wialonId": 1 } }
       )
       .toArray();
     for (const d of docs) {
+      const bid =
+        d.bitacora_id != null && String(d.bitacora_id).trim() !== ""
+          ? String(d.bitacora_id).trim()
+          : "";
       for (const t of d.transportes || []) {
         for (const u of t.gpsUnits || []) {
-          if (u && u.wialonId != null && String(u.wialonId).trim() !== "") set.add(String(u.wialonId).trim());
+          if (!u || u.wialonId == null || String(u.wialonId).trim() === "") continue;
+          const key = String(u.wialonId).trim();
+          set.add(key);
+          if (!bid) continue;
+          let list = usage.get(key);
+          if (!list) {
+            list = [];
+            usage.set(key, list);
+          }
+          if (!list.includes(bid)) list.push(bid);
         }
       }
     }
   } catch (e) {
     // Fail safe: if Mongo is unreachable we cannot tell what is in use, so we prune nothing.
     console.error("getUnitsInUse failed, pruning disabled for this run:", e.message);
-    return { set: new Set(), ok: false };
+    return { set: new Set(), usage: new Map(), ok: false };
   }
-  return { set, ok: true };
+  return { set, usage, ok: true };
 }
 
 async function getOrphanUnitIds(allNotifications) {
-  if (!pruneEnabled()) return { set: new Set(), ok: true, prunedEnabled: false };
-  const { set: inUse, ok } = await getUnitsInUse();
-  if (!ok) return { set: new Set(), ok: false, prunedEnabled: false };
+  const { set: inUse, usage, ok } = await getUnitsInUse();
+  const unitUsage = usage || new Map();
+  if (!ok) return { set: new Set(), ok: false, prunedEnabled: false, usage: unitUsage };
+  if (!pruneEnabled()) return { set: new Set(), ok: true, prunedEnabled: false, usage: unitUsage };
   const orphans = new Set();
   for (const n of allNotifications) {
     for (const u of n.units) {
@@ -162,7 +177,7 @@ async function getOrphanUnitIds(allNotifications) {
       if (!inUse.has(key)) orphans.add(key);
     }
   }
-  return { set: orphans, ok: true, prunedEnabled: true };
+  return { set: orphans, ok: true, prunedEnabled: true, usage: unitUsage };
 }
 
 function rankCandidates(candidates, hint, knownResources) {
@@ -188,11 +203,29 @@ function rankCandidates(candidates, hint, knownResources) {
   });
 }
 
+function existingUnitsFor(n, unitMap, usage, wantedSet) {
+  const seen = new Set();
+  const out = [];
+  for (const u of n.units || []) {
+    const id = String(u);
+    if (!id || wantedSet.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    const bitacoras = usage?.get(id);
+    out.push({
+      id,
+      name: unitMap[id] || null,
+      bitacoras: Array.isArray(bitacoras) ? bitacoras.slice() : [],
+    });
+  }
+  return out;
+}
+
 /**
  * Catalog shown in the wizard's GPS step.
  *  - unitStatus: which of the selected GPS units actually exist in Wialon
  *  - linked:     notifications already covering at least one selected unit
- *  - canonical:  free (or fully orphaned) candidates for the 4 canonical alert types
+ *  - canonical:  candidates for the 4 canonical alert types, including alerts
+ *                already assigned to other GPS units
  */
 export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
   const wanted = [...new Set(unitIds.map(String).filter(Boolean))];
@@ -225,13 +258,13 @@ export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
     }));
 
   const knownResources = new Set(linked.map((n) => n.resourceId));
+  const unitUsage = orphanInfo.usage || new Map();
   const canonical = CANONICAL_TYPES.map((t) => {
     let pool = all.filter(
       (n) =>
         n.triggerType === t.triggerType &&
         t.pattern.test(n.name) &&
-        !n.units.some((u) => wantedSet.has(String(u))) &&
-        (n.units.length === 0 || n.units.every((u) => orphanInfo.set.has(String(u))))
+        !n.units.some((u) => wantedSet.has(String(u)))
     );
     if (searched) pool = pool.filter((n) => norm(n.name).includes(qNorm));
     const ranked = rankCandidates(pool, hint, knownResources);
@@ -250,6 +283,7 @@ export async function getCatalog({ unitIds = [], hint = "", q = "" } = {}) {
         name: n.name,
         enabled: n.enabled,
         unitCount: n.units.length,
+        existingUnits: existingUnitsFor(n, unitMap, unitUsage, wantedSet),
       })),
     };
   });
@@ -311,8 +345,8 @@ async function readBackUnits(sid, itemId, notifId, upd) {
 }
 
 /**
- * selections: [{ resourceId, notifId, action: "link" | "unlink" }]
- *  - link:   add every unitId to `un`, prune orphan units, then enable
+ * selections: [{ resourceId, notifId, action: "link" | "unlink", dropUnitIds?: string[] }]
+ *  - link:   add every unitId to `un`, remove only `dropUnitIds`, then enable
  *  - unlink: remove every unitId from `un` (never disables the notification)
  */
 export async function applySelections({ unitIds = [], selections = [] } = {}) {
@@ -329,10 +363,7 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
     // Never write an id Wialon does not know: a GPS that is missing in Wialon is
     // reported through `skippedUnits` and simply left out of the notification.
     const validWanted = wanted.filter((id) => Object.prototype.hasOwnProperty.call(unitMap, id));
-    const validWantedSet = new Set(validWanted);
     const all = flattenNotifications(resources);
-    const orphanInfo = await getOrphanUnitIds(all);
-    results.prunedEnabled = orphanInfo.prunedEnabled;
 
     const index = new Map(all.map((n) => [`${n.resourceId}_${n.notifId}`, n]));
 
@@ -360,11 +391,12 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
         let next;
 
         if (sel.action === "link") {
-          const kept = before.filter((u) => !orphanInfo.set.has(String(u)));
-          const pruned = before.filter(
-            (u) => orphanInfo.set.has(String(u)) && !validWantedSet.has(String(u))
+          const dropSet = new Set(
+            (Array.isArray(sel.dropUnitIds) ? sel.dropUnitIds : [])
+              .map((id) => String(id).trim())
+              .filter(Boolean)
           );
-          if (pruned.length) results.pruned.push({ ...summary, unitIds: pruned.map(String) });
+          const kept = before.filter((u) => !dropSet.has(String(u)));
           next = [...new Set([...kept, ...validWanted.map(Number)])];
         } else {
           next = before.filter((u) => !wantedSet.has(String(u)));
