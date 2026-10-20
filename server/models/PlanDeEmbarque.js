@@ -18,6 +18,7 @@ const PlanDeEmbarqueSchema = new mongoose.Schema(
     horaSalida:  { type: Date, required: true },
     citaEntrega: { type: Date, required: true },
     transporte:  { type: String, required: true },
+    tipoUnidad:  { type: String, enum: ["1.5", "3.5", "TH", "TR"], required: false },
   },
   { timestamps: true }
 );

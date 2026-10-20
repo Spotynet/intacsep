@@ -105,6 +105,7 @@ const BitSchema = new mongoose.Schema(
         message: "El origen debe ser un ID válido (24 caracteres hexadecimales)",
       },
     },
+    tipoUnidad: { type: String, enum: ["1.5", "3.5", "TH", "TR"], default: null },
 
     cliente: { type: String, required: true },
 

@@ -188,6 +188,50 @@ const ControlPatiosDashboard = () => {
     }));
   }, [filteredMovements]);
 
+  // ── Edit record ──────────────────────────────────────────────────────────
+  const [editRecord, setEditRecord] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const openEdit = (row) => {
+    setEditRecord(row);
+    setEditForm({
+      placa: row.placa || "",
+      linea_transporte: row.linea_transporte || "",
+      fecha_hora_inicio: row.fecha_hora_inicio ? toDateTimeLocal(new Date(row.fecha_hora_inicio)) : "",
+      fecha_hora_salida: row.fecha_hora_salida ? toDateTimeLocal(new Date(row.fecha_hora_salida)) : "",
+    });
+  };
+
+  const closeEdit = () => { setEditRecord(null); setEditForm({}); };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const body = {
+        placa: editForm.placa,
+        linea_transporte: editForm.linea_transporte,
+        fecha_hora_inicio: editForm.fecha_hora_inicio ? new Date(editForm.fecha_hora_inicio).toISOString() : undefined,
+        fecha_hora_salida: editForm.fecha_hora_salida ? new Date(editForm.fecha_hora_salida).toISOString() : null,
+      };
+      const res = await fetch(`${baseUrl}/control-patios/${editRecord._id}`, {
+        method: "PUT",
+        credentials: "include",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        closeEdit();
+        fetchDashboardData();
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleResolveAnomaly = async (id) => {
     try {
       const res = await fetch(`${baseUrl}/patio-anomalies/${id}/resolve`, {
@@ -357,6 +401,16 @@ const ControlPatiosDashboard = () => {
     { key: "fecha_hora_salida", header: "Salida", render: (row) => row.fecha_hora_salida ? `${formatDate(row.fecha_hora_salida)} ${formatTime(row.fecha_hora_salida)}` : <span className="badge bg-info">En patio</span> },
     { key: "stay_seconds", header: "Duración", render: (row) => formatDuration(row.stay_seconds) },
     { key: "status", header: "Estado", render: (row) => <span className={`badge bg-${row.status === "En patio" ? "info" : "success"}`}>{row.status}</span> },
+    ...(roleData?.control_patios?.update ? [{
+      key: "_actions",
+      header: "",
+      className: "text-end",
+      render: (row) => (
+        <button className="action-btn btn-primary" title="Editar" onClick={() => openEdit(row)}>
+          <i className="fas fa-edit"></i>
+        </button>
+      ),
+    }] : []),
   ];
 
   if (!user || !roleData) return <div className="p-4">Cargando dashboard...</div>;

@@ -546,7 +546,7 @@ app.post("/refresh_token", async (req, res) => {
     };
 
     const newAccessToken = jwt.sign({ user: publicUser }, JWT_SECRET, {
-      expiresIn: "15m",
+      expiresIn: "60m",
     });
 
     //save tokens in cookie
@@ -771,11 +771,26 @@ app.get("/bitacoras", async (req, res) => {
     ]);
     const destinoMap = Object.fromEntries(destinos.map(d => [d._id.toString(), d.nombre]));
     const origenMap  = Object.fromEntries(origenes.map(o => [o._id.toString(), o.nombre]));
+
+    // Batch-lookup linked PlanDeEmbarque docs so clients can use live plan dates
+    // instead of stale metadata snapshots.
+    const planIds = [...new Set(
+      bitacoras.map(b => b.planDeEmbarque_id?.toString()).filter(Boolean)
+    )];
+    const planDocs = planIds.length
+      ? await PlanDeEmbarque.find(
+          { _id: { $in: planIds } },
+          { citaCarga: 1, horaSalida: 1, citaEntrega: 1, carrierMove: 1, tipoUnidad: 1 }
+        ).lean()
+      : [];
+    const planMap = Object.fromEntries(planDocs.map(p => [p._id.toString(), p]));
+
     const enriched = bitacoras.map(b => ({
       ...b.toObject(),
       // When destino/origen is a name string (edited bitácora fallback), use it directly
       destino_nombre: destinoMap[b.destino] || (!isObjectId(b.destino) ? b.destino : "") || "",
       origen_nombre:  origenMap[b.origen]   || (!isObjectId(b.origen)  ? b.origen  : "") || "",
+      planDeEmbarque: planMap[b.planDeEmbarque_id?.toString()] || null,
     }));
 
     res.status(200).json({
@@ -8954,11 +8969,15 @@ app.get("/planes-embarque/search/carrier", async (req, res) => {
 // POST start a plan — create a bitacora from an existing plan
 app.post("/planes-embarque/:id/start", async (req, res) => {
   try {
-    const { creado_por, lineaTransporte, operador, telefono } = req.body;
+    const { creado_por, lineaTransporte, operador, telefono, tipoUnidad } = req.body;
     const plan = await PlanDeEmbarque.findById(req.params.id)
       .populate("cliente", "razon_social")
       .populate("destino", "nombre");
     if (!plan) return res.status(404).json({ message: "Plan no encontrado" });
+
+    if (tipoUnidad) {
+      await PlanDeEmbarque.findByIdAndUpdate(plan._id, { tipoUnidad });
+    }
 
     const existingBitacora = await Bitacora.findOne(
       {
@@ -8997,6 +9016,7 @@ app.post("/planes-embarque/:id/start", async (req, res) => {
       horaSalida:      plan.horaSalida,
       citaEntrega:     plan.citaEntrega,
       transporte:      plan.transporte,
+      tipoUnidad:      tipoUnidad || plan.tipoUnidad || null,
       lineaTransporte: lineaTransporte?.trim() || null,
       operador:        operador?.trim() || null,
       telefono:        telefono?.trim() || null,
@@ -9007,6 +9027,8 @@ app.post("/planes-embarque/:id/start", async (req, res) => {
       folio_servicio:    plan.carrierMove, // Map carrierMove to folio_servicio
       cliente:           plan.cliente?.razon_social,
       destino:           plan.destino?._id?.toString() ?? "",
+      origen:            plan.origen?._id?.toString() ?? "",
+      tipoUnidad:        tipoUnidad || plan.tipoUnidad || null,
       status:            "plan de embarque",
       fechaPlanEmbarque: new Date(),
       planDeEmbarque_id: plan._id,
@@ -9361,7 +9383,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
       query,
       { bitacora_id: 1, cliente: 1, operador: 1, createdAt: 1, eventos: 1,
         edited_bitacora: 1, origen: 1, destino: 1, status: 1, transportes: 1,
-        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1 }
+        linea_transporte: 1, folio_servicio: 1, planDeEmbarque_id: 1, tipoUnidad: 1 }
     ).lean();
 
     // Batch-resolve linked PlanDeEmbarque docs (source of truth for citas/carrierMove).
@@ -9374,7 +9396,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
     const planDocs = planIds.length
       ? await PlanDeEmbarque.find(
           { _id: { $in: planIds } },
-          { carrierMove: 1, citaCarga: 1, horaSalida: 1, citaEntrega: 1, destino: 1, transporte: 1 }
+          { carrierMove: 1, citaCarga: 1, horaSalida: 1, citaEntrega: 1, destino: 1, transporte: 1, tipoUnidad: 1 }
         ).lean()
       : [];
     const planMap = Object.fromEntries(planDocs.map((p) => [p._id.toString(), p]));
@@ -9490,16 +9512,16 @@ app.get("/reporte-estadisticas", async (req, res) => {
       };
 
       const citaCarga =
-        getMetadataValue(presenciaOrigenEvento?.metadata, ["citaCarga", "cita_carga", "Cita de Carga", "citacarga"])
-        ?? plan?.citaCarga
+        plan?.citaCarga
+        ?? getMetadataValue(presenciaOrigenEvento?.metadata, ["citaCarga", "cita_carga", "Cita de Carga", "citacarga"])
         ?? null;
       const horaSalida =
-        getMetadataValue(presenciaOrigenEvento?.metadata, ["horaSalida", "hora_salida", "Hora de Salida", "horasalida"])
-        ?? plan?.horaSalida
+        plan?.horaSalida
+        ?? getMetadataValue(presenciaOrigenEvento?.metadata, ["horaSalida", "hora_salida", "Hora de Salida", "horasalida"])
         ?? null;
       const citaEntrega =
-        getMetadataValue(presenciaOrigenEvento?.metadata, ["citaEntrega", "cita_entrega", "Cita de Entrega", "citaentrega"])
-        ?? plan?.citaEntrega
+        plan?.citaEntrega
+        ?? getMetadataValue(presenciaOrigenEvento?.metadata, ["citaEntrega", "cita_entrega", "Cita de Entrega", "citaentrega"])
         ?? null;
       const planEmbarqueAt = presenciaOrigenEvento?.createdAt ?? null;
       const validacionAt = validacionEvento?.createdAt ?? null;
@@ -9518,6 +9540,11 @@ app.get("/reporte-estadisticas", async (req, res) => {
         || cleanLinea(getFirstLineaTransporte(bit.edited_bitacora?.transportes))
         || cleanLinea(bit.edited_bitacora?.linea_transporte)
         || cleanLinea(plan?.transporte)
+        || "";
+      const tipoTransporte =
+        cleanLinea(bit.tipoUnidad)
+        || cleanLinea(getMetadataValue(presenciaOrigenEvento?.metadata, ["tipoUnidad", "tipo_unidad"]))
+        || cleanLinea(plan?.tipoUnidad)
         || "";
       const origenNombre =
         getResolvedLocationName(bit.origen, origenMap)
@@ -9551,6 +9578,7 @@ app.get("/reporte-estadisticas", async (req, res) => {
         destino_nombre:      destinoNombre,
         carrierMove,
         lineaTransporte,
+        tipoTransporte,
         status:              bit.status,
         createdAt:           bit.createdAt,
         citaCarga,

@@ -40,6 +40,13 @@ const compressImage = (file) =>
     img.src = url;
   });
 
+const toDateTimeLocal = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const pad = (n) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 const formatDate = (iso) => {
   if (!iso) return "—";
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
@@ -64,7 +71,7 @@ const SwapBadge = ({ record }) => {
 };
 
 const PlacaTestPage = () => {
-  const { user, verifyToken, setUser } = useAuth();
+  const { user, verifyToken, setUser, refreshToken } = useAuth();
   const { isSidebarCollapsed, setIsMobileSidebarOpen } = useSidebar();
   const navigate = useNavigate();
 
@@ -109,6 +116,18 @@ const PlacaTestPage = () => {
 
     input.click();
   };
+
+  // Wraps fetch with automatic token-refresh + one retry on 401
+  const authFetch = useCallback(async (url, options = {}) => {
+    const opts = { credentials: "include", ...options };
+    let res = await fetch(url, opts);
+    if (res.status === 401) {
+      const refreshed = await refreshToken();
+      if (refreshed) res = await fetch(url, opts);
+    }
+    return res;
+  }, [refreshToken]);
+
   const [capturedDataUrl, setCapturedDataUrl] = useState(null);
   const [capturedBlob, setCapturedBlob] = useState(null);
   const [ocrLoading, setOcrLoading] = useState(false);
@@ -170,7 +189,7 @@ const PlacaTestPage = () => {
       try {
         const userData = await verifyToken();
         setUser(userData);
-        const roleRes = await fetch(`${baseUrl}/roles/${userData.role}`, { credentials: "include" });
+        const roleRes = await authFetch(`${baseUrl}/roles/${userData.role}`);
         const role = await roleRes.json();
         setRoleData(role);
         if (!role?.control_patios?.read) { navigate("/"); return; }
@@ -195,8 +214,8 @@ const PlacaTestPage = () => {
   const loadSavedRecords = useCallback(async () => {
     try {
       const [tractorRes, remolqueRes] = await Promise.all([
-        fetch(`${baseUrl}/control-patios`, { credentials: "include" }),
-        fetch(`${baseUrl}/remolque-visitas`, { credentials: "include" }),
+        authFetch(`${baseUrl}/control-patios`),
+        authFetch(`${baseUrl}/remolque-visitas`),
       ]);
       if (tractorRes.ok) {
         const data = await tractorRes.json();
@@ -216,7 +235,7 @@ const PlacaTestPage = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [roleData]);
+  }, [roleData, authFetch]);
 
   useEffect(() => {
     if (user && roleData) loadSavedRecords();
@@ -230,7 +249,7 @@ const PlacaTestPage = () => {
         setIsEditMode(true);
         setSelectedRecordForSalida(null);
         setIsSmartMode(false);
-        setFormData({ placa: record.placa, placaRemolque: record.placa_remolque_entrada || "", lineaTransporte: record.linea_transporte, hasRemolque: false, cliente: record.cliente, timestamp: record.fecha_hora_inicio, _id: record._id });
+        setFormData({ placa: record.placa, placaRemolque: record.placa_remolque_entrada || "", lineaTransporte: record.linea_transporte, hasRemolque: false, cliente: record.cliente, timestamp: record.fecha_hora_inicio, fechaEntrada: toDateTimeLocal(record.fecha_hora_inicio), fechaSalida: toDateTimeLocal(record.fecha_hora_salida), _id: record._id });
       } else {
         setIsEditMode(false);
         setSelectedRecordForSalida(record);
@@ -284,7 +303,7 @@ const PlacaTestPage = () => {
     try {
       const fd = new FormData();
       fd.append("image", blob, "plate.jpg");
-      const response = await fetch(`${baseUrl}/plates/test-scan`, { method: "POST", body: fd, credentials: "include" });
+      const response = await authFetch(`${baseUrl}/plates/test-scan`, { method: "POST", body: fd });
       const data = await response.json();
       if (!response.ok) { setError(data?.message || `Error ${response.status} al leer la placa.`); return; }
       if (!data.success || !data.plate) {
@@ -339,20 +358,25 @@ const PlacaTestPage = () => {
     setSaving(true);
     try {
       if (isEditMode && formData._id) {
-        const response = await fetch(`${baseUrl}/control-patios/${formData._id}`, {
+        const response = await authFetch(`${baseUrl}/control-patios/${formData._id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ placa: formData.placa, linea_transporte: formData.lineaTransporte }),
-          credentials: "include",
+          body: JSON.stringify({
+            placa: formData.placa,
+            linea_transporte: formData.lineaTransporte,
+            ...(roleData?.control_patios_editar_fechas && {
+              fecha_hora_inicio: formData.fechaEntrada ? new Date(formData.fechaEntrada).toISOString() : undefined,
+              fecha_hora_salida: formData.fechaSalida ? new Date(formData.fechaSalida).toISOString() : null,
+            }),
+          }),
         });
         if (response.ok) { loadSavedRecords(); setShowModal(false); }
         else { const e = await response.json(); setError(e.error || "Error al actualizar el registro."); }
       } else if (isSalidaMode) {
-        const response = await fetch(`${baseUrl}/control-patios/${selectedRecordForSalida._id}/salida`, {
+        const response = await authFetch(`${baseUrl}/control-patios/${selectedRecordForSalida._id}/salida`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fecha_hora_salida: formData.timestamp }),
-          credentials: "include",
         });
         if (!response.ok) { const e = await response.json(); setError(e.error || "Error al registrar la salida."); return; }
 
@@ -362,14 +386,13 @@ const PlacaTestPage = () => {
             r.placa.toUpperCase() === formData.placaRemolque.toUpperCase() && r.status === "En patio"
           );
           if (remolqueRecord) {
-            await fetch(`${baseUrl}/remolque-visitas/${remolqueRecord._id}/salida`, {
+            await authFetch(`${baseUrl}/remolque-visitas/${remolqueRecord._id}/salida`, {
               method: "PATCH",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 fecha_hora_salida: formData.timestamp,
                 linea_transporte: formData.lineaTransporte || null,
               }),
-              credentials: "include",
             });
           }
         }
@@ -380,7 +403,7 @@ const PlacaTestPage = () => {
         if (roleData?.client_access === "specific" && roleData?.allowed_clients?.length > 0) {
           clientToSave = roleData.allowed_clients[0].client_name;
         }
-        const response = await fetch(`${baseUrl}/control-patios`, {
+        const response = await authFetch(`${baseUrl}/control-patios`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -392,7 +415,6 @@ const PlacaTestPage = () => {
             fecha_hora_inicio: formData.timestamp,
             confidence: typeof ocrResult?.confidence === "number" ? ocrResult.confidence : null,
           }),
-          credentials: "include",
         });
         if (response.ok) { loadSavedRecords(); setShowModal(false); }
         else { const e = await response.json(); setError(e.error || "Error al guardar el registro."); }
@@ -411,7 +433,7 @@ const PlacaTestPage = () => {
     if (!idToDelete) return;
     try {
       const endpoint = idToDelete.type === "remolque" ? "remolque-visitas" : "control-patios";
-      const response = await fetch(`${baseUrl}/${endpoint}/${idToDelete.id}`, { method: "DELETE", credentials: "include" });
+      const response = await authFetch(`${baseUrl}/${endpoint}/${idToDelete.id}`, { method: "DELETE" });
       if (response.ok) { loadSavedRecords(); setShowDeleteModal(false); setIdToDelete(null); }
       else { const e = await response.json(); alert(e.error || "Error al eliminar el registro."); }
     } catch (e) {
@@ -765,6 +787,29 @@ const PlacaTestPage = () => {
                 <label className="form-label text-muted small mb-0">Fecha y Hora de registro</label>
                 <div className="fw-bold">{formatDate(formData.timestamp)}</div>
               </div>
+
+              {isEditMode && roleData?.control_patios_editar_fechas && (
+                <>
+                  <div className="col-12">
+                    <label className="form-label fw-bold mb-1">Fecha y hora de entrada</label>
+                    <input
+                      type="datetime-local"
+                      className="form-control"
+                      value={formData.fechaEntrada || ""}
+                      onChange={(e) => setFormData(prev => ({...prev, fechaEntrada: e.target.value}))}
+                    />
+                  </div>
+                  <div className="col-12">
+                    <label className="form-label fw-bold mb-1">Fecha y hora de salida <span className="text-muted fw-normal">(vacío = en patio)</span></label>
+                    <input
+                      type="datetime-local"
+                      className="form-control"
+                      value={formData.fechaSalida || ""}
+                      onChange={(e) => setFormData(prev => ({...prev, fechaSalida: e.target.value}))}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}

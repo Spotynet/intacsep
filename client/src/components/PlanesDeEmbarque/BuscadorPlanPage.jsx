@@ -10,7 +10,7 @@ import {useSidebar} from "../../context/SidebarContext";
 const fmt = (dt) =>
   dt ? new Date(dt).toLocaleString("es-MX", {dateStyle: "short", timeStyle: "short"}) : "—";
 
-const emptyTransporteData = {lineaTransporte: "", operador: "", telefono: ""};
+const emptyTransporteData = {lineaTransporte: "", operador: "", telefono: "", tipoUnidad: ""};
 
 const BuscadorPlanPage = () => {
   const [query, setQuery]             = useState("");
@@ -32,6 +32,7 @@ const BuscadorPlanPage = () => {
     linea_transporte: true,
     operador: true,
     telefono: true,
+    tipo_unidad: true,
   });
 
   const {user} = useAuth();
@@ -49,6 +50,7 @@ const BuscadorPlanPage = () => {
           linea_transporte: role?.plan_linea_transporte ?? true,
           operador:         role?.plan_operador ?? true,
           telefono:         role?.plan_telefono ?? true,
+          tipo_unidad:      role?.plan_tipo_unidad ?? true,
         });
       })
       .catch(() => {});
@@ -118,6 +120,7 @@ const BuscadorPlanPage = () => {
           lineaTransporte: planPerms.linea_transporte ? transporteData.lineaTransporte.trim() : "",
           operador:        planPerms.operador         ? transporteData.operador.trim()         : "",
           telefono:        planPerms.telefono         ? transporteData.telefono.trim()         : "",
+          tipoUnidad:      planPerms.tipo_unidad      ? transporteData.tipoUnidad.trim()      : "",
         }),
       });
       if (!res.ok) {
@@ -335,6 +338,31 @@ const BuscadorPlanPage = () => {
               <span className="buscador-detail-value">{plan.transporte}</span>
             </div>
           </div>
+
+          {/* General bitácora info */}
+          {planPerms.tipo_unidad && (
+            <>
+              <p className="fw-semibold mb-2 mt-3" style={{fontSize: "0.9rem"}}>
+                Información general
+              </p>
+              <div className="mb-3">
+                <label className="form-label fw-semibold" style={{fontSize: "0.85rem"}}>
+                  Tipo de Unidad
+                </label>
+                <select
+                  className="form-select"
+                  name="tipoUnidad"
+                  value={transporteData.tipoUnidad}
+                  onChange={handleFieldChange}>
+                  <option value="">Selecciona un tipo</option>
+                  <option value="1.5">1.5</option>
+                  <option value="3.5">3.5</option>
+                  <option value="TH">TH</option>
+                  <option value="TR">TR</option>
+                </select>
+              </div>
+            </>
+          )}
 
           {/* Transporte data fields */}
           {(planPerms.linea_transporte || planPerms.operador || planPerms.telefono) && (

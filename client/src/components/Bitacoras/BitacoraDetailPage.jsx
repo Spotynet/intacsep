@@ -180,9 +180,12 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
 
   const handleFormSubmit = async (e) => {
     e.preventDefault();
+    const updatedCreatedAt = roleData?.bit_evento_fecha && formData.createdAt
+      ? new Date(formData.createdAt).toISOString()
+      : createdAt;
     const updatedEventos = bitacora.eventos.map((evt) =>
       evt._id === event._id
-        ? {...evt, descripcion: formData.descripcion, frecuencia: formData.frecuencia}
+        ? {...evt, descripcion: formData.descripcion, frecuencia: formData.frecuencia, createdAt: updatedCreatedAt}
         : evt
     );
     const oldEvent = bitacora.eventos.find((evt) => evt._id === event._id);
@@ -1833,6 +1836,12 @@ const BitacoraDetailPage = ({edited}) => {
                               {getLocationText(bitacora.destino, destinos)}
                             </span>
                           </div>
+                          {bitacora.tipoUnidad && (
+                            <div className="info-group mb-3">
+                              <label className="info-label">Tipo de Unidad:</label>
+                              <span className="info-value">{bitacora.tipoUnidad}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
 

@@ -403,8 +403,8 @@ const ReporteEventosPage = () => {
     const planEvento = bitEventos.find(
       (e) => ["PLAN DE EMBARQUE", "PRESENCIA EN ORIGEN"].includes(e.nombre?.toUpperCase())
     );
-    const citaCarga  = planEvento?.metadata?.citaCarga;
-    const horaSalida = planEvento?.metadata?.horaSalida;
+    const citaCarga  = bit.planDeEmbarque?.citaCarga  ?? planEvento?.metadata?.citaCarga;
+    const horaSalida = bit.planDeEmbarque?.horaSalida ?? planEvento?.metadata?.horaSalida;
 
     const validacionEvento = bitEventos.find(
       (e) => e.nombre?.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") === "validacion"
