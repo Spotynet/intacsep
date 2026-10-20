@@ -338,6 +338,7 @@ const BitacoraDetailPage = ({edited}) => {
   const [selectedTransporte, setSelectedTransporte] = useState(null);
   const [transportes, setTransportes] = useState(bitacora?.transportes || []);
   const [mapaWialonSearch, setMapaWialonSearch] = useState("");
+  const [mapCompliance, setMapCompliance] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [isEditTransporteModalVisible, setEditTransporteModalVisible] = useState(false);
   const [editedTransporte, setEditedTransporte] = useState(null);
@@ -2287,12 +2288,44 @@ const BitacoraDetailPage = ({edited}) => {
                                   value={mapaWialonSearch}
                                   onChange={(e) => setMapaWialonSearch(e.target.value)}
                                 />
+                                {mapCompliance && (
+                                  <div className="wialon-tab-mapa__summary" aria-live="polite">
+                                    <span className="wialon-tab-mapa__chip">
+                                      {mapCompliance.unitCount} GPS
+                                    </span>
+                                    <span className="wialon-tab-mapa__chip">
+                                      {mapCompliance.zoneCount} geocerca
+                                      {mapCompliance.zoneCount === 1 ? "" : "s"}
+                                    </span>
+                                    {mapCompliance.okCount > 0 && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--ok">
+                                        {mapCompliance.okCount} en ruta
+                                      </span>
+                                    )}
+                                    {mapCompliance.breachCount > 0 && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--breach">
+                                        {mapCompliance.breachCount} fuera
+                                      </span>
+                                    )}
+                                    {mapCompliance.emptyReason === "no_zones" && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--muted">
+                                        Sin geocercas vinculadas a alertas
+                                      </span>
+                                    )}
+                                    {mapCompliance.error && (
+                                      <span className="wialon-tab-mapa__chip wialon-tab-mapa__chip--breach">
+                                        No se pudo cargar cumplimiento
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               <WialonMap
                                 searchTerm={mapaWialonSearch}
                                 unitIds={bitacoraUnitIds}
                                 isActive={activeTab === "mapa_eventos"}
                                 className="wialon-map-wrapper--embedded"
+                                onComplianceChange={setMapCompliance}
                               />
                             </div>
                           )}

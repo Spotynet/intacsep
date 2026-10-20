@@ -46,6 +46,7 @@ import {
   applySelections as applyWialonSelections,
   invalidateCatalogCache,
   listNotifications as listWialonNotifications,
+  getGeofenceComplianceForUnits,
   unlinkBitacoraNotifications as unlinkWialonBitacoraNotifications,
   unlinkTransporteNotifications as unlinkWialonTransporteNotifications,
   CLOSED_STATUSES as WIALON_CLOSED_STATUSES,
@@ -4121,6 +4122,25 @@ app.get("/wialon/units", async (req, res) => {
   }
 });
 
+// GET /wialon/geofences/compliance?unitIds=1,2
+// Zones linked to geozone notifications for those GPS + live inside/outside status.
+app.get("/wialon/geofences/compliance", requireAppAuth, async (req, res) => {
+  try {
+    const unitIds = String(req.query.unitIds || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (unitIds.length === 0) {
+      return res.status(400).json({ error: "unitIds is required" });
+    }
+    const result = await withDeadline(getGeofenceComplianceForUnits({ unitIds }));
+    res.json(result);
+  } catch (err) {
+    console.error("Wialon geofence compliance error:", err.message);
+    res.status(upstreamStatus(err)).json({ error: err.message });
+  }
+});
+
 // GET /wialon/geofences - fetch geofence/zone data from all resources
 app.get("/wialon/geofences", async (req, res) => {
   try {
@@ -4143,7 +4163,8 @@ app.get("/wialon/geofences", async (req, res) => {
           sortType: "sys_name",
         },
         force: 1,
-        flags: 0x1000,
+        // 0x01 = base (id/name), 0x1000 = zones list (zl)
+        flags: 0x1000 | 0x01,
         from: 0,
         to: 1000,
       },
@@ -4152,30 +4173,54 @@ app.get("/wialon/geofences", async (req, res) => {
 
     const allZones = [];
     if (!searchData.error && searchData.items) {
-      for (const resItem of searchData.items) {
-        const zData = await wialonApiCall(
-          "resource/get_zone_data",
-          { itemId: resItem.id, col: [], flags: 0x1f },
-          sid
-        );
-
-        if (!zData.error && zData) {
-          const arr = Array.isArray(zData) ? zData : [zData];
-          for (const zoneData of arr) {
-            const zones = zoneData?.d ? [zoneData] : Object.values(zoneData || {});
-            for (const z of zones) {
-              if (!z?.p || !z.p.length) continue;
-              allZones.push({
-                name: z.n || "Zona",
-                type: z.t,
-                points: z.p,
-                color: z.c ? "#" + ((z.c >>> 0).toString(16).padStart(8, "0").slice(2)) : null,
-                width: z.w,
-              });
+      // Wialon no longer returns geometry for col:[]; pass zone ids from zl.
+      await Promise.all(
+        searchData.items.map(async (resItem) => {
+          const col = Object.keys(resItem.zl || {})
+            .map(Number)
+            .filter((n) => !Number.isNaN(n));
+          if (!col.length) return;
+          // Batch to keep payloads reasonable on large resources.
+          const chunkSize = 50;
+          for (let i = 0; i < col.length; i += chunkSize) {
+            const chunk = col.slice(i, i + chunkSize);
+            try {
+              const zData = await wialonApiCall(
+                "resource/get_zone_data",
+                { itemId: resItem.id, col: chunk, flags: 0x1f },
+                sid
+              );
+              if (zData?.error || !zData) continue;
+              // Wialon `d` is description — do not use it to detect zone objects.
+              const collectZone = (z) => {
+                if (!z || typeof z !== "object" || Array.isArray(z)) return;
+                if (!Array.isArray(z.p) || !z.p.length) return;
+                allZones.push({
+                  name: z.n || "Zona",
+                  type: Number(z.t),
+                  points: z.p,
+                  color: z.c
+                    ? "#" + ((z.c >>> 0).toString(16).padStart(8, "0").slice(2))
+                    : null,
+                  width: z.w,
+                });
+              };
+              if (Array.isArray(zData)) {
+                zData.forEach(collectZone);
+              } else if (Array.isArray(zData.p)) {
+                collectZone(zData);
+              } else {
+                Object.values(zData).forEach(collectZone);
+              }
+            } catch (err) {
+              console.warn(
+                `[wialon/geofences] get_zone_data failed for ${resItem.id}:`,
+                err.message
+              );
             }
           }
-        }
-      }
+        })
+      );
     }
 
     await wialonApiCall("core/logout", {}, sid);

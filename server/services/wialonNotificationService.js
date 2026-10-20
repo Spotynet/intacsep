@@ -1093,3 +1093,388 @@ export async function listNotifications({ unitIds = [], includeLastTrigger = fal
   }
   return withBits;
 }
+
+// ── Geofence compliance for bitácora map ─────────────────────
+const COMPLIANCE_TTL_MS = 25000;
+const COMPLIANCE_RESOURCES_TTL_MS = 30000;
+let complianceCache = null; // { key, at, payload }
+let complianceResourcesCache = null; // { at, resources }
+
+const zoneArgbToHex = (c) => {
+  if (c == null) return null;
+  return "#" + ((c >>> 0).toString(16).padStart(8, "0").slice(2));
+};
+
+const parseZonePayload = (zData, resourceId) => {
+  const out = [];
+  if (!zData || zData.error) return out;
+
+  // Wialon `d` is description text — never use it as a "is zone object" check.
+  // get_zone_data usually returns an array of zones; sometimes a single zone or id→zone map.
+  const collect = (z) => {
+    if (!z || typeof z !== "object" || Array.isArray(z)) return;
+    if (!Array.isArray(z.p) || !z.p.length) return;
+    out.push({
+      resourceId: Number(z.rid || resourceId),
+      zoneId: Number(z.id),
+      name: z.n || `Zona ${z.id}`,
+      type: Number(z.t),
+      points: z.p,
+      color: zoneArgbToHex(z.c),
+      width: z.w,
+    });
+  };
+
+  if (Array.isArray(zData)) {
+    zData.forEach(collect);
+  } else if (Array.isArray(zData.p)) {
+    collect(zData);
+  } else {
+    Object.values(zData).forEach(collect);
+  }
+  return out;
+};
+
+/** Parse `resourceId_zoneId[:ts],...` (modern) or legacy `p.geos` zone ids. */
+const extractNotifGeozones = (n, fallbackResourceId) => {
+  const out = [];
+  const seen = new Set();
+  const push = (resourceId, zoneId) => {
+    const rid = Number(resourceId);
+    const zid = Number(zoneId);
+    if (Number.isNaN(rid) || Number.isNaN(zid)) return;
+    const key = `${rid}_${zid}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ resourceId: rid, zoneId: zid });
+  };
+
+  const legacy = Array.isArray(n?.p?.geos) ? n.p.geos : [];
+  for (const zid of legacy) push(fallbackResourceId, zid);
+
+  const rawParts = [
+    n?.trg_p?.geozone_ids,
+    n?.trg_p?.geozone_id,
+    n?.conditions?.geozone_inside?.geozone_ids,
+    n?.conditions?.geozone_outside?.geozone_ids,
+    n?.trg?.p?.geozone_ids,
+    n?.trg?.p?.geozone_id,
+  ];
+  for (const raw of rawParts) {
+    if (raw == null || raw === "") continue;
+    for (const part of String(raw).split(",")) {
+      const idPart = part.split(":")[0].trim();
+      if (!idPart) continue;
+      const m = idPart.match(/^(\d+)_(\d+)$/);
+      if (m) push(m[1], m[2]);
+      else if (/^\d+$/.test(idPart)) push(fallbackResourceId, idPart);
+    }
+  }
+  return out;
+};
+
+/**
+ * expectInside=true → unit should stay inside (desvío / fuera de georuta).
+ * expectInside=false → unit should stay out (estadía no autorizada dentro).
+ */
+const resolveExpectInside = (n) => {
+  const expr = typeof n?.expression === "string" ? n.expression : "";
+  if (n?.conditions?.geozone_outside || /\bgeozone_outside\b/.test(expr)) return true;
+  if (n?.conditions?.geozone_inside || /\bgeozone_inside\b/.test(expr)) return false;
+  // Modern trg_p.type: 0 = inside alert, 1 = outside alert.
+  // Legacy p.type in list UI: 0 = "Fuera de", else "Dentro de".
+  if (n?.trg_p?.type != null) return Number(n.trg_p.type) !== 0;
+  if (n?.trg?.p?.type != null) return Number(n.trg.p.type) !== 0;
+  if (n?.p?.type != null) return Number(n.p.type) === 0;
+  return true;
+};
+
+const isGeozoneNotification = (n) => {
+  if (!n || n.error) return false;
+  if (n.trg === "geozone") return true;
+  if (n.trg?.t === "geozone") return true;
+  if (Array.isArray(n.p?.geos) && n.p.geos.length) return true;
+  if (n.trg_p?.geozone_ids || n.trg_p?.geozone_id) return true;
+  if (n.conditions?.geozone_inside || n.conditions?.geozone_outside) return true;
+  return false;
+};
+
+/**
+ * Zones linked to geozone notifications covering the given units, plus live
+ * inside/outside compliance via resource/get_zones_by_unit.
+ */
+export async function getGeofenceComplianceForUnits({ unitIds = [] } = {}) {
+  const wanted = [...new Set(unitIds.map(String).filter(Boolean))];
+  if (!wanted.length) return { zones: [], units: [] };
+
+  const cacheKey = wanted.slice().sort().join(",");
+  if (
+    complianceCache &&
+    complianceCache.key === cacheKey &&
+    Date.now() - complianceCache.at < COMPLIANCE_TTL_MS
+  ) {
+    return complianceCache.payload;
+  }
+
+  const payload = await withWialonSession(async (sid) => {
+    let resources;
+    if (
+      complianceResourcesCache &&
+      Date.now() - complianceResourcesCache.at < COMPLIANCE_RESOURCES_TTL_MS
+    ) {
+      resources = complianceResourcesCache.resources;
+    } else {
+      resources = await fetchListResources(sid);
+      complianceResourcesCache = { at: Date.now(), resources };
+    }
+
+    // zone name lookup from resource.zl
+    const zoneNames = new Map(); // `${resourceId}_${zoneId}` -> name
+    for (const resItem of resources) {
+      if (!resItem.zl || typeof resItem.zl !== "object") continue;
+      for (const [zid, z] of Object.entries(resItem.zl)) {
+        zoneNames.set(`${resItem.id}_${zid}`, z?.n || `Zona ${zid}`);
+      }
+    }
+
+    // Per unit: expected checks from geozone notifications that include the unit.
+    // checkKey = `${unitId}|${notifKey}|${resourceId}|${zoneId}|${expectInside ? 1 : 0}`
+    const checksByUnit = new Map(); // unitId -> Map(checkKey, check)
+    const zoneKeysNeeded = new Map(); // `${resourceId}_${zoneId}` -> { resourceId, zoneId, expectInside }
+
+    for (const resItem of resources) {
+      const unf = resItem.unf;
+      if (!unf || typeof unf !== "object") continue;
+      for (const [nid, n] of Object.entries(unf)) {
+        if (!isGeozoneNotification(n)) continue;
+        const geos = extractNotifGeozones(n, resItem.id);
+        if (!geos.length) continue;
+
+        const expectInside = resolveExpectInside(n);
+        const notifKey = `${resItem.id}_${nid}`;
+        const notifUnits = (n.un || []).map(String);
+        for (const uid of wanted) {
+          const uidNum = String(Number(uid));
+          const covers = notifUnits.some(
+            (u) => u === uid || u === uidNum || String(Number(u)) === uidNum
+          );
+          if (!covers) continue;
+
+          if (!checksByUnit.has(uid)) checksByUnit.set(uid, new Map());
+          for (const { resourceId, zoneId } of geos) {
+            const zKey = `${resourceId}_${zoneId}`;
+            const name = zoneNames.get(zKey) || `Zona ${zoneId}`;
+            const checkKey = `${uid}|${notifKey}|${zKey}|${expectInside ? 1 : 0}`;
+            checksByUnit.get(uid).set(checkKey, {
+              resourceId,
+              zoneId,
+              name,
+              expectInside,
+              notifKey,
+            });
+            if (!zoneKeysNeeded.has(zKey)) {
+              zoneKeysNeeded.set(zKey, { resourceId, zoneId, expectInside, name });
+            } else {
+              // Prefer expectInside=true if conflicting; still keep per-check below.
+              const prev = zoneKeysNeeded.get(zKey);
+              zoneKeysNeeded.set(zKey, {
+                ...prev,
+                expectInside: prev.expectInside || expectInside,
+                name: prev.name || name,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Geometry for needed zones only, grouped by resource.
+    const byResource = new Map();
+    for (const { resourceId, zoneId } of zoneKeysNeeded.values()) {
+      if (!byResource.has(resourceId)) byResource.set(resourceId, []);
+      byResource.get(resourceId).push(zoneId);
+    }
+
+    const geomByKey = new Map();
+    await Promise.all(
+      [...byResource.entries()].map(async ([resourceId, col]) => {
+        try {
+          const zData = await wialonApiCall(
+            "resource/get_zone_data",
+            { itemId: resourceId, col: [...new Set(col)], flags: 0x1f },
+            sid
+          );
+          for (const z of parseZonePayload(zData, resourceId)) {
+            geomByKey.set(`${z.resourceId}_${z.zoneId}`, z);
+          }
+        } catch (err) {
+          console.warn(
+            `[wialon-geofence-compliance] get_zone_data failed for ${resourceId}:`,
+            err.message
+          );
+        }
+      })
+    );
+
+    const zones = [];
+    for (const [zKey, meta] of zoneKeysNeeded.entries()) {
+      const geom = geomByKey.get(zKey);
+      if (!geom) continue;
+      zones.push({
+        ...geom,
+        name: meta.name || geom.name,
+        expectInside: meta.expectInside,
+      });
+    }
+
+    // Live presence
+    const zoneIdSpec = {};
+    for (const [resourceId, col] of byResource.entries()) {
+      zoneIdSpec[String(resourceId)] = [...new Set(col)];
+    }
+
+    const unitNums = wanted.map(Number).filter((n) => !Number.isNaN(n));
+    let presence = {};
+    let presenceOk = true;
+    if (Object.keys(zoneIdSpec).length && unitNums.length) {
+      try {
+        const res = await wialonApiCall(
+          "resource/get_zones_by_unit",
+          { spec: { zoneId: zoneIdSpec, units: unitNums, time: 0 } },
+          sid
+        );
+        if (res?.error) {
+          presenceOk = false;
+          console.warn(`[wialon-geofence-compliance] get_zones_by_unit error:`, res.error);
+        } else {
+          presence = res && typeof res === "object" ? res : {};
+        }
+      } catch (err) {
+        presenceOk = false;
+        console.warn(`[wialon-geofence-compliance] get_zones_by_unit failed:`, err.message);
+      }
+    }
+
+    // presence: { resourceId: { zoneId: [unitId, ...] } }
+    const insideSet = new Set(); // `${unitId}|${resourceId}|${zoneId}`
+    for (const [rid, zonesMap] of Object.entries(presence || {})) {
+      if (!zonesMap || typeof zonesMap !== "object") continue;
+      for (const [zid, unitList] of Object.entries(zonesMap)) {
+        for (const u of unitList || []) {
+          const variants = new Set([String(u), String(Number(u))]);
+          for (const uv of variants) {
+            insideSet.add(`${uv}|${rid}|${zid}`);
+            insideSet.add(`${uv}|${Number(rid)}|${Number(zid)}`);
+          }
+        }
+      }
+    }
+
+    const isInside = (unitId, resourceId, zoneId) => {
+      const keys = [
+        `${unitId}|${resourceId}|${zoneId}`,
+        `${unitId}|${Number(resourceId)}|${Number(zoneId)}`,
+        `${String(Number(unitId))}|${resourceId}|${zoneId}`,
+        `${String(Number(unitId))}|${Number(resourceId)}|${Number(zoneId)}`,
+      ];
+      return keys.some((k) => insideSet.has(k));
+    };
+
+    const unitsOut = wanted.map((unitId) => {
+      const checkMap = checksByUnit.get(unitId) || checksByUnit.get(String(Number(unitId)));
+      const rawChecks = checkMap ? [...checkMap.values()] : [];
+
+      if (!rawChecks.length) {
+        return {
+          unitId,
+          status: "none",
+          inside: [],
+          checks: [],
+        };
+      }
+
+      if (!presenceOk) {
+        return {
+          unitId,
+          status: "unknown",
+          inside: [],
+          checks: rawChecks.map((c) => ({
+            resourceId: c.resourceId,
+            zoneId: c.zoneId,
+            name: c.name,
+            expectInside: c.expectInside,
+            isInside: null,
+            status: "unknown",
+          })),
+        };
+      }
+
+      const checks = rawChecks.map((c) => {
+        const inside = isInside(unitId, c.resourceId, c.zoneId);
+        return {
+          resourceId: c.resourceId,
+          zoneId: c.zoneId,
+          name: c.name,
+          expectInside: c.expectInside,
+          isInside: inside,
+          notifKey: c.notifKey,
+          status: "unknown",
+        };
+      });
+
+      // Per notification: stay-inside (desvío) is OK if inside ANY linked zone;
+      // stay-out (estadía dentro) breaches if inside ANY zone.
+      const byNotif = new Map();
+      for (const c of checks) {
+        const k = c.notifKey || `${c.resourceId}_${c.zoneId}`;
+        if (!byNotif.has(k)) byNotif.set(k, []);
+        byNotif.get(k).push(c);
+      }
+      for (const group of byNotif.values()) {
+        const expectInside = group.every((c) => c.expectInside);
+        const expectOutside = group.every((c) => !c.expectInside);
+        let groupOk;
+        if (expectInside) groupOk = group.some((c) => c.isInside);
+        else if (expectOutside) groupOk = group.every((c) => !c.isInside);
+        else {
+          groupOk = group.every((c) => (c.expectInside ? c.isInside : !c.isInside));
+        }
+        for (const c of group) {
+          if (expectInside) {
+            c.status = groupOk ? "ok" : "breach";
+          } else {
+            c.status = c.isInside ? "breach" : "ok";
+          }
+        }
+        if (!expectInside && !expectOutside) {
+          for (const c of group) {
+            c.status = (c.expectInside ? c.isInside : !c.isInside) ? "ok" : "breach";
+          }
+        }
+      }
+
+      const inside = [];
+      const seenIn = new Set();
+      for (const c of checks) {
+        if (!c.isInside) continue;
+        const k = `${c.resourceId}_${c.zoneId}`;
+        if (seenIn.has(k)) continue;
+        seenIn.add(k);
+        inside.push({ resourceId: c.resourceId, zoneId: c.zoneId, name: c.name });
+      }
+
+      const status = checks.some((c) => c.status === "breach") ? "breach" : "ok";
+      return {
+        unitId,
+        status,
+        inside,
+        checks: checks.map(({ notifKey, ...rest }) => rest),
+      };
+    });
+
+    return { zones, units: unitsOut };
+  });
+
+  complianceCache = { key: cacheKey, at: Date.now(), payload };
+  return payload;
+}

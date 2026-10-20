@@ -27,7 +27,52 @@ const fmtTimeShort = (ts) => {
 
 const NA = -348201.3876;
 
-const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = true}) => {
+/** Build a simple lat/lng corridor polygon around a Wialon line geofence (width in meters). */
+const lineCorridorLatLngs = (points, widthMeters) => {
+  const pts = (points || []).filter(
+    (p) => p && Number.isFinite(p.y) && Number.isFinite(p.x)
+  );
+  if (pts.length < 2 || !(widthMeters > 0)) return null;
+
+  const half = widthMeters / 2;
+  const left = [];
+  const right = [];
+
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(pts.length - 1, i + 1)];
+    const cur = pts[i];
+    const dx = (next.x - prev.x) * Math.cos((cur.y * Math.PI) / 180);
+    const dy = next.y - prev.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const latRad = (cur.y * Math.PI) / 180;
+    const mPerDegLat = 111320;
+    const mPerDegLon = Math.max(111320 * Math.cos(latRad), 1e-6);
+    const ox = ((-dy / len) * half) / mPerDegLon;
+    const oy = ((dx / len) * half) / mPerDegLat;
+    left.push(L.latLng(cur.y + oy, cur.x + ox));
+    right.push(L.latLng(cur.y - oy, cur.x - ox));
+  }
+
+  return [...left, ...right.reverse()];
+};
+
+const COMPLIANCE_POLL_MS = 45000;
+
+const complianceLabel = (status) => {
+  if (status === "ok") return "Cumple";
+  if (status === "breach") return "Fuera";
+  if (status === "unknown") return "Sin dato";
+  return "Sin geocerca";
+};
+
+const WialonMap = ({
+  searchTerm = "",
+  unitIds = null,
+  className = "",
+  isActive = true,
+  onComplianceChange,
+}) => {
   const {session: wialonSession, loading: unitsLoading} = useWialon();
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
@@ -35,6 +80,10 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
   const markersRef = useRef({});
   const tracesRef = useRef({});
   const geofenceLayerRef = useRef(null);
+  const complianceFittedRef = useRef(false);
+  const complianceByUnitRef = useRef({});
+  const complianceRefreshTimer = useRef(null);
+  const loadGeofencesRef = useRef(null);
 
   const throttleTimers = useRef({});
   const moveendTimer = useRef(null);
@@ -52,8 +101,12 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
   const [detailUnit, setDetailUnit] = useState(null);
   const [trackUnit, setTrackUnit] = useState(null);
   const [geofenceCount, setGeofenceCount] = useState(0);
+  const [complianceByUnit, setComplianceByUnit] = useState({});
   const searchRef = useRef(searchTerm);
   searchRef.current = searchTerm;
+  complianceByUnitRef.current = complianceByUnit;
+
+  const scopedMode = Array.isArray(unitIds) && unitIds.length > 0;
 
   // Stable Set<string> of scoped unit IDs; null → no scope (all units).
   // Using JSON key to avoid churning identity on every render.
@@ -137,6 +190,30 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
         `${Math.round(heading)}°`;
 
       const address = pos ? getAddress(pos.y, pos.x) : null;
+      const unitId = String(unit.getId?.() ?? "");
+      const comp =
+        complianceByUnitRef.current[unitId] ||
+        complianceByUnitRef.current[String(Number(unitId))];
+      let complianceHtml = "";
+      if (comp?.checks?.length) {
+        const rows = comp.checks
+          .map((c) => {
+            const expect = c.expectInside ? "Dentro de" : "Fuera de";
+            const st =
+              c.status === "ok"
+                ? "OK"
+                : c.status === "breach"
+                  ? "Incumple"
+                  : "Sin dato";
+            const color =
+              c.status === "ok" ? "#047857" : c.status === "breach" ? "#b91c1c" : "#b45309";
+            return `<div class="wialon-popup__check" style="color:${color}">${expect} ${c.name} · ${st}</div>`;
+          })
+          .join("");
+        complianceHtml = `<div class="wialon-popup__compliance"><div class="wialon-popup__label">Geocercas</div>${rows}</div>`;
+      } else if (comp?.status === "none") {
+        complianceHtml = `<div class="wialon-popup__compliance"><div class="wialon-popup__label">Geocercas</div><div class="wialon-popup__check" style="color:#6b7280">Sin geocercas vinculadas a alertas</div></div>`;
+      }
 
       return `
         <div class="wialon-popup">
@@ -151,6 +228,7 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
             </div>
           </div>
           ${address ? `<div class="wialon-popup__address"><i class="fa fa-map-marker-alt"></i> ${address}</div>` : ""}
+          ${complianceHtml}
           <div class="wialon-popup__grid">
             <div class="wialon-popup__label">Última vez</div>
             <div class="wialon-popup__value">${fmtTime(pos?.t)}</div>
@@ -454,64 +532,205 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
     [syncSidebar, scopeItems]
   );
 
-  // ── Load geofences ─────────────────────────────────────────
-  const loadGeofences = useCallback(async () => {
-    try {
-      const token = localStorage.getItem("wialonToken");
-      const baseUrl = import.meta.env.VITE_BASE_URL;
-      if (!token || !baseUrl) return;
+  const zoneStyleForCompliance = useCallback((z, unitsComp) => {
+    const zKey = `${z.resourceId}_${z.zoneId}`;
+    let hasBreach = false;
+    let hasOk = false;
+    for (const u of Object.values(unitsComp || {})) {
+      for (const c of u.checks || []) {
+        if (`${c.resourceId}_${c.zoneId}` !== zKey) continue;
+        if (c.status === "breach") hasBreach = true;
+        if (c.status === "ok") hasOk = true;
+      }
+    }
+    if (hasBreach) return {color: "#dc2626", fill: "#dc2626", fillOpacity: 0.16};
+    if (hasOk) return {color: "#059669", fill: "#059669", fillOpacity: 0.12};
+    const colorHex = z.color || "#6366f1";
+    return {color: colorHex, fill: colorHex, fillOpacity: 0.12};
+  }, []);
 
-      const res = await fetch(`${baseUrl}/wialon/geofences`, {
-        headers: {"x-wialon-token": token},
-      });
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.zones?.length) return;
+  const drawZones = useCallback(
+    (zones, unitsComp, {fit = false} = {}) => {
+      const map = mapInstance.current;
+      if (!map) return;
 
-      const gLayer = L.layerGroup().addTo(mapInstance.current);
+      if (geofenceLayerRef.current) {
+        map.removeLayer(geofenceLayerRef.current);
+        geofenceLayerRef.current = null;
+      }
+
+      const gLayer = L.layerGroup().addTo(map);
       geofenceLayerRef.current = gLayer;
+      const bounds = [];
       let count = 0;
 
-      data.zones.forEach((z) => {
-        const colorHex = z.color || "#6366f1";
+      (zones || []).forEach((z) => {
+        if (!z?.points?.length) return;
+        const style = zoneStyleForCompliance(z, unitsComp);
+        const zoneType = Number(z.type);
         let layer;
+        const tip =
+          `${z.name || "Zona"}` +
+          (z.expectInside == null
+            ? ""
+            : z.expectInside
+              ? " · Esperado: dentro"
+              : " · Esperado: fuera");
 
-        if (z.type === 3 && z.points.length === 1) {
+        if (zoneType === 3 && z.points.length === 1) {
           const center = L.latLng(z.points[0].y, z.points[0].x);
           layer = L.circle(center, {
             radius: z.width || 100,
-            color: colorHex,
-            fillColor: colorHex,
-            fillOpacity: 0.12,
+            color: style.color,
+            fillColor: style.fill,
+            fillOpacity: style.fillOpacity,
             weight: 2,
           });
-        } else if (z.type === 1) {
-          const pts = z.points.map((p) => L.latLng(p.y, p.x));
+          bounds.push(center);
+        } else if (zoneType === 1) {
+          // Line geofence: Wialon `width` is corridor meters, not Leaflet px weight.
+          const pts = z.points
+            .filter((p) => p && Number.isFinite(p.y) && Number.isFinite(p.x))
+            .map((p) => L.latLng(p.y, p.x));
+          if (pts.length < 2) return;
+
+          const corridorM = Number(z.width) > 0 ? Number(z.width) : 50;
+          const corridorPts = lineCorridorLatLngs(z.points, corridorM);
+          if (corridorPts?.length >= 3) {
+            const corridor = L.polygon(corridorPts, {
+              color: style.color,
+              fillColor: style.fill,
+              fillOpacity: Math.max(style.fillOpacity, 0.14),
+              weight: 1,
+              opacity: 0.7,
+            });
+            corridor.bindTooltip(tip, {sticky: true, className: "wialon-geofence-tooltip"});
+            corridor.addTo(gLayer);
+          }
+
           layer = L.polyline(pts, {
-            color: colorHex,
-            weight: z.width || 3,
-            opacity: 0.8,
+            color: style.color,
+            weight: 4,
+            opacity: 0.95,
           });
+          bounds.push(...pts);
         } else {
           const pts = z.points.map((p) => L.latLng(p.y, p.x));
           layer = L.polygon(pts, {
-            color: colorHex,
-            fillColor: colorHex,
-            fillOpacity: 0.12,
+            color: style.color,
+            fillColor: style.fill,
+            fillOpacity: style.fillOpacity,
             weight: 2,
           });
+          bounds.push(...pts);
         }
 
         if (layer) {
-          layer.bindTooltip(z.name || "Zona", {sticky: true, className: "wialon-geofence-tooltip"});
+          layer.bindTooltip(tip, {
+            sticky: true,
+            className: "wialon-geofence-tooltip",
+          });
           layer.addTo(gLayer);
           count++;
         }
       });
 
       setGeofenceCount(count);
-    } catch {}
-  }, []);
+
+      if (fit && !complianceFittedRef.current) {
+        for (const m of Object.values(markersRef.current || {})) {
+          try {
+            const ll = m.getLatLng?.();
+            if (ll) bounds.push(ll);
+          } catch {}
+        }
+        if (bounds.length) {
+          try {
+            map.fitBounds(L.latLngBounds(bounds), {padding: [40, 40], maxZoom: 14});
+            complianceFittedRef.current = true;
+          } catch {}
+        }
+      }
+    },
+    [zoneStyleForCompliance]
+  );
+
+  const emitComplianceSummary = useCallback(
+    (unitsArr, zonesArr, extra = {}) => {
+      if (!onComplianceChange) return;
+      const list = unitsArr || [];
+      onComplianceChange({
+        unitCount: list.length,
+        zoneCount: (zonesArr || []).length,
+        okCount: list.filter((u) => u.status === "ok").length,
+        breachCount: list.filter((u) => u.status === "breach").length,
+        noneCount: list.filter((u) => u.status === "none").length,
+        unknownCount: list.filter((u) => u.status === "unknown").length,
+        emptyReason:
+          list.length > 0 && !(zonesArr || []).length ? "no_zones" : null,
+        ...extra,
+      });
+    },
+    [onComplianceChange]
+  );
+
+  // ── Load geofences (global) or compliance zones (bitácora scope) ──
+  // Coalesce concurrent callers (init + scope effect + poll) into one fetch.
+  const loadGeofencesInflight = useRef(null);
+  const loadGeofences = useCallback(async () => {
+    if (loadGeofencesInflight.current) return loadGeofencesInflight.current;
+
+    const run = (async () => {
+      try {
+        const baseUrl = import.meta.env.VITE_BASE_URL;
+        if (!baseUrl || !mapInstance.current) return;
+
+        if (scopedMode) {
+          const ids = unitIds.map(String).filter(Boolean).join(",");
+          const res = await fetch(
+            `${baseUrl}/wialon/geofences/compliance?unitIds=${encodeURIComponent(ids)}`,
+            {credentials: "include"}
+          );
+          if (!res.ok) {
+            emitComplianceSummary([], [], {error: true});
+            return;
+          }
+          const data = await res.json();
+          const byUnit = {};
+          for (const u of data.units || []) {
+            byUnit[String(u.unitId)] = u;
+            const n = Number(u.unitId);
+            if (!Number.isNaN(n)) byUnit[String(n)] = u;
+          }
+          setComplianceByUnit(byUnit);
+          complianceByUnitRef.current = byUnit;
+          drawZones(data.zones || [], byUnit, {fit: true});
+          emitComplianceSummary(data.units || [], data.zones || []);
+          return;
+        }
+
+        const token = localStorage.getItem("wialonToken");
+        if (!token) return;
+        const res = await fetch(`${baseUrl}/wialon/geofences`, {
+          headers: {"x-wialon-token": token},
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        setComplianceByUnit({});
+        complianceByUnitRef.current = {};
+        drawZones(data.zones || [], {}, {fit: false});
+      } catch {
+        if (scopedMode) emitComplianceSummary([], [], {error: true});
+      } finally {
+        loadGeofencesInflight.current = null;
+      }
+    })();
+
+    loadGeofencesInflight.current = run;
+    return run;
+  }, [scopedMode, unitIds, drawZones, emitComplianceSummary]);
+
+  loadGeofencesRef.current = loadGeofences;
 
   // ── One-time session listeners (map init) ─────────────────
   const setupSessionListeners = useCallback((sess) => {
@@ -522,6 +741,19 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
         updateSingleMarker(unit);
         if (detailUnit?.getId?.() === evt.i) {
           setDetailUnit(sess.getItem(evt.i));
+        }
+      }
+      // Bitácora: throttled compliance refresh when a scoped unit moves.
+      const set = unitIdSetRef.current;
+      if (set) {
+        const id = String(evt.i);
+        if (set.has(id) || set.has(String(Number(id)))) {
+          if (!complianceRefreshTimer.current) {
+            complianceRefreshTimer.current = setTimeout(() => {
+              complianceRefreshTimer.current = null;
+              loadGeofencesRef.current?.();
+            }, 12000);
+          }
         }
       }
     };
@@ -651,6 +883,10 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
     return () => {
       mountIdRef.current++;
       if (moveendTimer.current) clearTimeout(moveendTimer.current);
+      if (complianceRefreshTimer.current) {
+        clearTimeout(complianceRefreshTimer.current);
+        complianceRefreshTimer.current = null;
+      }
       throttleTimers.current = {};
       selectedUnitId.current = null;
       if (mapInstance.current) {
@@ -680,14 +916,26 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
 
   // Re-scope on unitIds change: reset the "fitted" flag so the map re-fits
   // to the new scope, then rebuild markers (adds new, removes out-of-scope).
+  // Compliance fetch is owned by the poll effect below (avoids double-hit on mount).
   useEffect(() => {
     const sess = sessionRef.current;
     const map = mapInstance.current;
     if (!sess || !map) return;
     map._wialonFitted = false;
+    complianceFittedRef.current = false;
     refreshAllMarkers(sess);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unitIdsKey]);
+
+  // Bitácora mode: poll geofence compliance while the map tab is active.
+  useEffect(() => {
+    if (!scopedMode || !isActive) return undefined;
+    loadGeofences();
+    const timer = setInterval(() => {
+      loadGeofences();
+    }, COMPLIANCE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [scopedMode, isActive, unitIdsKey, loadGeofences]);
 
   // Keep-alive tab: Leaflet needs invalidateSize after the pane becomes visible again
   // (and after sidebar width transition ~300ms).
@@ -766,7 +1014,7 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
             Unidades <span className="wialon-map-sidebar__count">{unitCount}</span>
           </span>
           {geofenceCount > 0 && (
-            <span className="wialon-map-sidebar__badge" title="Zonas geográficas">
+            <span className="wialon-map-sidebar__badge" title="Geocercas">
               <i className="fa fa-draw-polygon"></i> {geofenceCount}
             </span>
           )}
@@ -775,7 +1023,12 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
           {units.length === 0 ? (
             <div className="wialon-map-sidebar__empty">Sin unidades</div>
           ) : (
-            units.map((u) => (
+            units.map((u) => {
+              const comp =
+                complianceByUnit[String(u.id)] ||
+                complianceByUnit[String(Number(u.id))];
+              const cStatus = comp?.status;
+              return (
               <div
                 key={u.id}
                 className={`wialon-map-sidebar__item${selectedUnit?.id === u.id ? " wialon-map-sidebar__item--active" : ""}`}
@@ -790,8 +1043,17 @@ const WialonMap = ({searchTerm = "", unitIds = null, className = "", isActive = 
                     {u.speed > 0 ? `${u.speed} km/h` : "Detenido"}
                   </span>
                 </div>
+                {scopedMode && cStatus && (
+                  <span
+                    className={`wialon-map-sidebar__compliance wialon-map-sidebar__compliance--${cStatus}`}
+                    title="Estado vs geocercas de alertas"
+                  >
+                    {complianceLabel(cStatus)}
+                  </span>
+                )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

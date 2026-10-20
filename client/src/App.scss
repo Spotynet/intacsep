@@ -12399,6 +12399,7 @@ td:has(.action-buttons) {
   &__toolbar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     justify-content: stretch;
     gap: 8px;
     flex-shrink: 0;
@@ -12406,8 +12407,45 @@ td:has(.action-buttons) {
 
     .wialon-map-search {
       width: 100%;
-      flex: 1 1 auto;
+      flex: 1 1 180px;
       min-width: 0;
+    }
+  }
+
+  &__summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  &__chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: #f3f4f6;
+    color: #374151;
+    font-size: 0.68rem;
+    font-weight: 650;
+    white-space: nowrap;
+
+    &--ok {
+      background: #ecfdf5;
+      color: #047857;
+    }
+
+    &--breach {
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+
+    &--muted {
+      background: #f9fafb;
+      color: #6b7280;
     }
   }
 
@@ -12671,6 +12709,9 @@ td:has(.action-buttons) {
   z-index: 2;
 
   &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 16px;
     border-bottom: 1px solid #f3f4f6;
   }
@@ -12710,6 +12751,37 @@ td:has(.action-buttons) {
 
     i {
       font-size: 0.62rem;
+    }
+  }
+
+  &__compliance {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-size: 0.62rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 999px;
+    white-space: nowrap;
+    line-height: 1.3;
+
+    &--ok {
+      background: #ecfdf5;
+      color: #047857;
+    }
+
+    &--breach {
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+
+    &--none {
+      background: #f3f4f6;
+      color: #6b7280;
+    }
+
+    &--unknown {
+      background: #fffbeb;
+      color: #b45309;
     }
   }
 
@@ -12889,6 +12961,24 @@ td:has(.action-buttons) {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  &__compliance {
+    padding: 8px 14px;
+    border-bottom: 1px solid #f3f4f6;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    .wialon-popup__label {
+      margin-bottom: 2px;
+    }
+  }
+
+  &__check {
+    font-size: 0.68rem;
+    font-weight: 600;
+    line-height: 1.35;
   }
 
   &__time {
