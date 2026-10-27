@@ -2,6 +2,7 @@ import React, {useEffect, useState} from "react";
 import axios from "axios";
 import jsPDF from "jspdf";
 import "jspdf-autotable";
+import {isWialonAlertamientoEvent, SEMAFORO_ALERT_BLUE} from "../../../utils/eventSemaforo";
 
 const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
   const [eventTypes, setEventTypes] = useState([]);
@@ -30,6 +31,8 @@ const EventsPopup = ({bitacora, onClose, origenes, destinos}) => {
 
   const getSemaforoColor = (evento) => {
     if (evento.nombre === "Cierre de servicio") return "black";
+    // Alertamientos Wialon (estadía / desvío / GPS no posiciona): azul fijo
+    if (isWialonAlertamientoEvent(evento.nombre)) return SEMAFORO_ALERT_BLUE;
     if (evento.isFrecuenciaMet === true) return "#51FF4E";
     if (evento.isFrecuenciaMet === false) return "#F82929";
 

@@ -25,6 +25,7 @@ import TextArea from "../TextArea";
 import Toast from "../Toast";
 import {useToast} from "../../hooks/useToast";
 import {TRIGGER_LABELS, TRIGGER_COLORS, TRIGGER_ICONS} from "../../utils/wialonNotifications";
+import {isWialonAlertamientoEvent, SEMAFORO_ALERT_BLUE} from "../../utils/eventSemaforo";
 
 const getTransporteLabel = (transporte) => {
   const id = transporte.id || "";
@@ -149,6 +150,8 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
 
   useEffect(() => {
     const computeEventColor = () => {
+      // Alertamientos Wialon (estadía / desvío / GPS no posiciona): azul fijo
+      if (isWialonAlertamientoEvent(nombre)) return SEMAFORO_ALERT_BLUE;
       if (!frecuencia) return "#333235";
       if (!isLastEvent) {
         if (event.isFrecuenciaMet == null) return "#9ca3b0";
@@ -163,7 +166,7 @@ const EventCard = ({event, events, bitacora, setBitacora, setEventos, handleEdit
     setEventColor(computeEventColor());
     const interval = setInterval(() => setEventColor(computeEventColor()), 60000);
     return () => clearInterval(interval);
-  }, [createdAt, frecuencia, isLastEvent]);
+  }, [createdAt, frecuencia, isLastEvent, nombre, event.isFrecuenciaMet]);
 
   const handleEditClick = () => setShowModal(true);
   const handleClose = () => setShowModal(false);

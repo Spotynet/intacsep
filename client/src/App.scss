@@ -9766,6 +9766,18 @@ td:has(.action-buttons) {
     &:hover { color: #d97706; transform: scale(1.15); }
     &:focus-visible { outline: 2px solid #f59e0b; outline-offset: 2px; border-radius: 2px; }
   }
+
+  .bitacora-wialon-linked-notifs {
+    color: #3b82f6;
+    font-size: 0.9rem;
+    cursor: pointer;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: transform 0.15s ease, color 0.15s ease;
+
+    &:hover { color: #2563eb; transform: scale(1.15); }
+    &:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; border-radius: 2px; }
+  }
 }
 
 // ── Patio tab bar ────────────────────────────────────────────
@@ -11826,12 +11838,20 @@ td:has(.action-buttons) {
 
   &:hover { background: #f9fafb; }
 
+  &--highlighted {
+    background: #eef2ff;
+  }
+
   &--selected {
     color: #4f46e5;
     font-weight: 500;
     background: #f5f3ff;
 
     &:hover { background: #ede9fe; }
+  }
+
+  &--selected.pselect__option--highlighted {
+    background: #e0e7ff;
   }
 
   &--empty {

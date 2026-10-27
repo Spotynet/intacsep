@@ -25,6 +25,7 @@ import {
   fetchOpenBitacorasWithWialonAlerts,
 } from "../../utils/api";
 import {generateAuditoriaForCreation} from "../../utils/auditoria";
+import {isWialonAlertamientoEvent, SEMAFORO_ALERT_BLUE} from "../../utils/eventSemaforo";
 import CellBadge from "../CellBadge";
 
 const defaultFormData = {
@@ -740,6 +741,9 @@ const BitacorasPage = () => {
       // Si es "Cierre de servicio", devolver negro
       if (evt.nombre === "Cierre de servicio") return "black";
 
+      // Alertamientos Wialon (estadía / desvío / GPS no posiciona): azul fijo
+      if (isWialonAlertamientoEvent(evt.nombre)) return SEMAFORO_ALERT_BLUE;
+
       // Si tiene la bandera de frecuencia cumplida
       if (idx > 0 && evt.isFrecuenciaMet != null) {
         return evt.isFrecuenciaMet ? "#51FF4E" : "#F82929";
@@ -808,6 +812,19 @@ const BitacorasPage = () => {
     setSelectedFrecuenciaBitacora(null);
   };
 
+  /** Unique names of Wialon notifications linked on transportes of this bitácora. */
+  const getLinkedNotificacionNames = (bitacora) => {
+    const names = new Set();
+    for (const t of bitacora?.transportes || []) {
+      for (const n of t.notificaciones || []) {
+        if (!n || n.notifId == null) continue;
+        const label = String(n.name || "").trim() || `Notificación ${n.notifId}`;
+        names.add(label);
+      }
+    }
+    return Array.from(names);
+  };
+
   const getLatestFrecuenciaColor = (bitacora) => {
     const eventos = bitacora.eventos || [];
 
@@ -823,6 +840,8 @@ const BitacorasPage = () => {
     if (!evt) return "#333235";
 
     if (evt.nombre === "Cierre de servicio") return "#000000";
+    // Alertamientos Wialon (estadía / desvío / GPS no posiciona): azul fijo
+    if (isWialonAlertamientoEvent(evt.nombre)) return SEMAFORO_ALERT_BLUE;
     if (evt.isFrecuenciaMet != null) return evt.isFrecuenciaMet ? "#51FF4E" : "#F82929";
 
     const freq = evt.frecuencia;
@@ -1059,6 +1078,8 @@ const BitacorasPage = () => {
                     render: (row) => {
                       const alertNames = wialonAlertsById[row._id];
                       const hasAlert = Array.isArray(alertNames) && alertNames.length > 0;
+                      const linkedNotifNames = getLinkedNotificacionNames(row);
+                      const hasLinkedNotifs = linkedNotifNames.length > 0;
                       return (
                         <div className="bitacora-id-with-alert">
                           <Tooltip text="Ver Detalles" position="top">
@@ -1088,6 +1109,30 @@ const BitacorasPage = () => {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     window.location.href = "/eventos-wialon";
+                                  }
+                                }}
+                              />
+                            </Tooltip>
+                          )}
+                          {hasLinkedNotifs && (
+                            <Tooltip
+                              text={`Notificaciones vinculadas: ${linkedNotifNames.join(", ")}`}
+                              position="top"
+                            >
+                              <i
+                                className="fa fa-link bitacora-wialon-linked-notifs"
+                                role="button"
+                                tabIndex={0}
+                                aria-label={`Notificaciones vinculadas: ${linkedNotifNames.join(", ")}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  window.location.href = `/bitacora/${row._id}`;
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    window.location.href = `/bitacora/${row._id}`;
                                   }
                                 }}
                               />

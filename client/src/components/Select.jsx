@@ -55,11 +55,19 @@ export const Select = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [highlightIndex, setHighlightIndex] = useState(-1);
   const [menuStyle, setMenuStyle] = useState({});
   const wrapRef = useRef(null);
   const searchRef = useRef(null);
+  const optionRefs = useRef([]);
 
-  useClickOutside(wrapRef, () => { setOpen(false); setQuery(""); });
+  const closeMenu = useCallback(() => {
+    setOpen(false);
+    setQuery("");
+    setHighlightIndex(-1);
+  }, []);
+
+  useClickOutside(wrapRef, closeMenu);
 
   const normalizedOptions = options.map((o) =>
     typeof o === "string" ? { value: o, label: o } : o
@@ -106,8 +114,7 @@ export const Select = ({
 
   const handleSelect = (opt) => {
     onChange(opt.value);
-    setOpen(false);
-    setQuery("");
+    closeMenu();
   };
 
   const handleClear = (e) => {
@@ -116,15 +123,103 @@ export const Select = ({
     setQuery("");
   };
 
+  const openMenu = useCallback(() => {
+    if (disabled) return;
+    positionMenu();
+    setOpen(true);
+    setTimeout(() => searchRef.current?.focus(), 10);
+  }, [disabled, positionMenu]);
+
   const handleToggle = () => {
     if (disabled) return;
-    setOpen((prev) => {
-      if (!prev) {
-        positionMenu();
-        setTimeout(() => searchRef.current?.focus(), 10);
+    if (open) closeMenu();
+    else openMenu();
+  };
+
+  // Seed keyboard highlight when menu opens or the search filter changes
+  useEffect(() => {
+    if (!open) {
+      setHighlightIndex(-1);
+      return;
+    }
+    if (filtered.length === 0) {
+      setHighlightIndex(-1);
+      return;
+    }
+    const selectedIdx = filtered.findIndex((o) => o.value === value);
+    setHighlightIndex(selectedIdx >= 0 ? selectedIdx : 0);
+    // Intentionally omit `value` mid-navigation; re-seed on open/query/options size
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, query, filtered.length]);
+
+  useEffect(() => {
+    if (!open || highlightIndex < 0) return;
+    optionRefs.current[highlightIndex]?.scrollIntoView({block: "nearest"});
+  }, [highlightIndex, open]);
+
+  const handleListKeyDown = (e) => {
+    if (!open || disabled) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (filtered.length === 0) return;
+      setHighlightIndex((prev) =>
+        prev < 0 ? 0 : Math.min(prev + 1, filtered.length - 1)
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (filtered.length === 0) return;
+      setHighlightIndex((prev) => (prev <= 0 ? 0 : prev - 1));
+      return;
+    }
+
+    if (e.key === "Home") {
+      e.preventDefault();
+      if (filtered.length) setHighlightIndex(0);
+      return;
+    }
+
+    if (e.key === "End") {
+      e.preventDefault();
+      if (filtered.length) setHighlightIndex(filtered.length - 1);
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (highlightIndex >= 0 && filtered[highlightIndex]) {
+        handleSelect(filtered[highlightIndex]);
       }
-      return !prev;
-    });
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeMenu();
+    }
+  };
+
+  const handleControlKeyDown = (e) => {
+    if (disabled) return;
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (!open) openMenu();
+      else if (e.key === "ArrowDown") handleListKeyDown(e);
+      else if (e.key === "Enter" && highlightIndex >= 0 && filtered[highlightIndex]) {
+        handleSelect(filtered[highlightIndex]);
+      }
+    } else if (e.key === "Escape" && open) {
+      e.preventDefault();
+      closeMenu();
+    } else if (open && (e.key === "ArrowUp" || e.key === "Home" || e.key === "End")) {
+      handleListKeyDown(e);
+    }
   };
 
   useEffect(() => {
@@ -139,7 +234,12 @@ export const Select = ({
   }, [open, positionMenu]);
 
   const menu = open && createPortal(
-    <div className={`pselect__menu${direction === "up" ? " pselect__menu--up" : ""}`} style={menuStyle} onMouseDown={(e) => e.stopPropagation()}>
+    <div
+      className={`pselect__menu${direction === "up" ? " pselect__menu--up" : ""}`}
+      style={menuStyle}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={handleListKeyDown}
+    >
       {searchable && (
         <div className="pselect__search">
           <i className="fa fa-magnifying-glass"></i>
@@ -153,10 +253,11 @@ export const Select = ({
               setQuery(e.target.value);
               onSearch?.(e.target.value);
             }}
+            onKeyDown={handleListKeyDown}
           />
         </div>
       )}
-      <ul className="pselect__options">
+      <ul className="pselect__options" role="listbox">
         {filtered.length === 0 ? (
           <li className="pselect__option pselect__option--empty">
             {loading && <i className="fa fa-spinner fa-spin pselect__spinner"></i>}
@@ -166,8 +267,16 @@ export const Select = ({
           filtered.map((opt, idx) => (
             <li
               key={`${String(opt.value ?? "")}-${idx}`}
-              className={`pselect__option${opt.value === value ? " pselect__option--selected" : ""}`}
+              ref={(el) => {
+                optionRefs.current[idx] = el;
+              }}
+              role="option"
+              aria-selected={opt.value === value}
+              className={`pselect__option${opt.value === value ? " pselect__option--selected" : ""}${
+                idx === highlightIndex ? " pselect__option--highlighted" : ""
+              }`}
               onClick={() => handleSelect(opt)}
+              onMouseEnter={() => setHighlightIndex(idx)}
             >
               {opt.value === value && <i className="fa fa-check pselect__check"></i>}
               <span
@@ -187,7 +296,15 @@ export const Select = ({
   return (
     <div className={`pselect${open ? " pselect--open" : ""}${disabled ? " pselect--disabled" : ""}${className ? ` ${className}` : ""}`} ref={wrapRef}>
       {label && <span className="pselect__label">{label}</span>}
-      <div className="pselect__control" onClick={handleToggle}>
+      <div
+        className="pselect__control"
+        onClick={handleToggle}
+        onKeyDown={handleControlKeyDown}
+        tabIndex={disabled ? -1 : 0}
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+      >
         <span
           className={`pselect__value${!selected ? " pselect__value--placeholder" : ""}`}
           title={selected && typeof selected.label === "string" ? selected.label : undefined}
