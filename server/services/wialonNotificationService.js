@@ -7,6 +7,88 @@ const UNIT_FLAGS = 0x01;
 const SEARCH_LIMIT = 1000;
 const CANDIDATES_PER_TYPE = 80;
 
+/** Exact business-rule check: status equals canonical `cerrada` (case-insensitive). */
+export function isStatusCerrada(status) {
+  return String(status || "").trim().toLowerCase() === "cerrada";
+}
+
+export function isCierreDeServicioNombre(nombre) {
+  return String(nombre || "").trim().toLowerCase() === "cierre de servicio";
+}
+
+function transporteIdsMatch(a, b) {
+  if (!a || !b) return false;
+  if (a.internalId && b.internalId && String(a.internalId) === String(b.internalId)) return true;
+  if (a.id != null && b.id != null && String(a.id) === String(b.id)) return true;
+  return false;
+}
+
+/** True when every transporte has at least one "Cierre de servicio" event. */
+export function allTransportesHaveCierre(bitacora) {
+  const transportes = bitacora?.transportes || [];
+  const eventos = bitacora?.eventos || [];
+  if (!transportes.length || !eventos.length) return false;
+  const closedTransportes = eventos
+    .filter((e) => isCierreDeServicioNombre(e?.nombre))
+    .flatMap((e) => e.transportes || []);
+  if (!closedTransportes.length) return false;
+  return transportes.every((t) => closedTransportes.some((ct) => transporteIdsMatch(t, ct)));
+}
+
+/** Stable unit↔notification key (numeric resource/notif ids). */
+export function unitNotifKey(unitId, resourceId, notifId) {
+  return `${String(unitId).trim()}_${Number(resourceId)}_${Number(notifId)}`;
+}
+
+/**
+ * Decide which bindings to unlink vs keep.
+ * Business rule: keep every binding of GPS G when another non-deleted bitácora
+ * related to G has status !== cerrada; otherwise unlink G from this bitácora's notifs.
+ */
+export function planUnlinkBindings(bindings, keptUnitIds, lookupOk) {
+  if (!lookupOk) {
+    return {
+      toUnlink: [],
+      skippedShared: [...bindings],
+      error: "open_bindings_lookup_failed",
+    };
+  }
+  const kept = keptUnitIds instanceof Set ? keptUnitIds : new Set(keptUnitIds || []);
+  const toUnlink = [];
+  const skippedShared = [];
+  for (const b of bindings || []) {
+    if (kept.has(String(b.unitId))) skippedShared.push(b);
+    else toUnlink.push(b);
+  }
+  return { toUnlink, skippedShared };
+}
+
+/** Collect unit↔notif bindings from a bitácora's transportes (history kept in Mongo). */
+export function collectBitacoraNotifBindings(bitacora) {
+  const bindings = [];
+  const seenBinding = new Set();
+  for (const t of bitacora?.transportes || []) {
+    const unitIds = [];
+    for (const u of t.gpsUnits || []) {
+      const id = u?.wialonId != null ? String(u.wialonId).trim() : "";
+      if (id) unitIds.push(id);
+    }
+    for (const n of t.notificaciones || []) {
+      if (n?.resourceId == null || n?.notifId == null) continue;
+      const resourceId = Number(n.resourceId);
+      const notifId = Number(n.notifId);
+      if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
+      for (const unitId of unitIds) {
+        const key = unitNotifKey(unitId, resourceId, notifId);
+        if (seenBinding.has(key)) continue;
+        seenBinding.add(key);
+        bindings.push({ unitId, resourceId, notifId });
+      }
+    }
+  }
+  return bindings;
+}
+
 export const CANONICAL_TYPES = [
   { key: "gps_no_posiciona", label: "GPS no posiciona", triggerType: "outage", pattern: /GPS\s*NO\s*POSICIONA/i },
   { key: "desvio_de_ruta", label: "Desvío de ruta", triggerType: "geozone", pattern: /DESV[IÍ]O\s*DE\s*RUTA/i },
@@ -448,7 +530,7 @@ export async function applySelections({ unitIds = [], selections = [] } = {}) {
 
 /**
  * Unit↔notification bindings still needed by any open (non-deleted, non-closed) bitácora.
- * Keys: `${unitId}_${resourceId}_${notifId}`.
+ * Keys: normalized `${unitId}_${resourceId}_${notifId}`.
  *
  * @param {{ bitacoraId?: string|object, transporteId?: string }|null} exclude
  *   When removing a transporte mid-trip, pass its bitácora + transporte id so those
@@ -476,6 +558,8 @@ async function getOpenUnitNotifKeys(exclude = null) {
       )
       .toArray();
     for (const d of docs) {
+      // Never treat the bitácora being closed/deleted as "another" open trip.
+      if (excludeBitId && !excludeTId && String(d._id) === excludeBitId) continue;
       for (const t of d.transportes || []) {
         if (
           excludeBitId &&
@@ -491,7 +575,7 @@ async function getOpenUnitNotifKeys(exclude = null) {
         for (const n of t.notificaciones || []) {
           if (n?.resourceId == null || n?.notifId == null) continue;
           for (const uid of unitIds) {
-            keys.add(`${uid}_${n.resourceId}_${n.notifId}`);
+            keys.add(unitNotifKey(uid, n.resourceId, n.notifId));
           }
         }
       }
@@ -504,57 +588,39 @@ async function getOpenUnitNotifKeys(exclude = null) {
 }
 
 /**
- * Unlink GPS units of a bitácora from its selected Wialon notifications.
- * Keeps Mongo `transportes.notificaciones` as history; only removes unit IDs
- * from Wialon notification `un` arrays (never disables the rule).
- *
- * Skips any unit↔notification pair still required by another open bitácora
- * (shared GPS across trips).
+ * GPS unit ids still related to another non-deleted bitácora whose status is
+ * not exactly `cerrada` (business-rule exception). The closed bitácora itself
+ * is always excluded by id so a stale/race status cannot block its own unlink.
  */
-export async function unlinkBitacoraNotifications(bitacora) {
-  // Collect unit↔notif bindings for this bitácora (transporte-local pairs).
-  const bindings = []; // { unitId, resourceId, notifId }
-  const seenBinding = new Set();
-
-  for (const t of bitacora?.transportes || []) {
-    const unitIds = [];
-    for (const u of t.gpsUnits || []) {
-      const id = u?.wialonId != null ? String(u.wialonId).trim() : "";
-      if (id) unitIds.push(id);
+export async function getGpsUnitsKeptByOtherBitacoras(excludeBitacoraId = null) {
+  const unitIds = new Set();
+  const excludeBitId = excludeBitacoraId != null ? String(excludeBitacoraId) : null;
+  try {
+    const col = mongoose.connection.db.collection("bitacoras");
+    const filter = { deleted: { $ne: true }, status: { $not: /^cerrada$/i } };
+    if (excludeBitId && mongoose.Types.ObjectId.isValid(excludeBitId)) {
+      filter._id = { $ne: new mongoose.Types.ObjectId(excludeBitId) };
     }
-    for (const n of t.notificaciones || []) {
-      if (n?.resourceId == null || n?.notifId == null) continue;
-      for (const unitId of unitIds) {
-        const key = `${unitId}_${n.resourceId}_${n.notifId}`;
-        if (seenBinding.has(key)) continue;
-        seenBinding.add(key);
-        bindings.push({
-          unitId,
-          resourceId: Number(n.resourceId),
-          notifId: Number(n.notifId),
-        });
+    const docs = await col
+      .find(filter, { projection: { _id: 1, "transportes.gpsUnits.wialonId": 1 } })
+      .toArray();
+    for (const d of docs) {
+      if (excludeBitId && String(d._id) === excludeBitId) continue;
+      for (const t of d.transportes || []) {
+        for (const u of t.gpsUnits || []) {
+          const id = u?.wialonId != null ? String(u.wialonId).trim() : "";
+          if (id) unitIds.add(id);
+        }
       }
     }
+    return { unitIds, ok: true };
+  } catch (e) {
+    console.error("getGpsUnitsKeptByOtherBitacoras failed:", e.message);
+    return { unitIds: new Set(), ok: false };
   }
+}
 
-  if (!bindings.length) {
-    return { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared: [] };
-  }
-
-  // After close/delete this bitácora is already excluded from "open", so any
-  // remaining keys belong to other open trips that still need the binding.
-  const { keys: stillNeeded, ok } = await getOpenUnitNotifKeys();
-  const skippedShared = [];
-  const toUnlink = [];
-  for (const b of bindings) {
-    const key = `${b.unitId}_${b.resourceId}_${b.notifId}`;
-    if (ok && stillNeeded.has(key)) {
-      skippedShared.push(b);
-      continue;
-    }
-    toUnlink.push(b);
-  }
-
+async function applyUnlinkGroups(toUnlink, skippedShared, extra = {}) {
   if (!toUnlink.length) {
     return {
       applied: [],
@@ -563,11 +629,10 @@ export async function unlinkBitacoraNotifications(bitacora) {
       prunedEnabled: false,
       skippedUnits: [],
       skippedShared,
+      ...extra,
     };
   }
 
-  // Group by notification so each Wialon update only removes the units that
-  // are safe to drop from that specific rule.
   const byNotif = new Map();
   for (const b of toUnlink) {
     const nk = `${b.resourceId}_${b.notifId}`;
@@ -581,7 +646,15 @@ export async function unlinkBitacoraNotifications(bitacora) {
     byNotif.get(nk).unitIds.add(b.unitId);
   }
 
-  const merged = { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared };
+  const merged = {
+    applied: [],
+    failed: [],
+    pruned: [],
+    prunedEnabled: false,
+    skippedUnits: [],
+    skippedShared,
+    ...extra,
+  };
   for (const group of byNotif.values()) {
     const part = await applySelections({
       unitIds: [...group.unitIds],
@@ -594,6 +667,86 @@ export async function unlinkBitacoraNotifications(bitacora) {
     if (part.prunedEnabled) merged.prunedEnabled = true;
   }
   return merged;
+}
+
+/**
+ * Unlink GPS units of a bitácora from its selected Wialon notifications.
+ * Keeps Mongo `transportes.notificaciones` as history; only removes unit IDs
+ * from Wialon notification `un` arrays (never disables the rule).
+ *
+ * Per GPS: if another non-deleted bitácora with status !== cerrada still
+ * relates to that GPS, keep its Intacsep links; otherwise unlink it from this
+ * bitácora's notifications. The current bitácora never counts as "another".
+ */
+export async function unlinkBitacoraNotifications(bitacora) {
+  const bindings = collectBitacoraNotifBindings(bitacora);
+  const bitacoraId = bitacora?._id != null ? String(bitacora._id) : null;
+
+  if (!bindings.length) {
+    console.log(
+      "[wialon-unlink-bitacora]",
+      JSON.stringify({ bitacora: bitacoraId, decision: "noop", reason: "no_bindings" })
+    );
+    return { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared: [] };
+  }
+
+  const { unitIds: keptUnits, ok } = await getGpsUnitsKeptByOtherBitacoras(bitacoraId);
+  const planned = planUnlinkBindings(bindings, keptUnits, ok);
+
+  for (const b of planned.skippedShared) {
+    console.log(
+      "[wialon-unlink-bitacora]",
+      JSON.stringify({
+        bitacora: bitacoraId,
+        decision: "keep",
+        unitId: b.unitId,
+        resourceId: b.resourceId,
+        notifId: b.notifId,
+        reason: "related_non_cerrada_bitacora",
+      })
+    );
+  }
+  for (const b of planned.toUnlink) {
+    console.log(
+      "[wialon-unlink-bitacora]",
+      JSON.stringify({
+        bitacora: bitacoraId,
+        decision: "unlink",
+        unitId: b.unitId,
+        resourceId: b.resourceId,
+        notifId: b.notifId,
+      })
+    );
+  }
+
+  if (planned.error) {
+    console.warn(
+      "[wialon-unlink-bitacora]",
+      JSON.stringify({ bitacora: bitacoraId, error: planned.error, skippedShared: planned.skippedShared.length })
+    );
+    return {
+      applied: [],
+      failed: [],
+      pruned: [],
+      prunedEnabled: false,
+      skippedUnits: [],
+      skippedShared: planned.skippedShared,
+      error: planned.error,
+    };
+  }
+
+  const result = await applyUnlinkGroups(planned.toUnlink, planned.skippedShared);
+  console.log(
+    "[wialon-unlink-bitacora]",
+    JSON.stringify({
+      bitacora: bitacoraId,
+      unlinked: planned.toUnlink.length,
+      kept: planned.skippedShared.length,
+      applied: result.applied?.length || 0,
+      failed: result.failed?.length || 0,
+    })
+  );
+  return result;
 }
 
 /**
@@ -612,15 +765,14 @@ export async function unlinkTransporteNotifications(bitacora, transporte) {
   const seenBinding = new Set();
   for (const n of transporte?.notificaciones || []) {
     if (n?.resourceId == null || n?.notifId == null) continue;
+    const resourceId = Number(n.resourceId);
+    const notifId = Number(n.notifId);
+    if (!Number.isFinite(resourceId) || !Number.isFinite(notifId)) continue;
     for (const unitId of unitIds) {
-      const key = `${unitId}_${n.resourceId}_${n.notifId}`;
+      const key = unitNotifKey(unitId, resourceId, notifId);
       if (seenBinding.has(key)) continue;
       seenBinding.add(key);
-      bindings.push({
-        unitId,
-        resourceId: Number(n.resourceId),
-        notifId: Number(n.notifId),
-      });
+      bindings.push({ unitId, resourceId, notifId });
     }
   }
 
@@ -648,7 +800,7 @@ export async function unlinkTransporteNotifications(bitacora, transporte) {
   const skippedShared = [];
   const toUnlink = [];
   for (const b of bindings) {
-    const key = `${b.unitId}_${b.resourceId}_${b.notifId}`;
+    const key = unitNotifKey(b.unitId, b.resourceId, b.notifId);
     if (stillNeeded.has(key)) {
       skippedShared.push(b);
       continue;
@@ -656,43 +808,7 @@ export async function unlinkTransporteNotifications(bitacora, transporte) {
     toUnlink.push(b);
   }
 
-  if (!toUnlink.length) {
-    return {
-      applied: [],
-      failed: [],
-      pruned: [],
-      prunedEnabled: false,
-      skippedUnits: [],
-      skippedShared,
-    };
-  }
-
-  const byNotif = new Map();
-  for (const b of toUnlink) {
-    const nk = `${b.resourceId}_${b.notifId}`;
-    if (!byNotif.has(nk)) {
-      byNotif.set(nk, {
-        resourceId: b.resourceId,
-        notifId: b.notifId,
-        unitIds: new Set(),
-      });
-    }
-    byNotif.get(nk).unitIds.add(b.unitId);
-  }
-
-  const merged = { applied: [], failed: [], pruned: [], prunedEnabled: false, skippedUnits: [], skippedShared };
-  for (const group of byNotif.values()) {
-    const part = await applySelections({
-      unitIds: [...group.unitIds],
-      selections: [{ resourceId: group.resourceId, notifId: group.notifId, action: "unlink" }],
-    });
-    merged.applied.push(...(part.applied || []));
-    merged.failed.push(...(part.failed || []));
-    merged.pruned.push(...(part.pruned || []));
-    merged.skippedUnits.push(...(part.skippedUnits || []));
-    if (part.prunedEnabled) merged.prunedEnabled = true;
-  }
-  return merged;
+  return applyUnlinkGroups(toUnlink, skippedShared);
 }
 
 // Alerts panel list. Separate from the wizard snapshot: it needs geofence names

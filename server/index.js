@@ -50,6 +50,8 @@ import {
   unlinkBitacoraNotifications as unlinkWialonBitacoraNotifications,
   unlinkTransporteNotifications as unlinkWialonTransporteNotifications,
   CLOSED_STATUSES as WIALON_CLOSED_STATUSES,
+  isCierreDeServicioNombre,
+  allTransportesHaveCierre,
 } from "./services/wialonNotificationService.js";
 import { processTriggeredAlerts as processWialonTriggeredAlerts } from "./services/wialonAlertEventService.js";
 import { readPlateFromImage } from "./services/plateRecognitionService.js";
@@ -2298,11 +2300,49 @@ app.patch("/bitacora/:id/event", async (req, res) => {
       bitacora.status = "validada";
     }
 
+    // "Cierre de servicio" for every transporte → status cerrada (server-authoritative).
+    // Unlink runs after this save so a local rollback cannot leave an external unlink behind.
+    const cierreCompleto =
+      isCierreDeServicioNombre(nombre) && allTransportesHaveCierre(bitacora);
+    if (cierreCompleto) {
+      const prevStatus = String(bitacora.status || "").toLowerCase();
+      if (!WIALON_CLOSED_STATUSES.includes(prevStatus)) {
+        bitacora.status = "cerrada";
+      }
+    }
+
     // Save the updated bitacora
     await bitacora.save();
 
-    // Respond with the updated bitacora
-    res.status(200).json(bitacora);
+    let wialonSync = null;
+    if (cierreCompleto) {
+      try {
+        wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
+      } catch (err) {
+        console.error("Wialon notification unlink on Cierre de servicio failed:", err);
+        wialonSync = {
+          applied: [],
+          failed: [],
+          pruned: [],
+          prunedEnabled: false,
+          skippedUnits: [],
+          skippedShared: [],
+          error: err.message,
+        };
+      }
+      if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
+        console.warn("[wialon-unlink-cierre-evento]", JSON.stringify({
+          bitacora: bitacora._id,
+          status: bitacora.status,
+          failed: wialonSync.failed,
+          error: wialonSync.error,
+        }));
+      }
+    }
+
+    const payload = bitacora.toObject ? bitacora.toObject() : bitacora;
+    if (wialonSync) payload.wialonSync = wialonSync;
+    res.status(200).json(payload);
   } catch (error) {
     console.error("Error adding event:", error);
     res.status(500).json({ message: "Internal server error" });
@@ -2777,8 +2817,13 @@ app.patch("/bitacora/:id/status", async (req, res) => {
 
     const prevStatus = String(bitacora.status || "").toLowerCase();
     const nextStatus = String(status || "").toLowerCase();
-    const wasClosed = WIALON_CLOSED_STATUSES.includes(prevStatus);
     const isNowClosed = WIALON_CLOSED_STATUSES.includes(nextStatus);
+    // Idempotent heal: also re-run when already closed so a prior Wialon failure
+    // can be recovered by repeating PATCH .../status { status: "cerrada" }.
+    const shouldUnlink =
+      isNowClosed ||
+      String(req.body?.resyncNotifications || "").toLowerCase() === "true" ||
+      req.body?.resyncNotifications === true;
 
     bitacora.status = status;
     await bitacora.save();
@@ -2786,7 +2831,7 @@ app.patch("/bitacora/:id/status", async (req, res) => {
     // On close (e.g. after "Cierre de servicio"), unlink GPS from Wialon alerts.
     // Best effort: never block closing the bitácora if Wialon fails.
     let wialonSync = null;
-    if (!wasClosed && isNowClosed) {
+    if (shouldUnlink) {
       try {
         wialonSync = await unlinkWialonBitacoraNotifications(bitacora);
       } catch (err) {
@@ -2797,12 +2842,14 @@ app.patch("/bitacora/:id/status", async (req, res) => {
           pruned: [],
           prunedEnabled: false,
           skippedUnits: [],
+          skippedShared: [],
           error: err.message,
         };
       }
       if (wialonSync && (wialonSync.failed?.length || wialonSync.error)) {
         console.warn("[wialon-unlink-close]", JSON.stringify({
           bitacora: bitacora._id,
+          prevStatus,
           status: nextStatus,
           failed: wialonSync.failed,
           error: wialonSync.error,

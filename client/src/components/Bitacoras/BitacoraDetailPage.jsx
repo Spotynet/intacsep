@@ -1237,12 +1237,18 @@ const BitacoraDetailPage = ({edited}) => {
   }, [initialized, user]);
 
   const handleFinish = async (latestBitacora = bitacora) => {
+    // `onEventAdded(undefined)` must not bypass the default parameter.
+    const current = latestBitacora || bitacora;
+    if (!current) return;
+
     const hasPendingDrafts = drafts.some((d) => d.status === "pendiente");
     if (hasPendingDrafts) {
       setShowDraftsModal(true);
       return;
     }
-    if (latestBitacora.status === "iniciada" && areAllTransportesClosed(latestBitacora)) {
+    // Server may already have set cerrada + unlinked on the Cierre event; only
+    // PATCH /status when we still need the transition (legacy / partial paths).
+    if (current.status === "iniciada" && areAllTransportesClosed(current)) {
       try {
         const response = await fetch(`${baseUrl}/bitacora/${id}/status`, {
           method: "PATCH",
@@ -1261,6 +1267,9 @@ const BitacoraDetailPage = ({edited}) => {
           setBitacora(updatedBitacora);
           setIsEventStarted(true);
           setFinishButtonDisabled(false);
+          if (updatedBitacora.wialonSync) {
+            reportWialonSync(updatedBitacora.wialonSync, showToast);
+          }
         } else {
           console.error("Failed to close bitácora:", response.statusText);
         }
@@ -2415,9 +2424,15 @@ const BitacoraDetailPage = ({edited}) => {
         onClose={() => setModalOpen(false)}
         edited={edited}
         eventTypes={eventTypes}
-        onEventAdded={async () => {
-          const latest = await fetchEventos(); // Modify fetchEventos to return data
-          await handleFinish(latest); // Pass it into handleFinish
+        onEventAdded={async (fromModal) => {
+          if (fromModal?.wialonSync) {
+            reportWialonSync(fromModal.wialonSync, showToast);
+          }
+          if (fromModal) {
+            applyBitacoraPayload(fromModal);
+          }
+          const latest = fromModal || (await fetchEventos());
+          await handleFinish(latest);
           setModalOpen(false);
         }}
       />

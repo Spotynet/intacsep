@@ -495,7 +495,8 @@ const NewEventModal = ({show, onClose, edited, eventTypes, onEventAdded, bitacor
         registrado_por: `${user?.firstName} ${user?.lastName}`,
         transportes: [],
       });
-      onEventAdded();
+      // Pass server payload so parent can surface wialonSync / auto-close without a racey refetch.
+      if (typeof onEventAdded === "function") onEventAdded(updatedBitacora);
     } catch (e) {
       console.error("Error en handleSubmit:", e);
     }

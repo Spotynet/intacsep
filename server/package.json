@@ -4,7 +4,8 @@
     "main": "index.js",
     "type": "module",
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "node --test services/wialonNotificationService.unlink.test.js",
+        "test:unlink": "node --test services/wialonNotificationService.unlink.test.js",
         "dev": "node --watch index.js",
         "start": "node index.js"
     },

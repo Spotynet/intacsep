@@ -39,9 +39,13 @@ export const mergeNotificaciones = (existing, incoming) => {
 
 export const reportWialonSync = (sync, showToast) => {
   if (!sync || !showToast) return;
-  const {applied = [], failed = [], skippedUnits = []} = sync;
+  const {applied = [], failed = [], skippedUnits = [], skippedShared = [], error} = sync;
   const linked = applied.filter((a) => a.action !== "unlink");
   const unlinked = applied.filter((a) => a.action === "unlink");
+
+  if (error && !failed.length) {
+    showToast(`Sincronización Intacsep incompleta: ${error}`, "error", 15000);
+  }
 
   if (failed.length > 0) {
     const reasons = [...new Set(failed.map((f) => f.error).filter(Boolean))];
@@ -57,6 +61,13 @@ export const reportWialonSync = (sync, showToast) => {
       `${failed.length} alerta(s) con error: ${detail}${more}.${ok}`,
       "error",
       15000
+    );
+  }
+  if (skippedShared.length > 0 && unlinked.length === 0 && failed.length === 0 && !error) {
+    showToast(
+      `${skippedShared.length} vínculo(s) se conservaron: GPS aún en otra bitácora no cerrada.`,
+      "info",
+      10000
     );
   }
   if (linked.length > 0) {
