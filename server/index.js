@@ -7421,6 +7421,8 @@ app.get('/dashboard/onc-events', async (req, res) => {
     const oncEventsData = await Bitacora.aggregate([
       { $match: bitacoraFilter },
       { $unwind: '$eventos' },
+      // Exclude GPS auto-registered anomalies; keep only monitorista-registered ones
+      { $match: { 'eventos.registrado_por': { $ne: 'Sistema Intacsep' } } },
       {
         $lookup: {
           from: 'eventtypes',
@@ -7740,6 +7742,8 @@ app.get('/dashboard/bitacoras-anomalias', async (req, res) => {
         { $unwind: '$eventos' },
         // Keep only anomaly events — no $lookup needed, we matched names above
         { $match: { 'eventos.nombre': { $in: anomalyEventNames } } },
+        // Exclude GPS auto-registered anomalies; keep only monitorista-registered ones
+        { $match: { 'eventos.registrado_por': { $ne: 'Sistema Intacsep' } } },
         // Transport line filter
         ...(lineaTransporte !== 'all' ? [{
           $match: {

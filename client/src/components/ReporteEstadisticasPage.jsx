@@ -577,6 +577,7 @@ const ReporteEstadisticasPage = () => {
     { key: "origen_nombre", header: "Origen", width: "120px" },
     { key: "destino_nombre", header: "Destino", width: "120px" },
     { key: "lineaTransporte", header: "Línea", width: "120px" },
+    { key: "tipoTransporte", header: "Tipo unidad", width: "100px" },
     {
       key: "status",
       header: "Estatus",
